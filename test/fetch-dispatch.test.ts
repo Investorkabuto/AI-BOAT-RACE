@@ -6,13 +6,19 @@ const none = new Set<string>();
 
 describe('dueDispatches（取得の起動）', () => {
   it('7:30 より前は出走表を起動しない', () => {
-    expect(dueDispatches({ nowMs: at('2026-11-05T07:25:00+09:00'), done: none, lastResultsMs: 0, pendingResults: 0 })).toEqual([]);
+    expect(dueDispatches({ nowMs: at('2026-11-05T07:25:00+09:00'), done: new Set(['fetch:results-all:2026-11-05']), lastResultsMs: 0, pendingResults: 0 })).toEqual([]);
+  });
+  it('6:00 に前日の全レースの結果を1回だけ起動する', () => {
+    const now = at('2026-11-05T06:02:00+09:00');
+    const d = dueDispatches({ nowMs: now, done: none, lastResultsMs: 0, pendingResults: 0 });
+    expect(d).toEqual([{ key: 'fetch:results-all:2026-11-05', command: 'results-all', date: '2026-11-04' }]);
+    expect(dueDispatches({ nowMs: now + 5 * 60_000, done: new Set([d[0]!.key]), lastResultsMs: 0, pendingResults: 0 })).toEqual([]);
   });
   it('7:30 を過ぎたら1回だけ出走表を起動する', () => {
     const now = at('2026-11-05T07:31:00+09:00');
-    const d = dueDispatches({ nowMs: now, done: none, lastResultsMs: 0, pendingResults: 0 });
+    const d = dueDispatches({ nowMs: now, done: new Set(['fetch:results-all:2026-11-05']), lastResultsMs: 0, pendingResults: 0 });
     expect(d).toEqual([{ key: 'fetch:schedule:2026-11-05:07:30', command: 'schedule', date: '2026-11-05' }]);
-    expect(dueDispatches({ nowMs: now + 5 * 60_000, done: new Set([d[0]!.key]), lastResultsMs: 0, pendingResults: 0 })).toEqual([]);
+    expect(dueDispatches({ nowMs: now + 5 * 60_000, done: new Set([d[0]!.key, 'fetch:results-all:2026-11-05']), lastResultsMs: 0, pendingResults: 0 })).toEqual([]);
   });
   it('9:30 にもう1回。2時間を過ぎたら起動しない', () => {
     const done = new Set(['fetch:schedule:2026-11-05:07:30']);
