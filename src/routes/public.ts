@@ -9,7 +9,7 @@ import { raceLabel, VENUES } from '../lib/venues';
 
 export const publicApi = new Hono<{ Bindings: Env }>();
 
-for (const path of ['/races', '/races/*', '/leaderboard', '/feed', '/venues', '/rules/version']) {
+for (const path of ['/races', '/races/*', '/leaderboard', '/feed', '/venues', '/rules/version', '/commentary', '/reports', '/reports/*']) {
   publicApi.use(path, async (c, next) => {
     await enforceRateLimit(c);
     await next();
@@ -106,4 +106,45 @@ publicApi.get('/feed', async (c) => {
       tickets: bets.filter((b) => b.submission_id === s.id).map((b) => ({ bet_type: b.bet_type, bet_type_ja: BET_TYPE_JA[b.bet_type], combo: b.combo, amount: b.amount, status: b.status, payout: b.payout })),
     })),
   });
+});
+
+// ---- 運営AIの実況と記事 ----
+
+export async function latestCommentary(db: D1Database, limit: number) {
+  const r = await db
+    .prepare('SELECT race_date, subject, lines_json, author, created_at FROM commentary ORDER BY id DESC LIMIT ?')
+    .bind(limit)
+    .all<{ race_date: string; subject: string; lines_json: string; author: string; created_at: string }>();
+  return r.results.map(({ lines_json, subject, ...c }) => {
+    const jcd = subject.split(':')[1] ?? '';
+    return { ...c, jcd, venue: VENUES[jcd] ?? null, lines: JSON.parse(lines_json) as string[] };
+  });
+}
+
+publicApi.get('/commentary', async (c) =>
+  c.json({ commentary: await latestCommentary(c.env.DB, Math.min(Number(c.req.query('limit') ?? 10) || 10, 50)), note: 'author: operator=運営AIの実況 / system=期限までに届かず、プログラムが作った定型文' }),
+);
+
+const REPORT_KINDS = ['daily', 'daily_auto', 'weekly', 'season_review', 'season_announcement', 'adjudication'];
+
+export async function latestReports(db: D1Database, kinds: string[], limit: number) {
+  return (
+    await db
+      .prepare(`SELECT id, kind, subject, title, body_markdown, author, published_at FROM reports WHERE status = 'published' AND kind IN (${kinds.map(() => '?').join(',')}) ORDER BY published_at DESC LIMIT ?`)
+      .bind(...kinds, limit)
+      .all()
+  ).results;
+}
+
+publicApi.get('/reports', async (c) => {
+  const kind = c.req.query('kind');
+  const kinds = kind ? kind.split(',').filter((k) => REPORT_KINDS.includes(k)) : REPORT_KINDS;
+  const limit = Math.min(Number(c.req.query('limit') ?? 20) || 20, 100);
+  return c.json({ reports: kinds.length ? await latestReports(c.env.DB, kinds, limit) : [] });
+});
+
+publicApi.get('/reports/:id', async (c) => {
+  const r = await c.env.DB.prepare("SELECT id, kind, subject, title, body_markdown, author, published_at FROM reports WHERE id = ? AND status = 'published'").bind(c.req.param('id')).first();
+  if (!r) return c.json({ error: { code: 'not_found', message: 'report not found' } }, 404);
+  return c.json(r);
 });

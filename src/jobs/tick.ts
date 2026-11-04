@@ -2,13 +2,19 @@
 // 何度実行しても結果が変わらないように作ってある（再実行・遅延に強い）。
 //  1. 締切を過ぎたレースの確定（舟券を locked に）
 //  2. 公式結果がそろったレースの精算（的中・不的中・返還）
-//  3. その日の全レースが終わったら、日次の締め（参加AIへ日次と月間の成績、月間の順位を送る）
+//  3. その場の全レースが終わったら、運営AIに実況のタスク
+//  4. その日の全レースが終わったら、日次の締め（参加AIへ日次と月間の成績・順位、運営AIに不正検知・日報・週報・月間総評のタスク）
+//  5. 運営タスクの失効、滞留通知、Webhook の配送、ルール改定の通知、月替わりの失格の復帰
 import type { Env } from '../env';
 import { ensureSchema } from '../db/migrate';
 import { eventStatement, statsBetween, type RaceRow } from '../db/repo';
 import { hitRatePct, rankByRecovery, recoveryPct } from '../lib/bets';
-import { jstIso, monthRange } from '../lib/time';
+import { addDays, jstDate, jstIso, monthRange } from '../lib/time';
 import { lockRace, settleRace } from './settlement';
+import { deliverWebhooks } from './webhooks';
+import { notifyRulesChange } from './notify';
+import { restoreDisqualifiedForNewMonth } from '../operator/core';
+import { checkAlerts, commentaryTasks, expireTasks, seasonReviewTask, tasksAfterDayClose } from '../operator/scheduler';
 
 /** 最後の締切からこれだけ経っても、その日を締めない（出走表の取り込み漏れや結果の遅れに備える） */
 const DAY_CLOSE_GRACE_MS = 30 * 60 * 1000;
@@ -18,6 +24,8 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
   const log: string[] = [];
   const migrated = await ensureSchema(db);
   if (migrated.length) log.push(`schema migrated: ${migrated.join(', ')}`);
+  log.push(...(await restoreDisqualifiedForNewMonth(db, nowMs)));
+  log.push(...(await notifyRulesChange(db, nowMs)));
 
   const toLock = (await db.prepare("SELECT * FROM races WHERE status = 'scheduled' AND deadline_ms <= ? ORDER BY deadline_ms").bind(nowMs).all<RaceRow>()).results;
   for (const r of toLock) {
@@ -34,7 +42,11 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
   }
   if (waiting) log.push(`waiting results: ${waiting} races`);
 
+  log.push(...(await commentaryTasks(db, nowMs, addDays(jstDate(nowMs), -1))));
   log.push(...(await closeDays(db, nowMs)));
+  log.push(...(await expireTasks(db, nowMs)));
+  log.push(...(await checkAlerts(env, nowMs)));
+  log.push(...(await deliverWebhooks(env, nowMs)));
   await db.prepare('DELETE FROM challenges WHERE issued_ms < ?').bind(nowMs - 60 * 60 * 1000).run();
   return log;
 }
@@ -82,6 +94,9 @@ export async function closeDays(db: D1Database, nowMs: number): Promise<string[]
     }
     await db.batch(stmts);
     log.push(`day closed: ${date} (${agents.length} agents)`);
+    // 運営AIのタスク。予想が1件もなかった日は積まない
+    if (agents.length) log.push(`operator tasks ${date}: ${(await tasksAfterDayClose(db, date, nowMs)).join(', ')}`);
+    if (date === monthRange(date.slice(0, 7)).endsOn && (await seasonReviewTask(db, date.slice(0, 7), nowMs))) log.push(`season review task: ${date.slice(0, 7)}`);
   }
   return log;
 }
