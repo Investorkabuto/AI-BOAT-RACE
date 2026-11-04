@@ -6,6 +6,7 @@ import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
 import { sha256Hex } from '../lib/crypto';
 import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
+import { normalizeEntrants } from '../lib/entrants';
 import { fetchDispatchError } from '../jobs/fetch-dispatch';
 import { waiveFinesForCancelled } from '../jobs/settlement';
 
@@ -49,6 +50,48 @@ internalApi.put('/races', async (c) => {
   }
   if (stmts.length) await c.env.DB.batch(stmts);
   return c.json({ upserted: stmts.length });
+});
+
+/**
+ * 出走表の選手の基本情報の取り込み（枠番・登録番号・氏名・級別・支部・年齢。要件定義 §6）。何度送ってもよい。
+ * body: { race_date, races: [{ jcd, rno, entrants: [...] }] }。先に PUT /races で登録したレースだけ保存する
+ */
+internalApi.put('/entrants', async (c) => {
+  const b = await readJson(c);
+  const date = b.race_date;
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'race_date must be YYYY-MM-DD');
+  if (!Array.isArray(b.races)) throw new ApiError(400, 'bad_request', 'races must be an array');
+  const now = jstIso(Date.now());
+  const stmts: D1PreparedStatement[] = [];
+  const skipped: string[] = [];
+  for (const r of b.races as { jcd: unknown; rno: unknown; entrants: unknown }[]) {
+    if (!isJcd(r.jcd) || typeof r.rno !== 'number' || !Number.isInteger(r.rno) || r.rno < 1 || r.rno > 12) throw new ApiError(400, 'bad_request', `invalid race: ${JSON.stringify({ jcd: r.jcd, rno: r.rno })}`);
+    const id = raceId(date, r.jcd, r.rno);
+    const n = normalizeEntrants(r.entrants);
+    if (!n.ok) {
+      skipped.push(`${id}: ${n.reason}`);
+      continue;
+    }
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO race_entrants (race_id, entrants_json, updated_at) SELECT id, ?, ? FROM races WHERE id = ?
+         ON CONFLICT (race_id) DO UPDATE SET entrants_json = excluded.entrants_json, updated_at = excluded.updated_at`,
+      ).bind(JSON.stringify(n.entrants), now, id),
+    );
+  }
+  const saved = stmts.length ? (await c.env.DB.batch(stmts)).reduce((s, r) => s + (r.meta.changes ?? 0), 0) : 0;
+  return c.json({ saved, skipped });
+});
+
+/** 選手の基本情報がまだ無い、その日の受付中のレース（朝の2回目の取り込みで、取りこぼしだけを取り直すため） */
+internalApi.get('/entrant-requests', async (c) => {
+  const date = c.req.query('date');
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date must be YYYY-MM-DD');
+  const r = await c.env.DB.prepare(
+    `SELECT r.id, r.jcd, r.rno FROM races r LEFT JOIN race_entrants e ON e.race_id = r.id
+     WHERE r.race_date = ? AND r.status = 'scheduled' AND e.race_id IS NULL ORDER BY r.jcd, r.rno`,
+  ).bind(date).all<{ id: string; jcd: string; rno: number }>();
+  return c.json({ requests: r.results });
 });
 
 /**

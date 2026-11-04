@@ -8,17 +8,14 @@ import { TACTIC_JA, type Env, type Tactic } from '../env';
 import { statsBetween } from '../db/repo';
 import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } from '../lib/bets';
 import { entryDeadlineMs } from '../lib/entries';
-import { enforceRateLimit } from '../lib/http';
+import { publicRead } from '../lib/http';
 import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
 import { raceLabel, VENUES } from '../lib/venues';
 
 export const watchApi = new Hono<{ Bindings: Env }>();
 
 for (const path of ['/roster', '/roster/*', '/days', '/days/*']) {
-  watchApi.use(path, async (c, next) => {
-    await enforceRateLimit(c);
-    await next();
-  });
+  watchApi.use(path, publicRead());
 }
 
 const bad = (message: string) => ({ error: { code: 'validation_failed', message } });
@@ -33,13 +30,14 @@ interface DayAgg {
 async function dailyTotals(db: D1Database, from: string, to: string, agentId?: string): Promise<Map<string, DayAgg>> {
   const extra = agentId ? ' AND agent_id = ?' : '';
   const args = [from, to, ...(agentId ? [agentId] : [])];
-  const bets = (
-    await db
+  const [bets, fines] = await Promise.all([
+    db
       .prepare(`SELECT race_date, SUM(amount) AS stake, SUM(payout) AS payout FROM bets WHERE realm = 'live' AND status IN ('hit', 'miss') AND race_date BETWEEN ? AND ?${extra} GROUP BY race_date`)
       .bind(...args)
       .all<DayAgg>()
-  ).results;
-  const fines = (await db.prepare(`SELECT race_date, SUM(amount) AS s FROM fines WHERE race_date BETWEEN ? AND ?${extra} GROUP BY race_date`).bind(...args).all<{ race_date: string; s: number }>()).results;
+      .then((r) => r.results),
+    db.prepare(`SELECT race_date, SUM(amount) AS s FROM fines WHERE race_date BETWEEN ? AND ?${extra} GROUP BY race_date`).bind(...args).all<{ race_date: string; s: number }>().then((r) => r.results),
+  ]);
   const out = new Map(bets.map((b) => [b.race_date, { ...b }]));
   for (const f of fines) {
     const d = out.get(f.race_date) ?? { race_date: f.race_date, stake: 0, payout: 0 };
@@ -66,21 +64,23 @@ watchApi.get('/roster', async (c) => {
   const date = c.req.query('date') ?? jstDate(Date.now());
   if (!isDate(date)) return c.json(bad('date は YYYY-MM-DD'), 400);
   const { startsOn } = monthRange(date.slice(0, 7));
-  const agents = (await db.prepare("SELECT id, display_name, owner_name FROM agents WHERE realm = 'live' AND status = 'active' ORDER BY created_at").all<{ id: string; display_name: string; owner_name: string }>()).results;
-  const month = new Map(rankByRecovery(await statsBetween(db, startsOn, date)).map((s) => [s.agent_id, s]));
-  const entries = new Map(
-    (
-      await db
+  const [agentsQ, monthStats, entriesQ, tacticsQ] = await Promise.all([
+    db.prepare("SELECT id, display_name, owner_name FROM agents WHERE realm = 'live' AND status = 'active' ORDER BY created_at").all<{ id: string; display_name: string; owner_name: string }>(),
+    statsBetween(db, startsOn, date),
+    db
         .prepare(
           `SELECT e.agent_id, SUM(CASE WHEN e.status = 'entered' THEN 1 ELSE 0 END) AS entered, SUM(CASE WHEN e.status = 'passed' THEN 1 ELSE 0 END) AS passed,
              SUM(CASE WHEN EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') THEN 1 ELSE 0 END) AS bought
            FROM entries e WHERE e.realm = 'live' AND e.race_date = ? GROUP BY e.agent_id`,
         )
         .bind(date)
-        .all<{ agent_id: string; entered: number; passed: number; bought: number }>()
-    ).results.map((r) => [r.agent_id, r]),
-  );
-  const tactics = new Map((await db.prepare('SELECT agent_id, tactic, chosen_by FROM daily_tactics WHERE race_date = ?').bind(date).all<{ agent_id: string; tactic: Tactic; chosen_by: string }>()).results.map((t) => [t.agent_id, t]));
+        .all<{ agent_id: string; entered: number; passed: number; bought: number }>(),
+    db.prepare('SELECT agent_id, tactic, chosen_by FROM daily_tactics WHERE race_date = ?').bind(date).all<{ agent_id: string; tactic: Tactic; chosen_by: string }>(),
+  ]);
+  const agents = agentsQ.results;
+  const month = new Map(rankByRecovery(monthStats).map((s) => [s.agent_id, s]));
+  const entries = new Map(entriesQ.results.map((r) => [r.agent_id, r]));
+  const tactics = new Map(tacticsQ.results.map((t) => [t.agent_id, t]));
   const rows = agents.map((a) => {
     const m = month.get(a.id);
     const e = entries.get(a.id);
@@ -108,21 +108,18 @@ watchApi.get('/roster/:id', async (c) => {
   const id = c.req.param('id') ?? '';
   const date = c.req.query('date') ?? jstDate(Date.now());
   if (!isDate(date)) return c.json(bad('date は YYYY-MM-DD'), 400);
-  const a = await db
-    .prepare("SELECT id, display_name, owner_name, profile, status, created_at FROM agents WHERE id = ? AND realm = 'live' AND status IN ('active', 'disqualified')")
-    .bind(id)
-    .first<{ id: string; display_name: string; owner_name: string; profile: string; status: string; created_at: string }>();
-  if (!a) return c.json({ error: { code: 'not_found', message: 'agent not found' } }, 404);
   const { startsOn } = monthRange(date.slice(0, 7));
-  const month = rankByRecovery(await statsBetween(db, startsOn, date)).find((s) => s.agent_id === id);
-  const allTime = (await statsBetween(db, '0000-01-01', date, id))[0];
-  const daily = [...(await dailyTotals(db, startsOn, date, id)).values()]
-    .sort((x, y) => x.race_date.localeCompare(y.race_date))
-    .map((d) => ({ date: d.race_date, stake: d.stake, payout: d.payout, recovery_pct: recoveryPct(d.payout, d.stake) }));
-  const tactic = await db.prepare('SELECT tactic, chosen_by FROM daily_tactics WHERE agent_id = ? AND race_date = ?').bind(id, date).first<{ tactic: Tactic; chosen_by: string }>();
-  const plansOpen = Date.now() >= entryDeadlineMs(date);
-  const entries = (
-    await db
+  // プロフィール・成績・作戦・その日のエントリーを同時に読む（存在しないAIなら結果は捨てて 404）
+  const [a, monthStats, allTimeStats, dailyMap, tactic, entryRows] = await Promise.all([
+    db
+      .prepare("SELECT id, display_name, owner_name, profile, status, created_at FROM agents WHERE id = ? AND realm = 'live' AND status IN ('active', 'disqualified')")
+      .bind(id)
+      .first<{ id: string; display_name: string; owner_name: string; profile: string; status: string; created_at: string }>(),
+    statsBetween(db, startsOn, date),
+    statsBetween(db, '0000-01-01', date, id),
+    dailyTotals(db, startsOn, date, id),
+    db.prepare('SELECT tactic, chosen_by FROM daily_tactics WHERE agent_id = ? AND race_date = ?').bind(id, date).first<{ tactic: Tactic; chosen_by: string }>(),
+    db
       .prepare(
         `SELECT e.race_id, e.status, e.passed_at, r.jcd, r.rno, r.deadline_at, r.status AS race_status, f.amount AS fine, p.tickets_json, p.rationale,
            (SELECT COALESCE(SUM(amount), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status NOT IN ('cancelled')) AS amount,
@@ -134,8 +131,16 @@ watchApi.get('/roster/:id', async (c) => {
          WHERE e.agent_id = ? AND e.realm = 'live' AND e.race_date = ? ORDER BY r.deadline_ms`,
       )
       .bind(id, date)
-      .all<{ race_id: string; status: string; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; pending: number }>()
-  ).results.map((e) => {
+      .all<{ race_id: string; status: string; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; pending: number }>(),
+  ]);
+  if (!a) return c.json({ error: { code: 'not_found', message: 'agent not found' } }, 404);
+  const month = rankByRecovery(monthStats).find((s) => s.agent_id === id);
+  const allTime = allTimeStats[0];
+  const daily = [...dailyMap.values()]
+    .sort((x, y) => x.race_date.localeCompare(y.race_date))
+    .map((d) => ({ date: d.race_date, stake: d.stake, payout: d.payout, recovery_pct: recoveryPct(d.payout, d.stake) }));
+  const plansOpen = Date.now() >= entryDeadlineMs(date);
+  const entries = entryRows.results.map((e) => {
     // 状況: passed=見送り / no_show=無断欠場 / hit・miss=判定済み / pending=購入済み・結果待ち / entered=申告中（未購入）
     const state = e.status === 'passed' ? 'passed' : e.fine ? 'no_show' : e.amount > 0 ? (e.pending > 0 ? 'pending' : e.hits > 0 ? 'hit' : 'miss') : 'entered';
     return {
@@ -159,26 +164,21 @@ watchApi.get('/roster/:id', async (c) => {
 // ---- 日ごとのまとめ ----
 
 async function daySummaries(db: D1Database, from: string, to: string) {
-  const races = (
-    await db
+  const [racesQ, totals, agentsQ, noShowsQ] = await Promise.all([
+    db
       .prepare(
         `SELECT race_date, COUNT(*) AS races, COUNT(DISTINCT jcd) AS venues, SUM(CASE WHEN status IN ('settled', 'cancelled') THEN 1 ELSE 0 END) AS finished
          FROM races WHERE race_date BETWEEN ? AND ? GROUP BY race_date`,
       )
       .bind(from, to)
-      .all<{ race_date: string; races: number; venues: number; finished: number }>()
-  ).results;
-  const totals = await dailyTotals(db, from, to);
-  const agents = new Map(
-    (
-      await db
-        .prepare(`SELECT race_date, COUNT(DISTINCT agent_id) AS n FROM entries WHERE realm = 'live' AND race_date BETWEEN ? AND ? GROUP BY race_date`)
-        .bind(from, to)
-        .all<{ race_date: string; n: number }>()
-    ).results.map((r) => [r.race_date, r.n]),
-  );
-  const noShows = new Map((await db.prepare('SELECT race_date, COUNT(*) AS n FROM fines WHERE race_date BETWEEN ? AND ? GROUP BY race_date').bind(from, to).all<{ race_date: string; n: number }>()).results.map((r) => [r.race_date, r.n]));
-  return races
+      .all<{ race_date: string; races: number; venues: number; finished: number }>(),
+    dailyTotals(db, from, to),
+    db.prepare(`SELECT race_date, COUNT(DISTINCT agent_id) AS n FROM entries WHERE realm = 'live' AND race_date BETWEEN ? AND ? GROUP BY race_date`).bind(from, to).all<{ race_date: string; n: number }>(),
+    db.prepare('SELECT race_date, COUNT(*) AS n FROM fines WHERE race_date BETWEEN ? AND ? GROUP BY race_date').bind(from, to).all<{ race_date: string; n: number }>(),
+  ]);
+  const agents = new Map(agentsQ.results.map((r) => [r.race_date, r.n]));
+  const noShows = new Map(noShowsQ.results.map((r) => [r.race_date, r.n]));
+  return racesQ.results
     .sort((x, y) => x.race_date.localeCompare(y.race_date))
     .map((r) => {
       const t = totals.get(r.race_date);
@@ -202,20 +202,24 @@ watchApi.get('/days/:date', async (c) => {
   const db = c.env.DB;
   const date = c.req.param('date') ?? '';
   if (!isDate(date)) return c.json(bad('date は YYYY-MM-DD'), 400);
-  const [summary] = await daySummaries(db, date, date);
-  if (!summary) return c.json({ error: { code: 'not_found', message: 'その日のレースはありません' } }, 404);
-  const names = new Map((await db.prepare("SELECT id, display_name FROM agents WHERE realm = 'live'").all<{ id: string; display_name: string }>()).results.map((a) => [a.id, a.display_name]));
-  const ranked = rankByRecovery(await statsBetween(db, date, date)).filter((r) => r.rank > 0);
-  const hits = (
-    await db
+  const [[summary], namesQ, dayStats, hitsQ, venuesQ] = await Promise.all([
+    daySummaries(db, date, date),
+    db.prepare("SELECT id, display_name FROM agents WHERE realm = 'live'").all<{ id: string; display_name: string }>(),
+    statsBetween(db, date, date),
+    db
       .prepare(
         `SELECT b.agent_id, b.race_id, b.bet_type, b.combo, b.amount, b.payout, r.jcd, r.rno FROM bets b JOIN races r ON r.id = b.race_id
          WHERE b.realm = 'live' AND b.race_date = ? AND b.status = 'hit' ORDER BY b.payout DESC LIMIT 10`,
       )
       .bind(date)
-      .all<{ agent_id: string; race_id: string; bet_type: BetType; combo: string; amount: number; payout: number; jcd: string; rno: number }>()
-  ).results;
-  const venues = (await db.prepare('SELECT DISTINCT jcd FROM races WHERE race_date = ? ORDER BY jcd').bind(date).all<{ jcd: string }>()).results.map((v) => ({ jcd: v.jcd, name: VENUES[v.jcd] ?? v.jcd }));
+      .all<{ agent_id: string; race_id: string; bet_type: BetType; combo: string; amount: number; payout: number; jcd: string; rno: number }>(),
+    db.prepare('SELECT DISTINCT jcd FROM races WHERE race_date = ? ORDER BY jcd').bind(date).all<{ jcd: string }>(),
+  ]);
+  if (!summary) return c.json({ error: { code: 'not_found', message: 'その日のレースはありません' } }, 404);
+  const names = new Map(namesQ.results.map((a) => [a.id, a.display_name]));
+  const ranked = rankByRecovery(dayStats).filter((r) => r.rank > 0);
+  const hits = hitsQ.results;
+  const venues = venuesQ.results.map((v) => ({ jcd: v.jcd, name: VENUES[v.jcd] ?? v.jcd }));
   return c.json({
     ...summary,
     venue_list: venues,

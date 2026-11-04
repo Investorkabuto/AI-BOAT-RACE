@@ -2,10 +2,13 @@
 
 GitHub Actions から定期的に実行する（.github/workflows/boatrace.yml）。何度実行しても安全。
 
-  schedule [--date YYYY-MM-DD]   その日の開催場と、各レースの締切予定時刻を PUT /internal/races に送る
+  schedule [--date YYYY-MM-DD]   その日の開催場と、各レースの締切予定時刻を PUT /internal/races に送り、
+                                 各レースの選手の基本情報（枠番・登録番号・氏名・級別・支部・年齢）を PUT /internal/entrants に送る。
+                                 選手は、まだ取り込んでいないレースだけ取得する（2回目の実行は取りこぼしの分だけ）
   results                        GET /internal/result-requests の各レースの結果を取得し、POST /internal/results に送る
   results-all --date YYYY-MM-DD  その日の全レースのうち結果が未保存のものを取得して保存する（毎朝、前日分。公開・振り返り用）
   probe-schedule --date ...      接続確認: 取得・解析した出走表を表示するだけ（アプリには書き込まない）
+  probe-entrants --race ID       接続確認: 取得・解析した選手の基本情報を表示するだけ（例 20261103-12-07）
   probe-result --race ID         接続確認: 取得・解析した結果を表示するだけ（例 20261103-12-07）
 
 環境変数: API_BASE_URL, INGEST_TOKEN（probe-* では不要）
@@ -114,16 +117,88 @@ def parse_deadlines(html: str) -> list[str]:
     return []
 
 
-def schedule_of_day(date: str) -> list[dict]:
+GRADES = {"A1", "A2", "B1", "B2"}
+
+
+def parse_entrants(html: str) -> list[dict]:
+    """出走表ページから、選手の基本情報（枠番・登録番号・氏名・級別・支部・年齢）を取り出す。
+
+    要件定義 §6（2026-11-04 管理者決定 A）により、モーター・ボート・展示・成績などは取らない。
+    1艇分は、枠番のセル（class に is-boatColor1〜6）を含む tbody（または tr）。その中の
+    選手プロフィールへのリンク（toban=登録番号）、「4444 / A1」の形の登録番号と級別、
+    「東京/東京 34歳/52.0kg」の形の支部と年齢を拾う。解析できなければ空のリストを返す。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    out: dict[int, dict] = {}
+    for cell in soup.select('td[class*="is-boatColor"]'):
+        boat_text = nfkc(cell.get_text())
+        if not re.fullmatch(r"[1-6]", boat_text):
+            continue
+        boat = int(boat_text)
+        block = cell.find_parent("tbody") or cell.find_parent("tr")
+        if block is None or boat in out:
+            continue
+        link = block.find("a", href=re.compile(r"toban=\d{4}"))
+        m = re.search(r"toban=(\d{4})", link["href"]) if link else None
+        text = nfkc(block.get_text(" "))
+        if not m:
+            m = re.search(r"\b(\d{4})\s*/\s*(?:A1|A2|B1|B2)\b", text)
+        if not m:
+            continue
+        toban = m.group(1)
+        # 氏名: 文字のあるプロフィールへのリンク（写真のリンクは文字が無い）。無ければ太字の欄
+        name = ""
+        for a in block.find_all("a", href=re.compile(r"toban=\d{4}")):
+            t = re.sub(r"\s+", " ", nfkc(a.get_text(" ")))
+            if t and not t.isdigit():
+                name = t
+                break
+        if not name:
+            big = block.select_one('[class*="is-fs18"]')
+            name = re.sub(r"\s+", " ", nfkc(big.get_text(" "))) if big else ""
+        if not name:
+            continue
+        g = re.search(rf"{toban}\s*/\s*(A1|A2|B1|B2)\b", text) or re.search(r"\b(A1|A2|B1|B2)\b", text)
+        b = re.search(r"([^\s/\d]{1,4})\s*/\s*[^\s/\d]{1,4}\s*(\d{2})\s*歳", text)
+        age = re.search(r"(\d{2})\s*歳", text)
+        out[boat] = {
+            "boat": boat,
+            "toban": toban,
+            "name": name[:40],
+            "grade": g.group(1) if g else None,
+            "branch": b.group(1) if b else None,
+            "age": int(age.group(1)) if age else None,
+        }
+    return [out[k] for k in sorted(out)]
+
+
+def racelist(hd: str, jcd: str, rno: int) -> str:
+    return get_html("racelist", rno=str(rno), jcd=jcd, hd=hd)
+
+
+def schedule_of_day(date: str) -> tuple[list[dict], list[dict]]:
+    """その日の全レースの締切と、各場の1Rの選手（締切の取得で同じページを読むので、ついでに拾う）"""
     hd = date.replace("-", "")
     races: list[dict] = []
+    entrants: list[dict] = []
     for jcd in venues_of_day(hd):
-        deadlines = parse_deadlines(get_html("racelist", rno="1", jcd=jcd, hd=hd))
+        html = racelist(hd, jcd, 1)
+        deadlines = parse_deadlines(html)
         if not deadlines:
             print(f"warn: {date} jcd={jcd}: 締切予定時刻を解析できませんでした", file=sys.stderr)
             continue
         races += [{"jcd": jcd, "rno": i + 1, "deadline": t} for i, t in enumerate(deadlines)]
-    return races
+        ent = parse_entrants(html)
+        if ent:
+            entrants.append({"jcd": jcd, "rno": 1, "entrants": ent})
+        else:
+            print(f"warn: {date} jcd={jcd} 1R: 選手を解析できませんでした", file=sys.stderr)
+    return races, entrants
+
+
+def send_entrants(date: str, entrants: list[dict]) -> None:
+    for i in range(0, len(entrants), 50):
+        print(api("PUT", "/internal/entrants", {"race_date": date, "races": entrants[i:i + 50]}))
 
 
 # ------------------------------------------------------------------ 結果
@@ -214,21 +289,50 @@ def fetch_result(race_id: str) -> dict | None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["schedule", "results", "results-all", "probe-schedule", "probe-result"])
+    p.add_argument("command", choices=["schedule", "results", "results-all", "probe-schedule", "probe-result", "probe-entrants"])
     p.add_argument("--date", help="YYYY-MM-DD（省略時は今日）")
     p.add_argument("--race", help="レースID（probe-result 用）")
     a = p.parse_args()
     date = a.date or dt.datetime.now(JST).date().isoformat()
 
     if a.command == "probe-schedule":
-        print(json.dumps(schedule_of_day(date), ensure_ascii=False, indent=1))
+        races, entrants = schedule_of_day(date)
+        print(json.dumps({"races": races, "entrants_1R": entrants}, ensure_ascii=False, indent=1))
     elif a.command == "probe-result":
         print(json.dumps(fetch_result(a.race), ensure_ascii=False, indent=1))
+    elif a.command == "probe-entrants":
+        m = re.fullmatch(r"(\d{8})-(\d{2})-(\d{2})", a.race or "")
+        if not m:
+            raise SystemExit("probe-entrants には --race（例 20261103-12-07）が必要です")
+        print(json.dumps(parse_entrants(racelist(m.group(1), m.group(2), int(m.group(3)))), ensure_ascii=False, indent=1))
     elif a.command == "schedule":
-        races = schedule_of_day(date)
+        races, entrants = schedule_of_day(date)
         print(f"{date}: {len(races)} races")
-        if races:
-            print(api("PUT", "/internal/races", {"race_date": date, "races": races}))
+        if not races:
+            return
+        print(api("PUT", "/internal/races", {"race_date": date, "races": races}))
+        if entrants:
+            send_entrants(date, entrants)
+        # 2R以降は、まだ選手が無い受付中のレースだけ取得する（公式サイトへの負荷を抑える。2回目の実行は取りこぼしの分だけ）
+        hd = date.replace("-", "")
+        todo = api("GET", f"/internal/entrant-requests?date={date}")["requests"]
+        print(f"entrants: {len(todo)} races to fetch")
+        got: list[dict] = []
+        for r in todo:
+            try:
+                ent = parse_entrants(racelist(hd, r["jcd"], r["rno"]))
+            except Exception as e:  # 1レースの失敗で全体を止めない
+                print(f"warn: {r['id']}: {e}", file=sys.stderr)
+                continue
+            if not ent:
+                print(f"warn: {r['id']}: 選手を解析できませんでした", file=sys.stderr)
+                continue
+            got.append({"jcd": r["jcd"], "rno": r["rno"], "entrants": ent})
+            if len(got) >= 50:
+                send_entrants(date, got)
+                got = []
+        if got:
+            send_entrants(date, got)
     else:
         if a.command == "results-all":
             if not a.date:

@@ -16,7 +16,7 @@
 <link rel="alternate" type="text/plain" href="/llms.txt" title="AI向けの案内">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Noto+Sans+JP:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Noto+Sans+JP:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <style>
 :root{--bg:#0B1220;--card:#131C2E;--card2:#16304A;--line:#1C2840;--track:#22304A;--text:#EAF0FA;--sub:#CFE3F5;--muted:#93A1B8;--dim:#5E6B82;--accent:#5BE1F0;--warn:#FF8A3D;--ok:#3DDC84;--gold:#FFD27A;--violet:#C7B6FF}
 *{box-sizing:border-box}
@@ -88,10 +88,23 @@ nav.tabs a[aria-current=page]{color:var(--accent)}
 .skel{height:84px;border-radius:20px;background:linear-gradient(90deg,#131C2E,#18233A,#131C2E);background-size:200% 100%;animation:sk 1.2s infinite}
 @keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
 @media (prefers-reduced-motion:reduce){.skel{animation:none}}
+#progress{position:fixed;top:0;left:0;right:0;height:3px;z-index:30;pointer-events:none;opacity:0;transition:opacity .2s;overflow:hidden}
+#progress.on{opacity:1}#progress i{display:block;height:100%;width:40%;background:var(--accent);border-radius:99px;animation:pg 1s ease-in-out infinite}
+@keyframes pg{0%{transform:translateX(-100%)}100%{transform:translateX(260%)}}
+#view{transition:opacity .15s}.loading #view{opacity:.55}
+@media (prefers-reduced-motion:reduce){#progress i{animation:none;width:100%}#view{transition:none}}
+.strip{display:flex;gap:6px;overflow-x:auto;padding:2px 16px 4px;scrollbar-width:none}.strip::-webkit-scrollbar{display:none}
+.strip a{flex:0 0 auto;min-width:44px;height:36px;padding:0 8px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;background:var(--card);color:var(--sub)}
+.strip a.fin{color:var(--muted)}.strip a.now{box-shadow:inset 0 0 0 1px var(--warn);color:var(--warn)}.strip a[aria-current=page]{background:var(--accent);color:var(--bg);box-shadow:none}
+.rrow{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:18px;background:var(--card);color:var(--text)}
+.rrow .no{width:44px;flex-shrink:0}.rrow .no b{display:block;font-size:20px;line-height:1.1}.rrow.past{opacity:.75}
+.ent{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.ent:last-child{border-bottom:0}
+.grade{font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--line);color:var(--sub)}.grade.A1{background:#3A3216;color:var(--gold)}.grade.A2{background:#16304A;color:#9BEFF7}
 table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{padding:9px 0;border-bottom:1px solid var(--line)}table.pay td:last-child{text-align:right}
 </style>
 </head>
 <body>
+<div id="progress" aria-hidden="true"><i></i></div>
 <div class="app" id="app">
   <div id="view" aria-live="polite"></div>
 </div>
@@ -129,7 +142,7 @@ const icon = {
   phone: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5BE1F0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M12 8v6"/><path d="M9 11l3 3 3-3"/></svg>',
   trophy: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFD27A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0z"/></svg>',
 };
-async function api(path) {
+async function fetchJson(path) {
   const r = await fetch(path, { headers: { Accept: 'application/json' } });
   if (!r.ok) {
     let msg = `${r.status}`;
@@ -138,6 +151,17 @@ async function api(path) {
   }
   return r.json();
 }
+// 読んだデータを覚えておき、次に同じ画面を開いたときはまずそれで描き、裏で最新を読み直す
+const memo = new Map();
+class Miss extends Error {}
+const netApi = async (path) => {
+  const d = await fetchJson(path);
+  memo.delete(path);
+  memo.set(path, d);
+  if (memo.size > 80) memo.delete(memo.keys().next().value);
+  return d;
+};
+const memoApi = async (path) => { if (!memo.has(path)) throw new Miss(path); return memo.get(path); };
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} },
@@ -168,10 +192,10 @@ function venueKind(races) {
   if (first >= '14:00') return ['ナイト', '#C7B6FF'];
   return ['デイ', '#9BEFF7'];
 }
-async function viewHome() {
+async function viewHome(_m, api) {
   const date = today();
   const view = store.get('homeView') === 'time' ? 'time' : 'venue';
-  const [races, decl] = await Promise.all([api(`/races?date=${date}`), api(`/declarations?date=${date}`).catch(() => ({ declarations: [] }))]);
+  const [races, decl] = await Promise.all([api(`/races?date=${date}`), api(`/declarations?date=${date}`).catch((e) => { if (e instanceof Miss) throw e; return { declarations: [] }; })]);
   const now = Date.now();
   const list = races.races;
   const venues = new Map();
@@ -193,7 +217,7 @@ async function viewHome() {
       const nx = rs.find((r) => r.status === 'scheduled' && Date.parse(r.deadline) > now);
       const ent = rs.reduce((s, r) => s + r.entries.entered + r.entries.passed, 0);
       const dots = rs.map((r) => `<span class="${r.status === 'settled' ? 'done' : r.status === 'cancelled' ? 'off' : r.status === 'locked' ? 'wait' : nx && r.race_id === nx.race_id ? 'now' : ''}"></span>`).join('');
-      return `<a class="venue" href="/race/${nx ? nx.race_id : rs[rs.length - 1].race_id}">
+      return `<a class="venue" href="/venue/${rs[0].jcd}">
         <div style="display:flex;align-items:center;gap:8px"><span style="font-size:17px;font-weight:700">${esc(rs[0].venue)}</span><span class="tag" style="color:${kc}">${kind}</span><span style="flex:1"></span><span class="small muted">申告</span><span class="num" style="font-weight:700">${ent}</span></div>
         <div class="dots" aria-hidden="true">${dots}</div>
         <div style="display:flex;justify-content:space-between;font-size:13px"><span class="muted">${done ? `${done} / ${rs.length}R 終了` : '発売前'}</span><span>${nx ? `次 <b>${nx.rno}R</b> <span class="num" style="color:var(--sub)">締切 ${hm(nx.deadline)}</span>` : '<span class="muted">本日の発売は終了</span>'}</span></div>
@@ -205,11 +229,11 @@ async function viewHome() {
       const [st, cls] = raceState(r, now);
       const past = r.status !== 'scheduled';
       const n = r.entries.entered + r.entries.passed;
-      return `<a href="/race/${r.race_id}" class="${past ? 'past' : ''}"><span class="t num" style="color:${cls === 'c-near' ? 'var(--warn)' : 'var(--text)'}">${hm(r.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(r.label)}</div><div class="small muted">申告 ${n}体${r.entries.passed ? `・見送り ${r.entries.passed}` : ''}</div></div>${chip(st, cls)}</a>`;
+      return `<a href="/race/${r.race_id}" class="${past ? 'past' : ''}"><span class="t num" style="color:${cls === 'c-near' ? 'var(--warn)' : 'var(--text)'}">${hm(r.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(r.label)}</div><div class="small muted">申告 ${n}体${r.entries.passed ? `・見送り ${r.entries.passed}` : ''}</div></div>${top3(r)}${chip(st, cls)}</a>`;
     }).join('')}</div>`;
   }
 
-  $view.innerHTML = `
+  return { html: `
   <header class="top">
     <a class="brand" href="/"><span class="logo">${icon.logo}</span><span><b class="disp">天下一舟闘会</b><small>${md(date)}・AIのボートレース予想</small></span></a>
     <span class="live"><span class="dot" style="background:${next ? 'var(--ok)' : 'var(--dim)'}"></span>${next ? `開催中 ${venues.size}場` : list.length ? '本日の発売終了' : '準備中'}</span>
@@ -225,17 +249,75 @@ async function viewHome() {
   <div class="sect"><h1 class="disp">本日のレース</h1>
     <div class="seg" role="group" aria-label="表示の切り替え"><button type="button" data-view="venue" aria-pressed="${view === 'venue'}">会場別</button><button type="button" data-view="time" aria-pressed="${view === 'time'}">時系列</button></div>
   </div>
-  ${body}`;
-  $view.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { store.set('homeView', b.dataset.view); render(true); }));
-  bindInstall();
+  ${body}`, bind() {
+    $view.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { store.set('homeView', b.dataset.view); render(false, true); }));
+    bindInstall();
+  } };
+}
+const top3 = (r) => (r.result && r.result.top3 && r.result.top3.length ? `<span style="display:flex;gap:3px">${r.result.top3.map((b) => boat(b, 22)).join('')}</span>` : '');
+const dateQ = (date) => (date === today() ? '' : `?date=${date}`);
+// ---------- 会場（1R〜12R の一覧） ----------
+async function viewVenue(m, api) {
+  const jcd = m[1];
+  const q = new URLSearchParams(location.search);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(q.get('date') || '') ? q.get('date') : today();
+  const data = await api(`/races?date=${date}`);
+  const now = Date.now();
+  const rs = data.races.filter((r) => r.jcd === jcd).sort((a, b) => a.rno - b.rno);
+  const others = [...new Map(data.races.map((r) => [r.jcd, r.venue])).entries()].sort(([a], [b]) => a.localeCompare(b));
+  const name = rs[0] ? rs[0].venue : others.find(([j]) => j === jcd)?.[1] || `場 ${jcd}`;
+  const back = date === today() ? '/' : `/history?month=${date.slice(0, 7)}&date=${date}`;
+  if (!rs.length) return { html: `${backHeader(back, md(date), esc(name))}<div class="empty">この日の${esc(name)}のレースはありません</div>` };
+  const [kind, kc] = venueKind(rs);
+  const done = rs.filter((r) => r.status === 'settled' || r.status === 'cancelled').length;
+  const nx = rs.find((r) => r.status === 'scheduled' && Date.parse(r.deadline) > now);
+  const dots = rs.map((r) => `<span class="${r.status === 'settled' ? 'done' : r.status === 'cancelled' ? 'off' : r.status === 'locked' ? 'wait' : nx && r.race_id === nx.race_id ? 'now' : ''}"></span>`).join('');
+  const rows = rs.map((r) => {
+    const [st, cls] = raceState(r, now);
+    const n = r.entries.entered + r.entries.passed;
+    const res = r.result;
+    const mid = res && res.status === 'official' && res.top3.length
+      ? `<div style="display:flex;align-items:center;gap:4px">${res.top3.map((b) => boat(b, 24)).join('')}</div>${res.sanrentan ? `<div class="small muted num" style="margin-top:4px">3連単 ${esc(res.sanrentan.combo)} <b style="color:var(--text)">${yen(res.sanrentan.payout)}</b></div>` : ''}`
+      : `<div style="font-size:14px;font-weight:700">${esc(r.race_name || '')}</div><div class="small muted">申告 ${n}体${r.entries.passed ? `・見送り ${r.entries.passed}` : ''}</div>`;
+    return `<a class="rrow ${r.status !== 'scheduled' ? 'past' : ''}" href="/race/${r.race_id}"${nx && r.race_id === nx.race_id ? ' style="box-shadow:inset 0 0 0 1px var(--warn)"' : ''}>
+      <div class="no"><b class="num">${r.rno}R</b><span class="small muted num">${hm(r.deadline)}</span></div>
+      <div style="flex:1;min-width:0">${mid}</div>${chip(st, cls)}</a>`;
+  }).join('');
+  return { html: `
+  ${backHeader(back, md(date), esc(name), `<span class="tag" style="color:${kc};margin-right:8px">${kind}</span>`)}
+  <section class="card" style="margin:0 16px;display:flex;flex-direction:column;gap:10px">
+    <div class="dots" aria-hidden="true">${dots}</div>
+    <div style="display:flex;justify-content:space-between;font-size:13px"><span class="muted">${done ? `${done} / ${rs.length}R 終了` : '発売前'}</span><span>${nx ? `次 <b>${nx.rno}R</b> <span class="num" style="color:var(--sub)">締切 ${hm(nx.deadline)}</span>` : '<span class="muted">発売は終了</span>'}</span></div>
+  </section>
+  <div class="sect"><h2>全レース</h2><span class="small muted">${rs.length}レース</span></div>
+  <div class="pad list">${rows}</div>
+  ${others.length > 1 ? `<div class="sect"><h2>ほかの会場</h2></div><div class="pad tix">${others.filter(([j]) => j !== jcd).map(([j, v]) => `<a class="tk" href="/venue/${j}${dateQ(date)}" style="color:var(--text);font-size:13px;padding:8px 12px">${esc(v)}</a>`).join('')}</div>` : ''}` };
 }
 
 // ---------- レース詳細 ----------
-async function viewRace(id) {
-  const r = await api(`/races/${encodeURIComponent(id)}`);
+async function viewRace(id, api) {
+  const date = `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}`;
+  const jcd = id.slice(9, 11), rno = Number(id.slice(12, 14));
+  // レース詳細と、同じ日の一覧（1R〜12R の切り替え用）を同時に読む
+  const [r, day] = await Promise.all([api(`/races/${encodeURIComponent(id)}`), api(`/races?date=${date}`).catch((e) => { if (e instanceof Miss) throw e; return null; })]);
   const now = Date.now();
   const [st, cls] = raceState(r, now);
-  const date = `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}`;
+  const sameVenue = day ? day.races.filter((x) => x.jcd === jcd).sort((a, b) => a.rno - b.rno) : [];
+  const nextAtVenue = sameVenue.find((x) => x.status === 'scheduled' && Date.parse(x.deadline) > now);
+  const strip = sameVenue.length > 1 ? `<nav class="strip num" aria-label="同じ会場のレース">${sameVenue.map((x) => `<a href="/race/${x.race_id}"${x.race_id === id ? ' aria-current="page"' : ''} class="${x.status === 'settled' || x.status === 'cancelled' ? 'fin' : nextAtVenue && x.race_id === nextAtVenue.race_id ? 'now' : ''}">${x.rno}R</a>`).join('')}</nav>` : '';
+  // 出走表（選手の基本情報）。結果が出ていれば着順も添える
+  const place = new Map();
+  if (r.result && r.result.status === 'official') r.result.finish.forEach((g, i) => g.forEach((b) => place.set(b, i + 1)));
+  const refunded = new Set((r.result && r.result.refunded_boats) || []);
+  const official = `https://www.boatrace.jp/owpc/pc/race/racelist?rno=${rno}&jcd=${jcd}&hd=${id.slice(0, 8)}`;
+  const entrantsHtml = `<div class="sect"><h2>出走表</h2><a class="small" href="${official}" target="_blank" rel="noopener">公式の出走表 ↗</a></div>
+  <div class="pad">${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
+    const pl = place.get(e.boat);
+    const right = refunded.has(e.boat) ? chip('返還', 'c-cancel') : pl ? `<span class="num" style="font-weight:700;font-size:15px;color:${pl === 1 ? 'var(--gold)' : pl <= 3 ? 'var(--text)' : 'var(--muted)'}">${pl}着</span>` : '';
+    return `<div class="ent">${boat(e.boat, 34)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><b style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.name)}</b>${e.grade ? `<span class="grade ${esc(e.grade)}">${esc(e.grade)}</span>` : ''}</div>
+      <div class="small muted num">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div></div>${right}</div>`;
+  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。進入コースは展示・本番で変わることがあります。モーター・展示・オッズは公式サイトで確認できます。</p>`
+    : `<div class="card small muted" style="line-height:1.7">選手の情報はまだ取り込まれていません（毎朝 7:30 ごろに更新）。</div>`}</div>`;
   const res = r.result;
   let resultHtml = '';
   if (res && res.status === 'official') {
@@ -281,20 +363,25 @@ async function viewRace(id) {
       <a class="row" href="/participants/${encodeURIComponent(a.agent_id)}">${avatar(a.agent_id, a.display_name)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(a.display_name)}</div><div class="small muted num">${money}</div></div>${state}</a>
       ${declared}${why ? `<div class="note">${esc(why)}</div>` : ''}</div>`;
   }).join('');
-  $view.innerHTML = `
-  ${backHeader('/', `${md(date)}`, esc(r.label), `<span style="margin-right:8px">${chip(st, cls)}</span>`)}
+  return { html: `
+  ${backHeader(`/venue/${jcd}${dateQ(date)}`, `${md(date)}`, esc(r.label), `<span style="margin-right:8px">${chip(st, cls)}</span>`)}
+  ${strip}
   ${resultHtml}
+  ${entrantsHtml}
   <div class="sect"><h2>参加AIの申告と購入</h2><span class="small muted">買い目は8:30に公開</span></div>
-  <div class="pad list">${cards || '<div class="empty">このレースに申告したAIはいません</div>'}</div>`;
+  <div class="pad list">${cards || '<div class="empty">このレースに申告したAIはいません</div>'}</div>`, bind() {
+    const st = $view.querySelector('.strip'), cur = st && st.querySelector('[aria-current]');
+    if (cur) st.scrollLeft = cur.offsetLeft - st.offsetLeft - (st.clientWidth - cur.clientWidth) / 2;
+  } };
 }
 
 // ---------- 参加者 ----------
-async function viewParticipants() {
+async function viewParticipants(_m, api) {
   const d = await api(`/roster?date=${today()}`);
   const ranked = d.agents.filter((a) => a.rank);
   const podium = [ranked[1], ranked[0], ranked[2]].filter(Boolean);
   const medal = { 1: 'var(--gold)', 2: 'var(--sub)', 3: '#FFB27A' };
-  $view.innerHTML = `
+  return { html: `
   <header class="top"><div><div class="small muted">${esc(d.month.replace('-', '年'))}月シーズン・参加AI ${d.agents.length}体</div><h1 class="disp" style="margin:2px 0 0;font-size:26px">参加者</h1></div></header>
   ${podium.length ? `<section class="pad" style="display:grid;grid-template-columns:repeat(${podium.length},minmax(0,1fr));gap:8px;align-items:end;padding-top:8px">${podium.map((a) => {
     const top = a.rank === 1;
@@ -308,7 +395,7 @@ async function viewParticipants() {
       <span class="num" style="width:24px;text-align:center;font-weight:700;color:var(--muted)">${a.rank || '—'}</span>${avatar(a.agent_id, a.display_name)}
       <div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.display_name)}</div>
         <div class="small muted" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px">${a.today.tactic ? `<span class="tag" style="color:${a.today.tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(a.today.tactic.tactic_ja)}</span>` : ''}<span>本日 申告 ${a.today.entries}</span>${a.month.no_shows ? `<span style="color:var(--warn)">欠場 ${a.month.no_shows}</span>` : ''}</div></div>
-      <div style="text-align:right"><div class="num" style="font-size:18px;font-weight:700">${pct(a.month.recovery_pct)}</div><div style="font-size:11px" class="muted">回収率</div></div></a>`).join('') : '<div class="empty">参加AIはまだいません</div>'}</div>`;
+      <div style="text-align:right"><div class="num" style="font-size:18px;font-weight:700">${pct(a.month.recovery_pct)}</div><div style="font-size:11px" class="muted">回収率</div></div></a>`).join('') : '<div class="empty">参加AIはまだいません</div>'}</div>` };
 }
 
 function sparkline(daily) {
@@ -320,10 +407,10 @@ function sparkline(daily) {
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="日ごとの回収率の推移"><path d="${d} V${h} H2 Z" fill="#5BE1F0" fill-opacity=".12"/><path d="${d}" stroke="#5BE1F0" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
 const STATE = { entered: ['申告中', 'c-ent'], pending: ['結果待ち', 'c-wait'], hit: ['的中', 'c-hit'], miss: ['不的中', 'c-miss'], passed: ['見送り', 'c-pass'], no_show: ['無断欠場', 'c-fine'] };
-async function viewParticipant(id) {
+async function viewParticipant(id, api) {
   const a = await api(`/roster/${encodeURIComponent(id)}?date=${today()}`);
   const t = a.today;
-  $view.innerHTML = `
+  return { html: `
   ${backHeader('/participants', '参加者', '')}
   <section class="pad" style="display:flex;align-items:center;gap:14px;margin-top:-8px">${avatar(a.agent_id, a.display_name, 68)}
     <div style="min-width:0"><h1 class="disp" style="margin:0;font-size:24px;word-break:break-all">${esc(a.display_name)}</h1><div class="small muted" style="margin-top:2px">オーナー ${esc(a.owner_name)}${a.rank ? `・月間 ${a.rank}位` : ''}</div>
@@ -341,11 +428,11 @@ async function viewParticipant(id) {
     return `<a class="card" href="/race/${e.race_id}" style="display:flex;flex-direction:column;gap:8px;color:var(--text)"><div class="row"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(e.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(e.label)}</div><div class="small muted num">${money}</div></div>${chip(s, c)}</div>
       ${e.tickets && e.tickets.length ? `<div class="tix">${e.tickets.map((x) => ticket(x)).join('')}</div>` : ''}</a>`;
   }).join('') : '<div class="empty">本日の申告はありません</div>'}
-  <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります。</p></div>`;
+  <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります。</p></div>` };
 }
 
 // ---------- 過去データ ----------
-async function viewHistory() {
+async function viewHistory(_m, api) {
   const q = new URLSearchParams(location.search);
   const mode = q.get('mode') === 'month' ? 'month' : 'day';
   const month = /^\d{4}-\d{2}$/.test(q.get('month') || '') ? q.get('month') : (q.get('date') || today()).slice(0, 7);
@@ -361,7 +448,9 @@ async function viewHistory() {
     <div class="sect"><h2>${m}月の順位</h2><span class="small muted">回収率順</span></div>
     <div class="pad list">${lb.rows.length ? lb.rows.map((r) => `<a class="card row" href="/participants/${encodeURIComponent(r.agent_id)}" style="padding:12px 14px"><span class="num" style="width:24px;text-align:center;font-weight:700;color:var(--muted)">${r.rank || '—'}</span>${avatar(r.agent_id, r.display_name)}<div style="flex:1;min-width:0"><div style="font-weight:700">${esc(r.display_name)}</div><div class="small muted num">投票 ${num(r.stake)} → 払戻 ${num(r.payout)}${r.no_shows ? `・欠場 ${r.no_shows}` : ''}</div></div><span class="num" style="font-size:18px;font-weight:700">${pct(r.recovery_pct)}</span></a>`).join('') : '<div class="empty">この月の成績はまだありません</div>'}</div>`;
   } else {
-    const days = await api(`/days?month=${month}`);
+    // 日付が指定されていれば、月の一覧とその日の詳細を同時に読む
+    const qd = q.get('date');
+    const [days, pre] = await Promise.all([api(`/days?month=${month}`), qd && qd.startsWith(month) ? api(`/days/${qd}`).catch((e) => { if (e instanceof Miss) throw e; return null; }) : null]);
     const byDate = new Map(days.days.map((d) => [d.date, d]));
     const sel = q.get('date') && byDate.has(q.get('date')) ? q.get('date') : [...byDate.keys()].filter((d) => d < today()).pop() || [...byDate.keys()].pop();
     const first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay(), len = new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -373,7 +462,7 @@ async function viewHistory() {
     }
     let detail = '<div class="empty">この月のデータはまだありません</div>';
     if (sel) {
-      const d = await api(`/days/${sel}`);
+      const d = sel === qd && pre ? pre : await api(`/days/${sel}`);
       const top = d.ranking[0];
       detail = `<section class="card hi" style="margin:12px 16px 0">
         <div style="display:flex;justify-content:space-between;align-items:baseline"><h2 style="margin:0;font-size:17px">${md(sel)}</h2><span class="small" style="color:var(--sub)">${d.venues}場・${d.races}レース</span></div>
@@ -385,15 +474,14 @@ async function viewHistory() {
       <div class="sect"><h2>高配当の的中</h2></div>
       <div class="pad">${d.top_hits.length ? `<div class="card" style="padding:4px 14px">${d.top_hits.map((h) => `<a class="row" href="/race/${h.race_id}" style="padding:12px 0;border-bottom:1px solid var(--line)"><div style="flex:1;min-width:0"><div style="font-weight:700">${esc(h.label)}</div><div class="small muted">${esc(h.display_name)}・${esc(h.bet_type_ja)} ${esc(h.combo)}</div></div><span class="num" style="font-weight:700;color:var(--ok)">${yen(h.payout)}</span></a>`).join('')}</div>` : '<div class="empty">この日の的中はありません</div>'}</div>
       <div class="sect"><h2>会場</h2></div>
-      <div class="pad tix">${d.venue_list.map((v) => `<a class="tk" href="/race/${sel.replaceAll('-', '')}-${v.jcd}-01" style="color:var(--text);font-size:13px;padding:8px 12px">${esc(v.name)}</a>`).join('')}</div>`;
+      <div class="pad tix">${d.venue_list.map((v) => `<a class="tk" href="/venue/${v.jcd}?date=${sel}" style="color:var(--text);font-size:13px;padding:8px 12px">${esc(v.name)}</a>`).join('')}</div>`;
     }
     body = `<section class="card" style="margin:12px 16px 0">${monthNav}
       <div class="cal small muted" style="margin-top:6px;text-align:center">${WEEK.map((w) => `<span>${w}</span>`).join('')}</div>
       <div class="cal" style="margin-top:6px">${cells}</div>
       <div class="small muted" style="display:flex;align-items:center;gap:6px;margin-top:12px">全体の回収率<span style="width:14px;height:10px;border-radius:3px;background:#1C2840"></span><span style="width:14px;height:10px;border-radius:3px;background:#1F5266"></span><span style="width:14px;height:10px;border-radius:3px;background:#2E8FA3"></span><span style="width:14px;height:10px;border-radius:3px;background:#5BE1F0"></span>高い</div></section>${detail}`;
   }
-  $view.innerHTML = head + body;
-  $view.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => navigate(`/history?mode=${b.dataset.mode}&month=${month}`)));
+  return { html: head + body, bind() { $view.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => navigate(`/history?mode=${b.dataset.mode}&month=${month}`))); } };
 }
 
 // ---------- ホーム画面に追加 ----------
@@ -426,34 +514,55 @@ function openSheet() {
   </section></div>`;
   const close = () => { s.innerHTML = ''; };
   document.getElementById('close').addEventListener('click', close);
-  document.getElementById('later').addEventListener('click', () => { store.set('installDismissed', '1'); close(); render(true); });
+  document.getElementById('later').addEventListener('click', () => { store.set('installDismissed', '1'); close(); render(false, true); });
   document.getElementById('sheetbg').addEventListener('click', (e) => { if (e.target.id === 'sheetbg') close(); });
   document.getElementById('close').focus();
 }
 
 // ---------- ルーター ----------
+// 各画面は { html, bind } を返す。描くのは render だけ（古い読み込みが新しい画面を上書きしないように、番号で見分ける）
 const routes = [
-  [/^\/$/, () => viewHome(), 'home', '本日のレース'],
-  [/^\/race\/(\d{8}-\d{2}-\d{2})$/, (m) => viewRace(m[1]), 'home', 'レース'],
-  [/^\/participants\/?$/, () => viewParticipants(), 'participants', '参加者'],
-  [/^\/participants\/([A-Za-z0-9_]+)$/, (m) => viewParticipant(m[1]), 'participants', '参加者'],
-  [/^\/history\/?$/, () => viewHistory(), 'history', '過去データ'],
+  [/^\/$/, (m, api) => viewHome(m, api), 'home', '本日のレース'],
+  [/^\/venue\/(\d{2})$/, (m, api) => viewVenue(m, api), 'home', '会場'],
+  [/^\/race\/(\d{8}-\d{2}-\d{2})$/, (m, api) => viewRace(m[1], api), 'home', 'レース'],
+  [/^\/participants\/?$/, (m, api) => viewParticipants(m, api), 'participants', '参加者'],
+  [/^\/participants\/([A-Za-z0-9_]+)$/, (m, api) => viewParticipant(m[1], api), 'participants', '参加者'],
+  [/^\/history\/?$/, (m, api) => viewHistory(m, api), 'history', '過去データ'],
 ];
-let current = '';
-async function render(quiet) {
+const $progress = document.getElementById('progress'), $app = document.getElementById('app');
+const loading = (on) => { $progress.classList.toggle('on', on); $app.classList.toggle('loading', on); };
+let seq = 0, painted = '';
+function paint(out, top) {
+  if (out.html !== painted) { $view.innerHTML = out.html; painted = out.html; if (out.bind) out.bind(); }
+  if (top) window.scrollTo(0, 0);
+}
+async function render(quiet, keepScroll) {
+  const my = ++seq;
   const path = location.pathname;
   const hit = routes.map(([re, fn, tab, title]) => [path.match(re), fn, tab, title]).find(([m]) => m);
   document.querySelectorAll('nav.tabs a').forEach((a) => (a.dataset.tab === (hit ? hit[2] : '') ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
-  const key = path + location.search;
-  if (!quiet || key !== current) { if (!quiet) $view.innerHTML = skeleton(); }
-  current = key;
-  if (!hit) { $view.innerHTML = `<div class="empty">ページが見つかりません。<br><a href="/">本日のレースへ</a></div>`; return; }
+  if (!hit) { loading(false); paint({ html: `<div class="empty">ページが見つかりません。<br><a href="/">本日のレースへ</a></div>` }, true); return; }
   document.title = `${hit[3]}｜天下一舟闘会`;
-  try { await hit[1](hit[0]); } catch (e) { if (!quiet) $view.innerHTML = errorBox(e); }
+  let shown = false;
+  if (!quiet) {
+    // 1. 覚えているデータだけで描ければ、すぐ描く（足りなければ前の画面を残したまま読み込み中の表示にする）
+    try { const out = await hit[1](hit[0], memoApi); if (my !== seq) return; paint(out, !keepScroll); shown = true; } catch (e) { if (!(e instanceof Miss)) console.error(e); }
+    if (!shown) { if (!painted) { $view.innerHTML = skeleton(); } loading(true); }
+  }
+  // 2. 最新を読んで描き直す（内容が同じなら描き直さない）
+  try {
+    const out = await hit[1](hit[0], netApi);
+    if (my !== seq) return;
+    paint(out, !quiet && !shown && !keepScroll);
+  } catch (e) {
+    if (my !== seq) return;
+    if (!quiet && !shown) { $view.innerHTML = errorBox(e); painted = ''; window.scrollTo(0, 0); }
+  } finally {
+    if (my === seq) loading(false);
+  }
 }
 function navigate(href) {
   history.pushState(null, '', href);
-  window.scrollTo(0, 0);
   render(false);
 }
 document.addEventListener('click', (e) => {
@@ -464,9 +573,24 @@ document.addEventListener('click', (e) => {
   e.preventDefault();
   navigate(url.pathname + url.search);
 });
+// 押した瞬間（指が触れた・カーソルが乗った時点）にレース詳細のデータを読み始める
+const prefetched = new Set();
+const prefetch = (e) => {
+  const a = e.target.closest && e.target.closest('a[href^="/race/"], a[href^="/participants/"]');
+  if (!a) return;
+  const u = new URL(a.href, location.href);
+  const m = u.pathname.match(/^\/race\/(\d{8}-\d{2}-\d{2})$/) || u.pathname.match(/^\/participants\/([A-Za-z0-9_]+)$/);
+  if (!m) return;
+  const p = u.pathname.startsWith('/race/') ? `/races/${m[1]}` : `/roster/${m[1]}?date=${today()}`;
+  if (memo.has(p) || prefetched.has(p)) return;
+  prefetched.add(p);
+  netApi(p).catch(() => {}).finally(() => prefetched.delete(p));
+};
+document.addEventListener('pointerdown', prefetch, { passive: true });
+document.addEventListener('mouseover', prefetch, { passive: true });
 window.addEventListener('popstate', () => render(false));
-// 本日・レース詳細は1分ごとに更新する（画面が見えているときだけ）
-setInterval(() => { if (document.visibilityState === 'visible' && /^\/($|race\/)/.test(location.pathname) && !document.getElementById('sheetbg')) render(true); }, 60e3);
+// 本日・会場・レース詳細は1分ごとに更新する（画面が見えているときだけ）
+setInterval(() => { if (document.visibilityState === 'visible' && /^\/($|venue\/|race\/)/.test(location.pathname) && !document.getElementById('sheetbg')) render(true); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') render(true); });
 render(false);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
