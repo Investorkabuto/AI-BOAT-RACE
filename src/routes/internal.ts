@@ -73,6 +73,15 @@ internalApi.get('/config-check', async (c) => {
 
 /** 公式結果が必要なレース（締切後で、舟券があり、結果が未取得） */
 internalApi.get('/result-requests', async (c) => {
+  // ?date=YYYY-MM-DD&all=1: その日の締切を過ぎた全レースのうち、結果が未保存のもの（毎朝の全レースの結果の保存用。要件定義 §6）
+  const date = c.req.query('date');
+  if (c.req.query('all') === '1') {
+    if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date must be YYYY-MM-DD');
+    const r = await c.env.DB.prepare(
+      'SELECT r.id, r.race_date, r.jcd, r.rno, r.deadline_at FROM races r WHERE r.race_date = ? AND r.deadline_ms <= ? AND r.id NOT IN (SELECT race_id FROM race_results) ORDER BY r.deadline_ms',
+    ).bind(date, Date.now()).all();
+    return c.json({ requests: r.results });
+  }
   const r = await c.env.DB.prepare(
     "SELECT r.id, r.race_date, r.jcd, r.rno, r.deadline_at FROM races r WHERE r.status = 'locked' AND r.id NOT IN (SELECT race_id FROM race_results) ORDER BY r.deadline_ms",
   ).all();
@@ -87,7 +96,10 @@ interface ResultIn {
   payouts?: { bet_type: string; combo: string; payout: number }[];
 }
 
-/** 公式結果の書き込み。精算済みのレースの結果は上書きしない */
+/**
+ * 公式結果の書き込み。精算待ちのレースは上書きできる。精算済み（舟券がなく締切で精算済みになったレースを含む）は、
+ * 結果が未保存のときだけ保存する（毎朝の全レースの結果の保存。精算には使わない）
+ */
 internalApi.post('/results', async (c) => {
   const b = await readJson(c);
   if (!Array.isArray(b.results)) throw new ApiError(400, 'bad_request', 'results must be an array');
@@ -110,9 +122,10 @@ internalApi.post('/results', async (c) => {
     stmts.push(
       c.env.DB.prepare(
         `INSERT INTO race_results (race_id, status, finish_json, refunded_boats_json, payouts_json, fetched_at)
-         SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM races WHERE id = ? AND status IN ('scheduled', 'locked'))
+         SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM races WHERE id = ?)
          ON CONFLICT (race_id) DO UPDATE SET status = excluded.status, finish_json = excluded.finish_json, refunded_boats_json = excluded.refunded_boats_json,
-           payouts_json = excluded.payouts_json, fetched_at = excluded.fetched_at`,
+           payouts_json = excluded.payouts_json, fetched_at = excluded.fetched_at
+         WHERE EXISTS (SELECT 1 FROM races WHERE id = excluded.race_id AND status IN ('scheduled', 'locked'))`,
       ).bind(r.race_id, r.status, JSON.stringify(finish), JSON.stringify(refunded), JSON.stringify(payouts), now, r.race_id),
     );
   }

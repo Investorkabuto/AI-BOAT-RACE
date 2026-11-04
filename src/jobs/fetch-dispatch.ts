@@ -2,9 +2,10 @@
 // GitHub の schedule（cron）は起動が遅れたり来なかったりするため、確実に動くこちらを正とする。
 //  - 出走表: 毎朝 7:30 と 9:30（日本時間）に1回ずつ。朝の申告期限（8:30）までに出走表がそろうように
 //  - 結果: 締切後で結果待ちのレース（舟券があるレースだけ）があるときに、最短10分おき
+//  - 全レースの結果: 毎朝 6:00 に前日分をまとめて保存する（公開・振り返り用。要件定義 §6）
 // 取り込みは何度実行しても安全なので、GitHub 側の schedule が動いて二重になっても問題ない。
 import type { Env } from '../env';
-import { jstDate, jstIso, jstToMs } from '../lib/time';
+import { addDays, jstDate, jstIso, jstToMs } from '../lib/time';
 
 export const FETCH_WORKFLOW = 'boatrace.yml';
 /** 出走表を取る時刻（日本時間 HH:MM） */
@@ -14,10 +15,13 @@ export const SLOT_WINDOW_MS = 2 * 60 * 60 * 1000;
 /** 結果の取得の最短間隔 */
 export const RESULTS_INTERVAL_MS = 10 * 60 * 1000;
 
+/** 前日の全レースの結果をまとめて取る時刻（日本時間） */
+export const RESULTS_ALL_SLOT = '06:00';
+
 export interface Dispatch {
   /** 起動済みの記録に使うキー（app_state.key） */
   key: string;
-  command: 'schedule' | 'results';
+  command: 'schedule' | 'results' | 'results-all';
   date?: string;
 }
 
@@ -30,6 +34,12 @@ export function dueDispatches(p: { nowMs: number; done: ReadonlySet<string>; las
     const at = jstToMs(today, h, m);
     const key = `fetch:schedule:${today}:${slot}`;
     if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'schedule', date: today });
+  }
+  {
+    const [h, m] = RESULTS_ALL_SLOT.split(':').map(Number) as [number, number];
+    const at = jstToMs(today, h, m);
+    const key = `fetch:results-all:${today}`;
+    if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'results-all', date: addDays(today, -1) });
   }
   if (p.pendingResults > 0 && p.nowMs - p.lastResultsMs >= RESULTS_INTERVAL_MS) out.push({ key: 'fetch:results', command: 'results' });
   return out;
@@ -83,7 +93,7 @@ export async function dispatchFetches(env: Env, nowMs: number): Promise<string[]
     log.push(`fetch dispatched: ${d.command}${d.date ? ` ${d.date}` : ''}`);
   }
   // 古い出走表の起動記録を消す（3日より前）
-  await db.prepare("DELETE FROM app_state WHERE key LIKE 'fetch:schedule:%' AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
+  await db.prepare("DELETE FROM app_state WHERE (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
   return log;
 }
 
