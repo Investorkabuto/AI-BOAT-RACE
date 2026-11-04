@@ -1,6 +1,8 @@
 // D1 への読み書きの共通処理
 import type { Realm } from '../env';
 import { jstIso } from '../lib/time';
+import { DAILY_BUDGET } from '../env';
+import { dayBalance, type BalanceRow } from '../lib/bets';
 
 export interface AgentRow {
   id: string;
@@ -71,13 +73,10 @@ export function formatBet(b: BetRow) {
   };
 }
 
-/** その日の投票額（取消を除く）。予算の判定に使う */
-export async function stakeOfDay(db: D1Database, agentId: string, raceDate: string): Promise<number> {
-  const r = await db
-    .prepare("SELECT COALESCE(SUM(amount), 0) AS s FROM bets WHERE agent_id = ? AND race_date = ? AND status != 'cancelled'")
-    .bind(agentId, raceDate)
-    .first<{ s: number }>();
-  return r?.s ?? 0;
+/** その日の残高（残高方式）。提出できるのは balance の範囲内 */
+export async function balanceOfDay(db: D1Database, agentId: string, raceDate: string) {
+  const rows = (await db.prepare('SELECT status, amount, payout FROM bets WHERE agent_id = ? AND race_date = ?').bind(agentId, raceDate).all<BalanceRow>()).results;
+  return dayBalance(DAILY_BUDGET, rows);
 }
 
 /** その日の最初の締切（作戦の宣言の締切）。出走表が未取得なら null */
