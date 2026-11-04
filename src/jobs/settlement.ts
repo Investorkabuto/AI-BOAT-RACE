@@ -1,6 +1,6 @@
 // レースの締切での確定と、公式結果がそろったレースの精算。
 // 1レース分の書き込みは D1 の batch で一括実行する（途中で失敗すれば全体が取り消される）。
-import { eventStatement, type BetRow, type RaceRow } from '../db/repo';
+import { balanceOfDay, eventStatement, type BetRow, type RaceRow } from '../db/repo';
 import { judgeBet, type BetType, type Payout, type RaceResult } from '../lib/bets';
 import { jstIso } from '../lib/time';
 import { raceLabel } from '../lib/venues';
@@ -55,6 +55,9 @@ export async function settleRace(db: D1Database, race: RaceRow, nowMs: number): 
   }
   for (const [agentId, list] of perAgent) {
     const judged = list.filter((x) => x.status !== 'refunded');
+    // 残高方式: 返還と的中払戻が、この精算でその日の残高に加わる（精算前の残高 + 今回の加算）
+    const credit = list.reduce((sum, x) => sum + (x.status === 'refunded' ? x.amount : x.payout), 0);
+    const balanceAfter = (await balanceOfDay(db, agentId, race.race_date)).balance + credit;
     stmts.push(
       eventStatement(
         db,
@@ -67,6 +70,8 @@ export async function settleRace(db: D1Database, race: RaceRow, nowMs: number): 
           stake: judged.reduce((s, x) => s + x.amount, 0),
           payout: judged.reduce((s, x) => s + x.payout, 0),
           refunded: list.filter((x) => x.status === 'refunded').reduce((s, x) => s + x.amount, 0),
+          balance_after: balanceAfter,
+          note: '返還と的中払戻は、その日の残高に加わり、同じ日の後のレースに使えます（翌日には繰り越しません）',
           bets: list,
         },
         nowMs,

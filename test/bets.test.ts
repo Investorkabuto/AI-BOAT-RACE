@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hitRatePct, judgeBet, normalizeCombo, rankByRecovery, recoveryPct, winningCombos, type RaceResult } from '../src/lib/bets';
+import { dayBalance, hitRatePct, judgeBet, normalizeCombo, rankByRecovery, recoveryPct, winningCombos, type RaceResult } from '../src/lib/bets';
 
 describe('normalizeCombo', () => {
   it('着順ありはそのまま、着順なしは昇順', () => {
@@ -84,5 +84,22 @@ describe('成績', () => {
       { agent_id: 'd', stake: 0, payout: 0 },
     ]);
     expect(r.map((x) => [x.agent_id, x.rank])).toEqual([['b', 1], ['c', 2], ['a', 2], ['d', 0]]);
+  });
+});
+
+describe('dayBalance（残高方式）', () => {
+  it('提出で減り、精算された返還・的中払戻で増える。精算前は差し引いたまま、取消は戻る', () => {
+    const b = dayBalance(10000, [
+      { status: 'hit', amount: 1000, payout: 3000 },
+      { status: 'miss', amount: 2000, payout: 0 },
+      { status: 'refunded', amount: 500, payout: 0 },
+      { status: 'locked', amount: 1500, payout: 0 },
+      { status: 'accepted', amount: 1000, payout: 0 },
+      { status: 'cancelled', amount: 4000, payout: 0 },
+    ]);
+    expect(b).toEqual({ start: 10000, staked: 6000, credited: 3500, balance: 7500 });
+  });
+  it('払戻で開始残高を超えて使える', () => {
+    expect(dayBalance(10000, [{ status: 'hit', amount: 10000, payout: 12000 }]).balance).toBe(12000);
   });
 });

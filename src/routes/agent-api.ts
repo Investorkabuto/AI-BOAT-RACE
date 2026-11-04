@@ -1,7 +1,7 @@
 // 参加AI向けAPI。本番（/）とサンドボックス（/sandbox）で同じ実装を使う。
 import { Hono, type Context } from 'hono';
 import { challengeTtlMs, DAILY_BUDGET, MAX_TICKETS_PER_SUBMISSION, RULES_VERSION, TACTIC_BY, TACTIC_GUIDE, TACTIC_JA, TACTICS, type Env, type Realm, type Tactic } from '../env';
-import { eventStatement, firstDeadlineMs, formatBet, stakeOfDay, statsBetween, type AgentRow, type BetRow, type RaceRow } from '../db/repo';
+import { balanceOfDay, eventStatement, firstDeadlineMs, formatBet, statsBetween, type AgentRow, type BetRow, type RaceRow } from '../db/repo';
 import { BET_SPEC, BET_TYPE_JA, BET_TYPES, hitRatePct, judgeBet, normalizeCombo, recoveryPct, UNIT, winningCombos, type BetType, type Payout } from '../lib/bets';
 import { challengeAnswer, generateChallenge } from '../lib/challenge';
 import { newId, randInt, randomToken, sha256Hex } from '../lib/crypto';
@@ -192,8 +192,8 @@ export function agentApi(realm: Realm) {
       if (!declared && (first == null || now < first)) {
         todo.push({ action: 'POST /tactic', why: `今日 ${today} の作戦が未宣言です。オーナーに「手堅く」「穴狙い」を提示して選んでもらい、最初のレースの締切までに宣言してください（選ばれなければ自分で決めて tactic_by: ai）` });
       }
-      const used = await stakeOfDay(c.env.DB, a.id, today);
-      todo.push({ action: 'GET /races?date=' + today, why: `今日の予算は残り ${DAILY_BUDGET - used} 円です。対象レースを選び、締切までに POST /bets で提出してください` });
+      const { balance } = await balanceOfDay(c.env.DB, a.id, today);
+      todo.push({ action: 'GET /races?date=' + today, why: `今日の残高は ${balance} 円です（返還・的中払戻は精算後に加わる）。対象レースを選び、締切までに POST /bets で提出してください` });
     }
     todo.push({ action: '定期実行の確認', why: '朝（作戦の宣言と出走表の確認）・日中（各レースの締切前の提出）・夜（結果の振り返りと自己改善）の定期実行が自分の側に登録されているか確認してください（/agents/quickstart.md 6章）' });
     return c.json({
@@ -275,9 +275,9 @@ export function agentApi(realm: Realm) {
       raceDate = race.race_date;
     }
     const total = tickets.reduce((s, t) => s + t.amount, 0);
-    const used = await stakeOfDay(db, agent.id, raceDate);
-    if (used + total > DAILY_BUDGET) {
-      throw new ApiError(409, 'over_budget', `${raceDate} の予算（${DAILY_BUDGET}円）を超えます。使用済み ${used}円、今回 ${total}円`, { budget: DAILY_BUDGET, used, requested: total, remaining: DAILY_BUDGET - used });
+    const before = await balanceOfDay(db, agent.id, raceDate);
+    if (total > before.balance) {
+      throw new ApiError(409, 'over_budget', `${raceDate} の残高（${before.balance}円）を超えます。今回 ${total}円`, { ...before, requested: total });
     }
     const sid = newId('sub', now);
     const ip = await ipPrefixHash(c.req.header('CF-Connecting-IP'));
@@ -285,7 +285,7 @@ export function agentApi(realm: Realm) {
       id: newId('bet', now), submission_id: sid, agent_id: agent.id, realm, race_id: raceIdIn, race_date: raceDate,
       bet_type: t.bet_type, combo: t.combo, amount: t.amount, status: 'accepted', payout: 0, refund_reason: null, received_ms: now, updated_at: jstIso(now),
     }));
-    // 予算の判定と書き込みの間に別の提出が割り込んでも超えないよう、書き込みの最後に合計を確かめ、超えていれば取り消す
+    // 残高の判定と書き込みの間に別の提出が割り込んでも超えないよう、書き込みの後に残高を確かめ、マイナスなら取り消す
     await db.batch([
       db.prepare('INSERT INTO submissions (id, agent_id, realm, race_id, race_date, rationale, idempotency_key, received_at, received_ms, ip_prefix_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .bind(sid, agent.id, realm, raceIdIn, raceDate, rationale, idem, jstIso(now), now, ip),
@@ -295,11 +295,12 @@ export function agentApi(realm: Realm) {
       ),
       eventStatement(db, agent.id, 'bets.accepted', { submission_id: sid, race_id: raceIdIn, tickets: rows.length, amount: total }, now),
     ]);
-    if ((await stakeOfDay(db, agent.id, raceDate)) > DAILY_BUDGET) {
+    const after = await balanceOfDay(db, agent.id, raceDate);
+    if (after.balance < 0) {
       await db.prepare("UPDATE bets SET status = 'cancelled', updated_at = ? WHERE submission_id = ?").bind(jstIso(now), sid).run();
-      throw new ApiError(409, 'over_budget', `${raceDate} の予算（${DAILY_BUDGET}円）を超えたため、この提出は取り消しました`);
+      throw new ApiError(409, 'over_budget', `${raceDate} の残高を超えたため、この提出は取り消しました`);
     }
-    return c.json({ submission_id: sid, race_id: raceIdIn, bets: rows.map(formatBet), budget: { date: raceDate, used: used + total, remaining: DAILY_BUDGET - used - total } }, 201);
+    return c.json({ submission_id: sid, race_id: raceIdIn, bets: rows.map(formatBet), budget: { date: raceDate, ...after } }, 201);
   });
 
   app.get('/bets', anyAgent, async (c) => {
@@ -338,8 +339,11 @@ export function agentApi(realm: Realm) {
   app.get('/budget', anyAgent, async (c) => {
     const date = c.req.query('date') ?? jstDate(c.get('now'));
     if (!isDate(date)) throw new ApiError(400, 'validation_failed', 'date は YYYY-MM-DD');
-    const used = await stakeOfDay(c.env.DB, c.get('agent').id, date);
-    return c.json({ date, budget: DAILY_BUDGET, used, remaining: DAILY_BUDGET - used, note: '取り消した舟券は使用額に含みません。未使用分は翌日に繰り越しません' });
+    const b = await balanceOfDay(c.env.DB, c.get('agent').id, date);
+    return c.json({
+      date, ...b,
+      note: `残高方式: 開始残高 ${DAILY_BUDGET}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻。精算前の舟券は差し引いたまま。残高は翌日に繰り越さず、毎日 ${DAILY_BUDGET}円に戻ります`,
+    });
   });
 
   // ---- 照会 ----
@@ -454,7 +458,7 @@ export function agentApi(realm: Realm) {
       return c.json({ race_id: raceIdIn, winning_combos: combos, payouts_used: payouts, bets: out });
     });
 
-    /** サンドボックスの舟券をすべて消す（予算も戻る） */
+    /** サンドボックスの舟券をすべて消す（残高も戻る） */
     app.post('/reset', activeAgent, async (c) => {
       const r = await c.env.DB.prepare("UPDATE bets SET status = 'cancelled', updated_at = ? WHERE agent_id = ? AND status != 'cancelled'").bind(jstIso(c.get('now')), c.get('agent').id).run();
       return c.json({ cancelled: r.meta.changes });

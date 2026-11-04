@@ -143,6 +143,29 @@ export function judgeBet(bet: BetInput, result: RaceResult): BetOutcome {
   return { status: 'hit', payout: Math.round(hits.reduce((s, p) => s + p.payout * units, 0)) };
 }
 
+export interface BalanceRow {
+  status: string;
+  amount: number;
+  payout: number;
+}
+
+/**
+ * その日の残高（残高方式、requirements.md v0.3）。
+ * 残高 = 開始残高 − 提出額（取消を除く）+ 精算済みの返還額 + 精算済みの的中払戻。
+ * 精算前（accepted・locked）の舟券は差し引いたまま。日をまたいだ加算はしない（呼び出し側が同じ開催日の舟券だけを渡す）
+ */
+export function dayBalance(start: number, rows: readonly BalanceRow[]): { start: number; staked: number; credited: number; balance: number } {
+  let staked = 0;
+  let credited = 0;
+  for (const r of rows) {
+    if (r.status === 'cancelled') continue;
+    staked += r.amount;
+    if (r.status === 'refunded') credited += r.amount;
+    else if (r.status === 'hit') credited += r.payout;
+  }
+  return { start, staked, credited, balance: start - staked + credited };
+}
+
 /** 回収率（%、小数第1位まで）。投票がなければ null */
 export function recoveryPct(payout: number, stake: number): number | null {
   return stake > 0 ? Math.round((payout / stake) * 1000) / 10 : null;
