@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import type { Env } from '../env';
 import { BET_TYPES, normalizeCombo, SPECIAL_COMBO, type BetType, type Payout } from '../lib/bets';
 import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
+import { sha256Hex } from '../lib/crypto';
 import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
 
@@ -46,6 +47,18 @@ internalApi.put('/races', async (c) => {
   }
   if (stmts.length) await c.env.DB.batch(stmts);
   return c.json({ upserted: stmts.length });
+});
+
+/**
+ * 秘密情報の設定の確認（値そのものは返さない）。管理者トークンが合わないときの調査用。
+ * 返すのは、設定の有無・文字数・前後の空白の有無・SHA-256 の先頭8文字だけ
+ */
+internalApi.get('/config-check', async (c) => {
+  const describe = async (v: string | undefined) =>
+    v === undefined
+      ? { set: false }
+      : { set: true, length: v.length, has_surrounding_whitespace: v !== v.trim(), sha256_prefix: (await sha256Hex(v.trim())).slice(0, 8) };
+  return c.json({ ADMIN_TOKEN: await describe(c.env.ADMIN_TOKEN), GITHUB_TOKEN: { set: !!c.env.GITHUB_TOKEN }, GITHUB_REPO: c.env.GITHUB_REPO ?? null });
 });
 
 /** 公式結果が必要なレース（締切後で、舟券があり、結果が未取得） */
