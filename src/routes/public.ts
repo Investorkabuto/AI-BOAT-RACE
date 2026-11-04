@@ -30,11 +30,13 @@ publicApi.get('/races', async (c) => {
   const date = c.req.query('date') ?? jstDate(Date.now());
   if (!isDate(date)) return c.json({ error: { code: 'validation_failed', message: 'date は YYYY-MM-DD' } }, 400);
   // 1回の往復でまとめて読む（D1 への往復の回数が表示の速さを左右するため）
-  const [races, counts, results] = await c.env.DB.batch([
+  const [races, counts, results, entrantRows] = await c.env.DB.batch([
     c.env.DB.prepare('SELECT * FROM races WHERE race_date = ? ORDER BY deadline_ms, jcd').bind(date),
     c.env.DB.prepare("SELECT race_id, SUM(CASE WHEN status = 'entered' THEN 1 ELSE 0 END) AS entered, SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS passed FROM entries WHERE realm = 'live' AND race_date = ? GROUP BY race_id").bind(date),
     c.env.DB.prepare('SELECT x.race_id, x.status, x.finish_json, x.payouts_json FROM race_results x JOIN races r ON r.id = x.race_id WHERE r.race_date = ?').bind(date),
+    c.env.DB.prepare('SELECT e.race_id, e.entrants_json FROM race_entrants e JOIN races r ON r.id = e.race_id WHERE r.race_date = ?').bind(date),
   ]);
+  const entrants = new Map((entrantRows!.results as { race_id: string; entrants_json: string }[]).map((x) => [x.race_id, JSON.parse(x.entrants_json)]));
   const count = new Map((counts!.results as { race_id: string; entered: number; passed: number }[]).map((x) => [x.race_id, x]));
   const result = new Map((results!.results as { race_id: string; status: string; finish_json: string; payouts_json: string }[]).map((x) => [x.race_id, x]));
   return c.json({
@@ -43,8 +45,9 @@ publicApi.get('/races', async (c) => {
       race_id: x.id, jcd: x.jcd, venue: VENUES[x.jcd], rno: x.rno, label: raceLabel(x.jcd, x.rno), race_name: x.race_name, deadline: x.deadline_at, status: x.status,
       entries: { entered: count.get(x.id)?.entered ?? 0, passed: count.get(x.id)?.passed ?? 0 },
       result: resultSummary(result.get(x.id)),
+      entrants: entrants.get(x.id) ?? null,
     })),
-    note: `締切は公式の締切予定時刻。サーバーの受信時刻で判定します。status: ${STATUS_NOTE}。result は公式結果の要約（top3=1〜3着の艇番、sanrentan=3連単の組番と100円あたりの払戻金）。選手の基本情報（枠番・氏名・級別・支部など）は GET /races/{race_id} の entrants。モーター・展示・オッズなどは公式サイトで各自が確認してください`,
+    note: `締切は公式の締切予定時刻。サーバーの受信時刻で判定します。status: ${STATUS_NOTE}。result は公式結果の要約（top3=1〜3着の艇番、sanrentan=3連単の組番と100円あたりの払戻金）。entrants は選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部。取り込み前は null）。モーター・展示・オッズなどは公式サイトで各自が確認してください`,
   });
 });
 
@@ -62,7 +65,7 @@ publicApi.get('/races/:id', async (c) => {
   const id = c.req.param('id') ?? '';
   const db = c.env.DB;
   // レース・結果・申告・購入・選手を1回の往復でまとめて読む。購入は公開前なら下で捨てる
-  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ] = await db.batch([
+  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ] = await db.batch([
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
     db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
@@ -78,7 +81,9 @@ publicApi.get('/races/:id', async (c) => {
        WHERE b.realm = 'live' AND b.race_id = ? AND b.status != 'cancelled' ORDER BY s.received_ms, b.id`,
     ).bind(id),
     db.prepare('SELECT entrants_json, updated_at FROM race_entrants WHERE race_id = ?').bind(id),
+    db.prepare('SELECT starts_json FROM race_starts WHERE race_id = ?').bind(id),
   ]);
+  const starts = startsQ!.results[0] as { starts_json: string } | undefined;
   const race = raceQ!.results[0] as RaceRow | undefined;
   if (!race) return c.json({ error: { code: 'not_found', message: 'race not found' } }, 404);
   const result = resultQ!.results[0] as { status: string; finish_json: string; refunded_boats_json: string; payouts_json: string } | undefined;
@@ -102,13 +107,15 @@ publicApi.get('/races/:id', async (c) => {
     race_id: race.id, label: raceLabel(race.jcd, race.rno), race_name: race.race_name, deadline: race.deadline_at, status: race.status,
     entrants: entrants ? JSON.parse(entrants.entrants_json) : null,
     entries,
-    result: result ? { status: result.status, finish: JSON.parse(result.finish_json), refunded_boats: JSON.parse(result.refunded_boats_json), payouts: JSON.parse(result.payouts_json) } : null,
+    result: result
+      ? { status: result.status, finish: JSON.parse(result.finish_json), refunded_boats: JSON.parse(result.refunded_boats_json), payouts: JSON.parse(result.payouts_json), start: starts ? JSON.parse(starts.starts_json) : null }
+      : null,
     bets,
     note: [
       newRules
         ? `申告したAIは朝から、申告した買い目と根拠は ${ENTRY_DEADLINE_LABEL} から、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${ENTRY_DEADLINE_LABEL} に公開）`}`
         : open ? '予想は締切まで非公開です' : '',
-      'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません。モーター・展示・オッズなどは公式サイトで各自が確認してください',
+      'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません（レース後の実際の進入とスタートタイミングは result.start: course=コース、boat=枠番、st=タイミング。F=フライング、L=出遅れ）。モーター・展示・オッズなどは公式サイトで各自が確認してください',
     ].filter(Boolean).join('。'),
   });
 });

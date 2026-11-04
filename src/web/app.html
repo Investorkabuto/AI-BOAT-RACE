@@ -100,6 +100,8 @@ nav.tabs a[aria-current=page]{color:var(--accent)}
 .rrow .no{width:44px;flex-shrink:0}.rrow .no b{display:block;font-size:20px;line-height:1.1}.rrow.past{opacity:.75}
 .ent{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.ent:last-child{border-bottom:0}
 .grade{font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--line);color:var(--sub)}.grade.A1{background:#3A3216;color:var(--gold)}.grade.A2{background:#16304A;color:#9BEFF7}
+.lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 8px;margin-top:2px}.lanes span{display:flex;align-items:center;gap:4px;font-size:12px;min-width:0;white-space:nowrap;overflow:hidden}
+.starts{display:flex;gap:6px;margin-top:12px}.starts div{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px}
 table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{padding:9px 0;border-bottom:1px solid var(--line)}table.pay td:last-child{text-align:right}
 </style>
 </head>
@@ -258,6 +260,8 @@ async function viewHome(_m, api) {
   } };
 }
 const top3 = (r) => (r.result && r.result.top3 && r.result.top3.length ? `<span style="display:flex;gap:3px">${r.result.top3.map((b) => boat(b, 22)).join('')}</span>` : '');
+const surname = (n) => Array.from(String(n || '').split(' ')[0]).slice(0, 4).join('');
+const stText = (st) => (st ? st.replace(/^0\./, '.').replace(/^([FL])0\./, '$1.') : '—');
 const dateQ = (date) => (date === today() ? '' : `?date=${date}`);
 // ---------- 会場（1R〜12R の一覧） ----------
 async function viewVenue(m, api) {
@@ -279,9 +283,10 @@ async function viewVenue(m, api) {
     const [st, cls] = raceState(r, now);
     const n = r.entries.entered + r.entries.passed;
     const res = r.result;
+    const who = new Map((r.entrants || []).map((e) => [e.boat, e]));
     const mid = res && res.status === 'official' && res.top3.length
-      ? `<div style="display:flex;align-items:center;gap:4px">${res.top3.map((b) => boat(b, 24)).join('')}</div>${res.sanrentan ? `<div class="small muted num" style="margin-top:4px">3連単 ${esc(res.sanrentan.combo)} <b style="color:var(--text)">${yen(res.sanrentan.payout)}</b></div>` : ''}`
-      : `<div style="font-size:14px;font-weight:700">${esc(r.race_name || '')}</div><div class="small muted">申告 ${n}体${r.entries.passed ? `・見送り ${r.entries.passed}` : ''}</div>`;
+      ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${res.top3.map((b) => `<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px">${boat(b, 22)}${who.has(b) ? esc(surname(who.get(b).name)) : ''}</span>`).join('')}</div>${res.sanrentan ? `<div class="small muted num" style="margin-top:4px">3連単 ${esc(res.sanrentan.combo)} <b style="color:var(--text)">${yen(res.sanrentan.payout)}</b></div>` : ''}`
+      : `${r.entrants && r.entrants.length ? `<div class="lanes">${r.entrants.map((e) => `<span>${boat(e.boat, 18)}${esc(surname(e.name))}</span>`).join('')}</div>` : `<div style="font-size:14px;font-weight:700">${esc(r.race_name || '')}</div>`}<div class="small muted" style="margin-top:4px">申告 ${n}体${r.entries.passed ? `・見送り ${r.entries.passed}` : ''}</div>`;
     return `<a class="rrow ${r.status !== 'scheduled' ? 'past' : ''}" href="/race/${r.race_id}"${nx && r.race_id === nx.race_id ? ' style="box-shadow:inset 0 0 0 1px var(--warn)"' : ''}>
       <div class="no"><b class="num">${r.rno}R</b><span class="small muted num">${hm(r.deadline)}</span></div>
       <div style="flex:1;min-width:0">${mid}</div>${chip(st, cls)}</a>`;
@@ -312,14 +317,18 @@ async function viewRace(id, api) {
   const place = new Map();
   if (r.result && r.result.status === 'official') r.result.finish.forEach((g, i) => g.forEach((b) => place.set(b, i + 1)));
   const refunded = new Set((r.result && r.result.refunded_boats) || []);
+  const start = (r.result && r.result.start) || [];
+  const courseOf = new Map(start.map((x) => [x.boat, x]));
   const official = `https://www.boatrace.jp/owpc/pc/race/racelist?rno=${rno}&jcd=${jcd}&hd=${id.slice(0, 8)}`;
   const entrantsHtml = `<div class="sect"><h2>出走表</h2><a class="small" href="${official}" target="_blank" rel="noopener">公式の出走表 ↗</a></div>
   <div class="pad">${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
     const pl = place.get(e.boat);
-    const right = refunded.has(e.boat) ? chip('返還', 'c-cancel') : pl ? `<span class="num" style="font-weight:700;font-size:15px;color:${pl === 1 ? 'var(--gold)' : pl <= 3 ? 'var(--text)' : 'var(--muted)'}">${pl}着</span>` : '';
+    const sc = courseOf.get(e.boat);
+    const right = (refunded.has(e.boat) ? chip('返還', 'c-cancel') : pl ? `<span class="num" style="font-weight:700;font-size:15px;color:${pl === 1 ? 'var(--gold)' : pl <= 3 ? 'var(--text)' : 'var(--muted)'}">${pl}着</span>` : '')
+      + (sc ? `<div class="small muted num" style="margin-top:2px">${sc.course}コース・ST ${esc(stText(sc.st))}</div>` : '');
     return `<div class="ent">${boat(e.boat, 34)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><b style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.name)}</b>${e.grade ? `<span class="grade ${esc(e.grade)}">${esc(e.grade)}</span>` : ''}</div>
-      <div class="small muted num">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div></div>${right}</div>`;
-  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。進入コースは展示・本番で変わることがあります。モーター・展示・オッズは公式サイトで確認できます。</p>`
+      <div class="small muted num">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div></div>${right ? `<div style="text-align:right;flex-shrink:0">${right}</div>` : ''}</div>`;
+  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。${start.length ? 'コースとSTはレースでの実際の進入とスタートタイミング。' : '進入コースは展示・本番で変わることがあります（レース後に実際のコースを表示します）。'}モーター・展示・オッズは公式サイトで確認できます。</p>`
     : `<div class="card small muted" style="line-height:1.7">選手の情報はまだ取り込まれていません（毎朝 7:30 ごろに更新）。</div>`}</div>`;
   const res = r.result;
   let resultHtml = '';
@@ -330,6 +339,7 @@ async function viewRace(id, api) {
     resultHtml = `
     <section class="card" style="margin:8px 16px 0"><div style="display:flex;justify-content:space-between" class="small muted"><span>着順</span><span class="num">締切 ${hm(r.deadline)}</span></div>
       <div style="margin-top:12px;display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap">${finish}</div>
+      ${res.start && res.start.length ? `<div class="small muted" style="margin-top:14px">進入とスタートタイミング（1コースから）</div><div class="starts num">${res.start.map((x) => `<div>${boat(x.boat, 30)}<span style="color:${/^[FL]/.test(x.st || '') ? 'var(--warn)' : 'var(--sub)'};font-weight:700">${esc(stText(x.st))}</span></div>`).join('')}</div>` : ''}
       ${res.refunded_boats.length ? `<div class="small" style="margin-top:10px;color:#FFB3B3">返還艇: ${res.refunded_boats.join('・')}</div>` : ''}</section>
     <section class="card" style="margin:10px 16px 0;padding-top:6px;padding-bottom:6px"><table class="pay"><tbody>${pays.map((p) => `<tr><td class="muted" style="width:68px">${esc(BET_JA[p.bet_type] || p.bet_type)}</td><td class="num" style="font-weight:700">${esc(p.combo === '*' ? '特払い' : p.combo)}</td><td class="num" style="font-weight:700">${yen(p.payout)}</td></tr>`).join('')}</tbody></table>
       <div class="small muted" style="padding:8px 0">100円あたりの払戻金（公式発表）</div></section>`;
