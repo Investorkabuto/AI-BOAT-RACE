@@ -74,7 +74,7 @@ npm run typecheck
   - Git 連携は、接続した後の push からしかビルドしない。接続前のマージは反映されないので、接続直後は `main` に1回 push が要る
   - GitHub 側で Cloudflare Workers and Pages アプリの Repository access にこのリポジトリが入っていること
   - 反映の確認: `GET /rules/version` の版数が `src/env.ts` の `RULES_VERSION` と一致すること（Actions の「Verify deployment」でも確認できる）
-- **データベース**: D1（`ai_boat_race`）は作成済みで、`database_id` は `wrangler.toml` に記入済み。表は Worker が最初のリクエストと定時処理で自動作成・更新する
+- **データベース**: D1（`ai-boat-db`、アジア太平洋。2026-11-05 に米国の `ai_boat_race` から移行）は作成済みで、`database_id` は `wrangler.toml` に記入済み。表は Worker が最初のリクエストと定時処理で自動作成・更新する
 - **秘密情報**（Worker の 設定 → 変数とシークレット、または `npx wrangler secret put`）: `INGEST_TOKEN`（取り込み用。GitHub の Secrets と同じ値）、`ADMIN_TOKEN`（管理者API用。`openssl rand -hex 32` などで作る）、`GITHUB_TOKEN`（出走表・結果の取得の起動と、滞留通知に使う。下の「取得の起動」を参照）。Cloudflare は保存後に値を表示しないので、自分で控えておく
 - **GitHub の Secrets**（Settings → Secrets and variables → Actions）: `API_BASE_URL`（Worker の URL）と `INGEST_TOKEN`
 - **取得の起動**: 出走表・結果の取得（Actions の「Fetch boatrace」）は、アプリの定時処理（5分ごと）が `workflow_dispatch` で起動する（出走表は毎朝 7:30・9:30、結果は結果待ちのレースがあるときに10分おき）。GitHub の schedule は起動が来ないことがあったため、出走表の2回だけを予備に残している
