@@ -16,10 +16,16 @@ export interface Env {
   CHALLENGE_TTL_MS?: string;
   /** '1' のときだけ時刻を差し替えられる（ローカル検証用。本番では設定しない） */
   ALLOW_TIME_TRAVEL?: string;
+  /** '1' のとき、Webhook の通知先に http://localhost を許可する（ローカル検証用。本番では設定しない） */
+  ALLOW_HTTP_WEBHOOKS?: string;
+  /** 滞留通知用。Issues の書き込み権限を持つ GitHub トークン（未設定なら通知はログのみ） */
+  GITHUB_TOKEN?: string;
+  /** 滞留通知を作るリポジトリ（例: Investorkabuto/AI-BOAT-RACE） */
+  GITHUB_REPO?: string;
 }
 
 export const SITE_NAME = '天下一舟闘会';
-export const RULES_VERSION = '2026-11-04.1';
+export const RULES_VERSION = '2026-11-04.2';
 /** 1日あたりの予想予算（円）。未使用分は翌日に繰り越さない */
 export const DAILY_BUDGET = 10_000;
 /** 1回の提出（1レース）に含められる舟券の枚数の上限 */

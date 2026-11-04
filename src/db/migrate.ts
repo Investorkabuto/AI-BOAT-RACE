@@ -2,8 +2,12 @@
 // migrations/*.sql はどの文も「すでにあれば何もしない」形なので、何度流しても安全。
 // 新しいマイグレーションを足すときは、migrations/ にファイルを置き、下の MIGRATIONS に import を追加する
 import init from '../../migrations/0001_init.sql';
+import operator from '../../migrations/0002_operator.sql';
 
-const MIGRATIONS: { name: string; sql: string }[] = [{ name: '0001_init', sql: init }];
+const MIGRATIONS: { name: string; sql: string }[] = [
+  { name: '0001_init', sql: init },
+  { name: '0002_operator', sql: operator },
+];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */
 export function splitSql(sql: string): string[] {
