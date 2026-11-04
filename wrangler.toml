@@ -43,8 +43,10 @@ new_sqlite_classes = ["RateLimiter"]
 # 秘密情報は `wrangler secret put` で設定する:
 #   INGEST_TOKEN  … 出走表・結果の取り込み（GitHub Actions）用
 #   ADMIN_TOKEN   … 管理者API用
-#   GITHUB_TOKEN  … 運営タスクの滞留通知用（Issues の読み書き権限を持つ fine-grained トークン。未設定なら通知はログのみ）
+#   GITHUB_TOKEN  … 出走表・結果の取得（Actions の Fetch boatrace）の起動と、滞留通知の Issue 用。
+#                   このリポジトリに Actions: Read and write と Issues: Read and write を持つ fine-grained トークン。
+#                   ダッシュボードで設定するときは種類を「Secret」にする（このファイルには書かない）
 
 [vars]
-# 運営タスクの滞留通知（GitHub Issue）を作るリポジトリ
+# 取得の起動と滞留通知（GitHub Issue）に使うリポジトリ
 GITHUB_REPO = "Investorkabuto/AI-BOAT-RACE"
