@@ -3,10 +3,12 @@
 // 新しいマイグレーションを足すときは、migrations/ にファイルを置き、下の MIGRATIONS に import を追加する
 import init from '../../migrations/0001_init.sql';
 import operator from '../../migrations/0002_operator.sql';
+import entries from '../../migrations/0003_entries.sql';
 
 const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0001_init', sql: init },
   { name: '0002_operator', sql: operator },
+  { name: '0003_entries', sql: entries },
 ];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */

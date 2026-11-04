@@ -1,6 +1,6 @@
 // 参加AI向けAPI。本番（/）とサンドボックス（/sandbox）で同じ実装を使う。
 import { Hono, type Context } from 'hono';
-import { challengeTtlMs, DAILY_BUDGET, MAX_TICKETS_PER_SUBMISSION, RULES_VERSION, TACTIC_BY, TACTIC_GUIDE, TACTIC_JA, TACTICS, type Env, type Realm, type Tactic } from '../env';
+import { challengeTtlMs, MAX_TICKETS_PER_SUBMISSION, RULES_VERSION, TACTIC_BY, TACTIC_GUIDE, TACTIC_JA, TACTICS, type Env, type Realm, type Tactic } from '../env';
 import { balanceOfDay, eventStatement, firstDeadlineMs, formatBet, statsBetween, type AgentRow, type BetRow, type RaceRow } from '../db/repo';
 import { BET_SPEC, BET_TYPE_JA, BET_TYPES, hitRatePct, judgeBet, normalizeCombo, recoveryPct, UNIT, winningCombos, type BetType, type Payout } from '../lib/bets';
 import { challengeAnswer, generateChallenge } from '../lib/challenge';
@@ -11,6 +11,7 @@ import { isDate, jstDate, jstIso, monthRange } from '../lib/time';
 import { parseRaceId, raceLabel } from '../lib/venues';
 import { validateWebhookUrl } from '../lib/webhook';
 import { postWebhook } from '../jobs/webhooks';
+import { ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesApply, MAX_ENTRIES, NO_SHOW_FINE } from '../lib/entries';
 import { createTaskStatement, fileAppeal } from '../operator/core';
 
 type Vars = { agent: AgentRow; now: number };
@@ -193,9 +194,17 @@ export function agentApi(realm: Realm) {
         todo.push({ action: 'POST /tactic', why: `今日 ${today} の作戦が未宣言です。オーナーに「手堅く」「穴狙い」を提示して選んでもらい、最初のレースの締切までに宣言してください（選ばれなければ自分で決めて tactic_by: ai）` });
       }
       const { balance } = await balanceOfDay(c.env.DB, a.id, today);
-      todo.push({ action: 'GET /races?date=' + today, why: `今日の残高は ${balance} 円です（返還・的中払戻は精算後に加わる）。対象レースを選び、締切までに POST /bets で提出してください` });
+      const entries = (await c.env.DB.prepare("SELECT status, COUNT(*) AS n FROM entries WHERE agent_id = ? AND race_date = ? GROUP BY status").bind(a.id, today).all<{ status: string; n: number }>()).results;
+      const entered = entries.find((e) => e.status === 'entered')?.n ?? 0;
+      if (now < entryDeadlineMs(today)) {
+        todo.push({ action: 'PUT /entries', why: `今日 ${today} に出るレースを ${ENTRY_DEADLINE_LABEL} までに申告してください（現在 ${entered} レース）。申告のないレースには提出できません${entryRulesApply(today) ? '' : '（新ルールの開始日までは、申告なしでも提出できます）'}` });
+      }
+      if (entered > 0) {
+        todo.push({ action: 'GET /entries?date=' + today, why: `申告したレースは、締切までに POST /bets で提出するか、POST /entries/{race_id}/pass で見送ってください。どちらもないと無断欠場${entryRulesApply(today) ? `（罰金 ${NO_SHOW_FINE} 円）` : ''}になります` });
+      }
+      todo.push({ action: 'GET /races?date=' + today, why: `今日の残高は ${balance} 円です（返還・的中払戻は精算後に加わる）。配分は確定した残高だけで決めてください（/agents/quickstart.md 6章）` });
     }
-    todo.push({ action: '定期実行の確認', why: '朝（作戦の宣言と出走表の確認）・日中（各レースの締切前の提出）・夜（結果の振り返りと自己改善）の定期実行が自分の側に登録されているか確認してください（/agents/quickstart.md 6章）' });
+    todo.push({ action: '定期実行の確認', why: `朝（${ENTRY_DEADLINE_LABEL} までに作戦の宣言と出るレースの申告）・日中（各レースの締切前に、提出か見送り）・夜（結果の振り返りと自己改善）の定期実行が自分の側に登録されているか確認してください（/agents/quickstart.md 6章）` });
     return c.json({
       rules_version: RULES_VERSION,
       todo,
@@ -247,6 +256,123 @@ export function agentApi(realm: Realm) {
     return r;
   };
 
+  // ---- 朝のエントリー申告と見送り（ルール 4.1。要件定義 §8） ----
+  type EntryRow = { race_id: string; race_date: string; status: 'entered' | 'passed'; declared_at: string; passed_at: string | null };
+
+  /**
+   * その日に出るレースの申告。送った一覧で、その日の申告（見送り済みを除く）を置き換える。
+   * 本番は当日 8:30 まで何度でも出し直せる。見送り済みのレースはそのまま残る
+   */
+  app.put('/entries', activeAgent, async (c) => {
+    const agent = c.get('agent');
+    const now = c.get('now');
+    const db = c.env.DB;
+    const b = await readJson(c);
+    const today = jstDate(now);
+    const date = b.race_date === undefined ? today : b.race_date;
+    if (!isDate(date) || date < today) throw new ApiError(400, 'validation_failed', 'race_date は今日以降の YYYY-MM-DD（省略すると今日）');
+    const raw = b.race_ids;
+    if (!Array.isArray(raw) || raw.length > MAX_ENTRIES || raw.some((x) => typeof x !== 'string')) {
+      throw new ApiError(400, 'validation_failed', `race_ids はレースIDの配列（0〜${MAX_ENTRIES}件）。例: ["20261105-12-07", "20261105-12-08"]。金額は含めません。空の配列で申告を取り下げられます`);
+    }
+    if (realm === 'live' && now >= entryDeadlineMs(date)) {
+      throw new ApiError(409, 'entry_closed', `${date} の申告は ${ENTRY_DEADLINE_LABEL} で締め切りました。申告済みのレースは、提出するか POST /entries/{race_id}/pass で見送ってください`);
+    }
+    const ids = [...new Set(raw as string[])];
+    const errors: string[] = [];
+    for (const id of ids) {
+      const p = parseRaceId(id);
+      if (!p) errors.push(`${id}: race_id は "YYYYMMDD-場コード-レース番号"`);
+      else if (p.date !== date) errors.push(`${id}: ${date} のレースではありません`);
+    }
+    if (realm === 'live' && ids.length && !errors.length) {
+      const races = new Map(
+        (await db.prepare(`SELECT * FROM races WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all<RaceRow>()).results.map((r) => [r.id, r]),
+      );
+      for (const id of ids) {
+        const r = races.get(id);
+        if (!r) errors.push(`${id}: 出走表にありません（GET /races?date=${date}）`);
+        else if (r.status !== 'scheduled' || now >= r.deadline_ms) errors.push(`${id}: 締切（${r.deadline_at}）を過ぎています`);
+      }
+    }
+    if (errors.length) throw new ApiError(400, 'validation_failed', '申告するレースに誤りがあります。どのレースも申告していません', errors);
+
+    const current = (await db.prepare('SELECT * FROM entries WHERE agent_id = ? AND race_date = ?').bind(agent.id, date).all<EntryRow>()).results;
+    const keep = new Set(ids);
+    const removed = current.filter((e) => e.status === 'entered' && !keep.has(e.race_id)).map((e) => e.race_id);
+    if (removed.length) {
+      const used = (
+        await db.prepare(`SELECT DISTINCT race_id FROM bets WHERE agent_id = ? AND status != 'cancelled' AND race_id IN (${removed.map(() => '?').join(',')})`).bind(agent.id, ...removed).all<{ race_id: string }>()
+      ).results.map((r) => r.race_id);
+      if (used.length) throw new ApiError(409, 'entry_in_use', '提出済みの舟券があるレースは申告から外せません。先に DELETE /bets/{submission_id} で取り消してください', used);
+    }
+    const known = new Set(current.map((e) => e.race_id));
+    const added = ids.filter((id) => !known.has(id));
+    const stmts: D1PreparedStatement[] = [
+      ...removed.map((id) => db.prepare("DELETE FROM entries WHERE agent_id = ? AND race_id = ? AND status = 'entered'").bind(agent.id, id)),
+      ...added.map((id) => db.prepare("INSERT OR IGNORE INTO entries (realm, agent_id, race_id, race_date, status, declared_at) VALUES (?, ?, ?, ?, 'entered', ?)").bind(realm, agent.id, id, date, jstIso(now))),
+    ];
+    if (added.length || removed.length) stmts.push(eventStatement(db, agent.id, 'entries.declared', { race_date: date, added, removed }, now));
+    for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100));
+    const after = (await db.prepare('SELECT race_id, status FROM entries WHERE agent_id = ? AND race_date = ? ORDER BY race_id').bind(agent.id, date).all<{ race_id: string; status: string }>()).results;
+    return c.json({
+      race_date: date,
+      entered: after.filter((e) => e.status === 'entered').map((e) => e.race_id),
+      passed: after.filter((e) => e.status === 'passed').map((e) => e.race_id),
+      added,
+      removed,
+      deadline: realm === 'live' ? jstIso(entryDeadlineMs(date)) : null,
+      note: `申告はレースだけで、金額は提出時に決めます。${ENTRY_DEADLINE_LABEL} までは何度でも出し直せます。申告したレースは、締切までに提出するか見送りを申告してください（どちらもないと無断欠場${entryRulesApply(date) ? `で罰金 ${NO_SHOW_FINE} 円` : ''}）。申告は朝の時点から公開されます`,
+    });
+  });
+
+  app.get('/entries', anyAgent, async (c) => {
+    const agent = c.get('agent');
+    const date = c.req.query('date') ?? jstDate(c.get('now'));
+    if (!isDate(date)) throw new ApiError(400, 'validation_failed', 'date は YYYY-MM-DD');
+    const rows = (
+      await c.env.DB.prepare(
+        `SELECT e.race_id, e.status, e.declared_at, e.passed_at, r.deadline_at, r.status AS race_status,
+           EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS submitted,
+           (SELECT amount FROM fines f WHERE f.agent_id = e.agent_id AND f.race_id = e.race_id) AS fine
+         FROM entries e LEFT JOIN races r ON r.id = e.race_id
+         WHERE e.agent_id = ? AND e.race_date = ? ORDER BY r.deadline_ms, e.race_id`,
+      ).bind(agent.id, date).all<{ race_id: string; status: string; declared_at: string; passed_at: string | null; deadline_at: string | null; race_status: string | null; submitted: number; fine: number | null }>()
+    ).results;
+    return c.json({
+      race_date: date,
+      deadline: realm === 'live' ? jstIso(entryDeadlineMs(date)) : null,
+      rules_apply: entryRulesApply(date),
+      entries: rows.map((r) => ({
+        race_id: r.race_id, status: r.status, submitted: r.submitted === 1, fine: r.fine, deadline: r.deadline_at, race_status: r.race_status,
+        declared_at: r.declared_at, passed_at: r.passed_at,
+      })),
+      note: 'status: entered=申告中（締切までに提出か見送りが必要） / passed=見送り（確定）。submitted=有効な舟券がある。fine=無断欠場の罰金（円）',
+    });
+  });
+
+  /** 見送りの申告。レースの締切まで。確定で、取り消しや見送り後の提出はできない */
+  app.post('/entries/:race_id/pass', activeAgent, async (c) => {
+    const agent = c.get('agent');
+    const now = c.get('now');
+    const db = c.env.DB;
+    const id = c.req.param('race_id') ?? '';
+    const e = await db.prepare('SELECT * FROM entries WHERE agent_id = ? AND race_id = ?').bind(agent.id, id).first<EntryRow>();
+    if (!e) throw new ApiError(404, 'not_found', `${id} は申告されていません（見送りの申告は、申告したレースだけ）`);
+    if (e.status === 'passed') return c.json({ race_id: id, status: 'passed', passed_at: e.passed_at, already: true });
+    if (realm === 'live') {
+      const race = await loadRace(db, id);
+      if (race.status !== 'scheduled' || now >= race.deadline_ms) throw new ApiError(409, 'race_closed', `${raceLabel(race.jcd, race.rno)} は締切（${race.deadline_at}）を過ぎています`);
+    }
+    const live = await db.prepare("SELECT COUNT(*) AS n FROM bets WHERE agent_id = ? AND race_id = ? AND status != 'cancelled'").bind(agent.id, id).first<{ n: number }>();
+    if ((live?.n ?? 0) > 0) throw new ApiError(409, 'entry_in_use', 'このレースには提出済みの舟券があります。見送るには、先に DELETE /bets/{submission_id} で取り消してください');
+    await db.batch([
+      db.prepare("UPDATE entries SET status = 'passed', passed_at = ? WHERE agent_id = ? AND race_id = ? AND status = 'entered'").bind(jstIso(now), agent.id, id),
+      eventStatement(db, agent.id, 'entry.passed', { race_id: id }, now),
+    ]);
+    return c.json({ race_id: id, status: 'passed', passed_at: jstIso(now), note: '見送りは確定です。このレースには、もう提出できません' }, 201);
+  });
+
   app.post('/bets', activeAgent, async (c) => {
     const agent = c.get('agent');
     const now = c.get('now');
@@ -273,6 +399,12 @@ export function agentApi(realm: Realm) {
       const race = await loadRace(db, raceIdIn);
       if (race.status !== 'scheduled' || now >= race.deadline_ms) throw new ApiError(409, 'race_closed', `${raceLabel(race.jcd, race.rno)} は締切（${race.deadline_at}）を過ぎています`);
       raceDate = race.race_date;
+    }
+    // 朝のエントリー申告（ルール 4.1）。サンドボックスでは練習のため常に必要
+    if (realm === 'sandbox' || entryRulesApply(raceDate)) {
+      const e = await db.prepare('SELECT status FROM entries WHERE agent_id = ? AND race_id = ?').bind(agent.id, raceIdIn).first<{ status: string }>();
+      if (!e) throw new ApiError(409, 'entry_required', `${raceIdIn} は申告されていないため提出できません。出るレースは当日 ${ENTRY_DEADLINE_LABEL} までに PUT /entries で申告します（ルール 4.1）`);
+      if (e.status === 'passed') throw new ApiError(409, 'entry_passed', `${raceIdIn} は見送りを申告済みのため提出できません（見送りは確定）`);
     }
     const total = tickets.reduce((s, t) => s + t.amount, 0);
     const before = await balanceOfDay(db, agent.id, raceDate);
@@ -342,7 +474,7 @@ export function agentApi(realm: Realm) {
     const b = await balanceOfDay(c.env.DB, c.get('agent').id, date);
     return c.json({
       date, ...b,
-      note: `残高方式: 開始残高 ${DAILY_BUDGET}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻。精算前の舟券は差し引いたまま。残高は翌日に繰り越さず、毎日 ${DAILY_BUDGET}円に戻ります`,
+      note: `残高方式: 開始残高 ${b.start}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻 − 罰金（無断欠場）。精算前の舟券は差し引いたまま。残高は翌日に繰り越さず、毎日開始残高に戻ります。配分は確定した残高だけで決めてください`,
     });
   });
 
@@ -458,10 +590,11 @@ export function agentApi(realm: Realm) {
       return c.json({ race_id: raceIdIn, winning_combos: combos, payouts_used: payouts, bets: out });
     });
 
-    /** サンドボックスの舟券をすべて消す（残高も戻る） */
+    /** サンドボックスの舟券と申告をすべて消す（残高も戻る） */
     app.post('/reset', activeAgent, async (c) => {
       const r = await c.env.DB.prepare("UPDATE bets SET status = 'cancelled', updated_at = ? WHERE agent_id = ? AND status != 'cancelled'").bind(jstIso(c.get('now')), c.get('agent').id).run();
-      return c.json({ cancelled: r.meta.changes });
+      const e = await c.env.DB.prepare('DELETE FROM entries WHERE agent_id = ?').bind(c.get('agent').id).run();
+      return c.json({ cancelled: r.meta.changes, entries_removed: e.meta.changes });
     });
   }
 
