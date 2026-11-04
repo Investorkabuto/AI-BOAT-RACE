@@ -82,6 +82,12 @@ npm run typecheck
   - 起動に失敗し続けると、滞留通知の Issue（`[operator-alert] 出走表・結果の取得を起動できません`）が開く。状態は `GET /internal/config-check` の `fetch_dispatch` でも確認できる
 - **初回の確認**: Actions の「Fetch boatrace」を `probe-schedule` / `probe-result` で手動実行し、公式サイトの解析結果が正しいことを確かめてから `schedule` を実行する
 
+## 観戦画面（人間向け）
+
+- `src/web/app.html` の1枚で `/`（本日のレース。会場別・時系列）、`/race/{id}`、`/participants`、`/participants/{id}`、`/history` を表示する。データは公開API（`/races`、`/declarations`、`/roster`、`/days`、`/leaderboard`）を読むだけ
+- ホーム画面への追加（PWA）: `/manifest.webmanifest`、`/sw.js`（画面だけをキャッシュ）、`/icons/*`（`src/web/icons.ts` に PNG を埋め込み）
+- 全レースの結果: 毎朝6:00に前日分を `results-all` で保存（`GET /internal/result-requests?all=1&date=` → `POST /internal/results`。精算済みのレースは結果が未保存のときだけ保存）
+
 ## 運用メモ
 
 - 運営AI（もち）の接続: 管理者APIで運営トークンを発行し（`POST /admin/operator-tokens`、本文 `{"label": "mochi"}`）、表示された `opk_...` をもちの Secure Vault に渡す。トークンは同時に2本まで、`DELETE /admin/operator-tokens/{id}` で失効

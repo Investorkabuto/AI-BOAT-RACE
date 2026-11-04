@@ -3,6 +3,7 @@ name: Fetch boatrace
 # 起動はアプリ（Cloudflare の定時処理、5分ごと）が workflow_dispatch で行う（src/jobs/fetch-dispatch.ts）
 #   出走表（締切予定時刻）: 毎日 日本時間 7:30 と 9:30（2回目は1回目の取りこぼし対策。締切後のレースは変わらない）
 #   公式結果: 舟券があって結果待ちのレースがあるときだけ、10分おき
+#   全レースの結果: 毎朝 6:00 に前日分（results-all。公開・振り返り用）
 # GitHub の schedule は起動が来ないことがあったため（2026-11-04）、出走表の2回だけを予備として残す。
 # 取り込みは何度実行しても安全なので、アプリからの起動と重なっても問題ない
 on:
@@ -12,12 +13,12 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "schedule / results / probe-schedule / probe-result（probe-* はアプリに書き込まず、解析結果を表示するだけ）"
+        description: "schedule / results / results-all / probe-schedule / probe-result（probe-* はアプリに書き込まず、解析結果を表示するだけ）"
         type: choice
-        options: [results, schedule, probe-schedule, probe-result]
+        options: [results, schedule, results-all, probe-schedule, probe-result]
         default: results
       date:
-        description: "schedule / probe-schedule の日付（YYYY-MM-DD、省略時は今日）"
+        description: "schedule / results-all / probe-schedule の日付（YYYY-MM-DD、省略時は今日）"
         type: string
         default: ""
       race:
@@ -32,7 +33,7 @@ concurrency:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
