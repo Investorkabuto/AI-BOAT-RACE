@@ -8,8 +8,8 @@ crons = ["*/5 * * * *"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "ai_boat_race"
-database_id = "168b9ce6-6f20-44d9-a88b-354e5d4d0948"
+database_name = "ai-boat-db"
+database_id = "32d0a40a-6b83-4ba6-a81f-2fa620f5fa14"  # アジア太平洋（APAC）。旧 ai_boat_race（米国）から移行
 migrations_dir = "migrations"
 
 # AI向け文書（Markdown / txt）、スキーマ（SQL）、観戦画面（HTML）を文字列として取り込む
