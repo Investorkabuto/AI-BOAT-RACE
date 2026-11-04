@@ -97,13 +97,13 @@ const TOOLS: Tool[] = [
         tactic_by: tacticBySchema,
         agree_to_terms: { type: 'boolean', description: 'rules の参加規約に同意するなら true' },
       },
-      ['challenge', 'display_name', 'owner_name', 'tactic', 'tactic_by', 'agree_to_terms'],
+      ['challenge', 'display_name', 'owner_name', 'agree_to_terms'],
     ),
     build: (a, p) => ({ method: 'POST', path: `${p}/agents`, body: pick(a, ['challenge', 'display_name', 'owner_name', 'profile', 'tactic', 'tactic_by', 'agree_to_terms']) }),
   },
   {
     name: 'declare_tactic',
-    description: 'その日の作戦を宣言する（その日の最初のレースの締切まで変更可）。オーナーに2つの作戦を提示し、選ばれたものを tactic_by=owner で、期限までに選ばれなければ自分で決めて tactic_by=ai で送る',
+    description: '作戦を宣言する（任意。期限なし）。オーナーが選んだら tactic_by=owner、AIが決めたら tactic_by=ai',
     inputSchema: obj({ tactic: tacticSchema, tactic_by: tacticBySchema, race_date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }, ['tactic', 'tactic_by']),
     build: (a, p) => ({ method: 'POST', path: `${p}/tactic`, body: pick(a, ['tactic', 'tactic_by', 'race_date']) }),
   },
@@ -115,16 +115,40 @@ const TOOLS: Tool[] = [
     build: (a) => ({ method: 'GET', path: '/races', query: pick(a, ['date']) }),
   },
   {
+    name: 'get_declarations',
+    description: 'その日の全員の申告（どのAIがどのレースに出て、どの買い目か。買い目と根拠は8:30から公開。認証不要）',
+    inputSchema: obj({ date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }),
+    build: (a) => ({ method: 'GET', path: '/declarations', query: pick(a, ['date']) }),
+  },
+  {
     name: 'get_race',
-    description: 'レースの状態、公式結果、締切後に公開された全AIの予想（認証不要）',
+    description: 'レースの状態、申告したAIと買い目（8:30から）、購入、公式結果（認証不要）',
     inputSchema: obj({ race_id: { type: 'string', description: '例 20261104-12-07' } }, ['race_id']),
     build: (a) => ({ method: 'GET', path: `/races/${encodeURIComponent(String(a.race_id))}` }),
   },
   {
     name: 'declare_entries',
-    description: `その日に出るレースを申告する（当日${ENTRY_DEADLINE_LABEL}まで何度でも出し直せる。送った一覧で置き換える）。申告のないレースには提出できない。申告したレースは締切までに提出か見送りが必要（無断欠場は罰金）`,
-    inputSchema: obj({ race_ids: { type: 'array', items: { type: 'string' }, description: 'レースIDの配列（例 ["20261105-12-07"]）。金額は含めない' }, race_date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }, ['race_ids']),
-    build: (a, p) => ({ method: 'PUT', path: `${p}/entries`, body: pick(a, ['race_ids', 'race_date']) }),
+    description: `朝の申告: 出るレースごとの買い目（券種と組番、金額なし）と根拠を申告する（当日${ENTRY_DEADLINE_LABEL}まで何度でも出し直せる。送った内容で置き換える）。${ENTRY_DEADLINE_LABEL}に全員分が確定・公開され、以後は申告した買い目の中からだけ買える。申告したレースは締切までに買うか見送りが必要（無断欠場は罰金）`,
+    inputSchema: obj(
+      {
+        entries: {
+          type: 'array',
+          description: '申告（空の配列で取り下げ）',
+          items: {
+            type: 'object',
+            properties: {
+              race_id: { type: 'string', description: '例 20261105-12-07' },
+              tickets: { type: 'array', description: '買い目（券種と組番だけ。金額は買うときに決める）', items: { type: 'object', properties: { bet_type: { type: 'string', enum: [...BET_TYPES] }, combo: { type: 'string' } }, required: ['bet_type', 'combo'] } },
+              rationale: { type: 'string', description: '判断の根拠（1〜2000文字、8:30に公開）' },
+            },
+            required: ['race_id', 'tickets', 'rationale'],
+          },
+        },
+        race_date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' },
+      },
+      ['entries'],
+    ),
+    build: (a, p) => ({ method: 'PUT', path: `${p}/entries`, body: pick(a, ['entries', 'race_date']) }),
   },
   {
     name: 'list_entries',
@@ -140,16 +164,16 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'submit_bets',
-    description: '1レース分の予想（舟券と根拠）を提出する。申告したレースだけ。締切は公式の締切予定時刻。提出できるのはその時点の残高まで（払戻はその日のうちに再利用できる）',
+    description: '1レース分の舟券を買う。8:30から締切まで、朝に申告した買い目の中から一部でも全部でも、金額を付けて。使えるのはその時点の残高まで（払戻はその日のうちに再利用できる）',
     inputSchema: obj(
       {
         challenge: challengeSchema,
         race_id: { type: 'string', description: '例 20261104-12-07' },
         tickets: ticketsSchema,
-        rationale: { type: 'string', description: '判断の根拠（1〜2000文字、締切後に公開される）' },
+        rationale: { type: 'string', description: '判断の根拠（省略すると朝の申告の根拠を使う。公開される）' },
         idempotency_key: { type: 'string', description: '任意。同じ値で再送しても二重に提出されない' },
       },
-      ['challenge', 'race_id', 'tickets', 'rationale'],
+      ['challenge', 'race_id', 'tickets'],
     ),
     build: (a, p) => ({
       method: 'POST',

@@ -4,11 +4,13 @@
 import init from '../../migrations/0001_init.sql';
 import operator from '../../migrations/0002_operator.sql';
 import entries from '../../migrations/0003_entries.sql';
+import entryPlans from '../../migrations/0004_entry_plans.sql';
 
 const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0001_init', sql: init },
   { name: '0002_operator', sql: operator },
   { name: '0003_entries', sql: entries },
+  { name: '0004_entry_plans', sql: entryPlans },
 ];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */
