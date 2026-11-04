@@ -32,6 +32,9 @@ USER_AGENT = "ai-boat-race-ingest/1.0 (+https://github.com/Investorkabuto/AI-BOA
 JST = dt.timezone(dt.timedelta(hours=9))
 # 公式サイトへの負荷を抑えるため、リクエストの間隔をあける（秒）
 INTERVAL = 1.0
+TIMEOUT = float(os.environ.get("BOATRACE_TIMEOUT", "30"))
+# BOATRACE_DEBUG=1 で、各リクエストのURL・状態・所要時間を標準エラーに出す
+DEBUG = os.environ.get("BOATRACE_DEBUG") == "1"
 
 BET_TYPE_BY_JA = {
     "3連単": "sanrentan",
@@ -52,10 +55,20 @@ def nfkc(s: str) -> str:
 
 def get_html(path: str, **params: str) -> str:
     query = "&".join(f"{k}={v}" for k, v in params.items())
-    req = urllib.request.Request(f"{BASE}/{path}?{query}", headers={"User-Agent": USER_AGENT, "Accept-Language": "ja"})
+    url = f"{BASE}/{path}?{query}"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Language": "ja"})
     time.sleep(INTERVAL)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8", "replace")
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            body = r.read().decode("utf-8", "replace")
+            if DEBUG:
+                print(f"GET {url} -> {r.status} {len(body)}B {time.monotonic() - started:.1f}s", file=sys.stderr, flush=True)
+            return body
+    except Exception as e:
+        if DEBUG:
+            print(f"GET {url} -> {type(e).__name__}: {e} {time.monotonic() - started:.1f}s", file=sys.stderr, flush=True)
+        raise
 
 
 def api(method: str, path: str, body: dict | None = None) -> dict:
