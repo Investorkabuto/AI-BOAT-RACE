@@ -40,3 +40,28 @@ export function normalizeEntrants(input: unknown): { ok: true; entrants: Entrant
   }
   return { ok: true, entrants: out.sort((a, b) => a.boat - b.boat) };
 }
+
+export interface Start {
+  course: number; // 進入コース 1〜6
+  boat: number; // 枠番
+  st: string | null; // スタートタイミング（"0.15"、フライングは "F0.01"、出遅れは "L"）
+}
+
+/** 結果ページのスタート情報を検証して正規化する。形が正しくなければ null（結果の取り込み自体は止めない） */
+export function normalizeStarts(input: unknown): Start[] | null {
+  if (!Array.isArray(input) || input.length < 1 || input.length > 6) return null;
+  const out: Start[] = [];
+  const boats = new Set<number>();
+  const courses = new Set<number>();
+  for (const raw of input) {
+    if (!raw || typeof raw !== 'object') return null;
+    const { course, boat, st } = raw as Record<string, unknown>;
+    if (typeof course !== 'number' || !Number.isInteger(course) || course < 1 || course > 6 || courses.has(course)) return null;
+    if (typeof boat !== 'number' || !Number.isInteger(boat) || boat < 1 || boat > 6 || boats.has(boat)) return null;
+    courses.add(course);
+    boats.add(boat);
+    const s = typeof st === 'string' ? st.normalize('NFKC').replace(/\s+/g, '').toUpperCase() : '';
+    out.push({ course, boat, st: /^(?:[FL]?\d?\.\d{2}|L|K)$/.test(s) ? (s.startsWith('.') ? `0${s}` : s.replace(/^([FL])\./, '$10.')) : null });
+  }
+  return out.sort((a, b) => a.course - b.course);
+}

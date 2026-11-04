@@ -6,3 +6,11 @@ CREATE TABLE IF NOT EXISTS race_entrants (
   entrants_json TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
+
+-- 実際の進入コースとスタートタイミング（公式結果ページのスタート情報）。レース後に結果と一緒に取り込む
+-- starts_json: [{"course":1,"boat":1,"st":"0.15"}, ...]（course 順。st はフライングなら "F0.01"、出遅れなら "L"）
+CREATE TABLE IF NOT EXISTS race_starts (
+  race_id     TEXT PRIMARY KEY REFERENCES races (id),
+  starts_json TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);

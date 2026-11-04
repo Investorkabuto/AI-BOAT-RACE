@@ -217,6 +217,36 @@ def parse_combo(cell) -> str | None:
     return re.sub(r"\s+", "", m.group(0)) if m else None
 
 
+def parse_start(soup) -> list[dict] | None:
+    """結果ページの「スタート情報」から、進入コース順の艇番とスタートタイミングを取り出す。
+
+    表は上から1コース、2コース…の順に並び、各行に艇番（class に table1_boatImage1Number）と
+    タイミング（table1_boatImage1Time。「.15」「F.01」、1着艇には決まり手も続く）がある。解析できなければ None
+    """
+    for table in soup.find_all("table"):
+        head = table.find("thead")
+        if head is None or "スタート情報" not in head.get_text():
+            continue
+        out: list[dict] = []
+        for tr in (table.find("tbody") or table).find_all("tr"):
+            num = tr.select_one('[class*="boatImage1Number"]')
+            boat_text = nfkc(num.get_text()) if num else ""
+            if not re.fullmatch(r"[1-6]", boat_text):
+                m = re.match(r"\s*([1-6])\b", nfkc(tr.get_text(" ")))
+                boat_text = m.group(1) if m else ""
+            if not boat_text:
+                continue
+            tm = tr.select_one('[class*="boatImage1Time"]')
+            t = nfkc(tm.get_text(" ") if tm else tr.get_text(" "))
+            st = re.search(r"([FL]?\s*\d?\.\d{2})|\bL\b", t)
+            out.append({"course": len(out) + 1, "boat": int(boat_text), "st": re.sub(r"\s+", "", st.group(0)) if st else None})
+        boats = [x["boat"] for x in out]
+        if 1 <= len(out) <= 6 and len(set(boats)) == len(boats):
+            return out
+        return None
+    return None
+
+
 def parse_result(html: str) -> dict | None:
     """結果ページを解析する。結果がまだ無ければ None。中止なら status=cancelled"""
     soup = BeautifulSoup(html, "html.parser")
@@ -274,7 +304,11 @@ def parse_result(html: str) -> dict | None:
         if re.search(r"レース中止|中止となりました|不成立", text):
             return {"status": "cancelled", "finish": [], "refunded_boats": [], "payouts": []}
         return None
-    return {"status": "official", "finish": finish, "refunded_boats": sorted(refunded), "payouts": payouts}
+    out = {"status": "official", "finish": finish, "refunded_boats": sorted(refunded), "payouts": payouts}
+    start = parse_start(soup)
+    if start:
+        out["start"] = start
+    return out
 
 
 def fetch_result(race_id: str) -> dict | None:

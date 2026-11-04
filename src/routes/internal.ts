@@ -6,7 +6,7 @@ import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
 import { sha256Hex } from '../lib/crypto';
 import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
-import { normalizeEntrants } from '../lib/entrants';
+import { normalizeEntrants, normalizeStarts } from '../lib/entrants';
 import { fetchDispatchError, RESULT_WANTED_SQL, resultWantedArgs } from '../jobs/fetch-dispatch';
 import { waiveFinesForCancelled } from '../jobs/settlement';
 
@@ -138,6 +138,7 @@ interface ResultIn {
   finish?: unknown;
   refunded_boats?: unknown;
   payouts?: { bet_type: string; combo: string; payout: number }[];
+  start?: unknown; // スタート情報 [{course, boat, st}]（任意。解析できなければ省く）
 }
 
 /**
@@ -172,9 +173,18 @@ internalApi.post('/results', async (c) => {
          WHERE EXISTS (SELECT 1 FROM races WHERE id = excluded.race_id AND status IN ('scheduled', 'locked'))`,
       ).bind(r.race_id, r.status, JSON.stringify(finish), JSON.stringify(refunded), JSON.stringify(payouts), now, r.race_id),
     );
+    const starts = r.status === 'official' ? normalizeStarts(r.start) : null;
+    if (starts) {
+      stmts.push(
+        c.env.DB.prepare(
+          `INSERT INTO race_starts (race_id, starts_json, updated_at) SELECT id, ?, ? FROM races WHERE id = ?
+           ON CONFLICT (race_id) DO UPDATE SET starts_json = excluded.starts_json, updated_at = excluded.updated_at`,
+        ).bind(JSON.stringify(starts), now, r.race_id),
+      );
+    }
   }
   if (stmts.length) await c.env.DB.batch(stmts);
   const cancelled = (b.results as ResultIn[]).filter((r) => r.status === 'cancelled').map((r) => r.race_id);
   const waived = cancelled.length ? await waiveFinesForCancelled(c.env.DB, cancelled, Date.now()) : 0;
-  return c.json({ upserted: stmts.length, fines_waived: waived });
+  return c.json({ upserted: (b.results as ResultIn[]).length, starts: stmts.length - (b.results as ResultIn[]).length, fines_waived: waived });
 });
