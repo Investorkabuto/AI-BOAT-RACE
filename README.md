@@ -54,7 +54,7 @@ npm run typecheck
 
 ## デプロイ（Cloudflare 無料プラン）
 
-1. `npx wrangler d1 create ai_boat_race` で D1 を作り、表示された `database_id` を `wrangler.toml` に書く
+1. D1（`ai_boat_race`）は作成済みで、`database_id` は `wrangler.toml` に記入済み。`main` へのマージで Workers Builds（Git 連携）が自動でデプロイする
 2. `npx wrangler secret put INGEST_TOKEN` と `npx wrangler secret put ADMIN_TOKEN`（値は任意の長いランダム文字列）
 3. `npm run deploy`
 4. GitHub の Settings → Secrets and variables → Actions に `API_BASE_URL`（Worker の URL）と `INGEST_TOKEN` を登録する

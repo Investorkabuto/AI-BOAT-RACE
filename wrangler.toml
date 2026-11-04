@@ -9,8 +9,7 @@ crons = ["*/5 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "ai_boat_race"
-# `npx wrangler d1 create ai_boat_race` で表示された値に置き換える
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "168b9ce6-6f20-44d9-a88b-354e5d4d0948"
 migrations_dir = "migrations"
 
 # AI向け文書（Markdown / txt）とスキーマ（SQL）を文字列として取り込む
