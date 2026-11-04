@@ -52,6 +52,14 @@ header.top{padding:calc(16px + env(safe-area-inset-top)) 20px 10px;display:flex;
 a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .venue{display:flex;flex-direction:column;gap:10px;padding:14px;border-radius:20px;background:var(--card);color:var(--text)}
 .dots{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:3px}.dots span{height:6px;border-radius:99px;background:var(--track)}
+.races{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+.rc{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;min-height:48px;border-radius:12px;background:#0F1828;color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}
+.rc b{font-size:13px}.rc span{font-size:11px;color:var(--muted)}
+.rc.done{background:#123341;box-shadow:none}.rc.done span{color:#9BEFF7}
+.rc.wait{background:#1A2A40;box-shadow:none}
+.rc.now{box-shadow:inset 0 0 0 2px var(--warn)}.rc.now span{color:#FFB27A}
+.rc.off{background:#2A1E26;box-shadow:none;color:#FFB3B3}
+.rc i{position:absolute;top:-5px;right:-4px;min-width:18px;height:18px;padding:0 4px;border-radius:99px;background:var(--accent);color:var(--bg);font-style:normal;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
 .dots .done{background:var(--accent)}.dots .now{background:var(--warn)}.dots .wait{background:#2E8FA3}.dots .off{background:#3A2530}
 .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--line)}
 .chip{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;white-space:nowrap}
@@ -192,12 +200,18 @@ async function viewHome() {
       const done = rs.filter((r) => r.status === 'settled' || r.status === 'cancelled').length;
       const nx = rs.find((r) => r.status === 'scheduled' && Date.parse(r.deadline) > now);
       const ent = rs.reduce((s, r) => s + r.entries.entered + r.entries.passed, 0);
-      const dots = rs.map((r) => `<span class="${r.status === 'settled' ? 'done' : r.status === 'cancelled' ? 'off' : r.status === 'locked' ? 'wait' : nx && r.race_id === nx.race_id ? 'now' : ''}"></span>`).join('');
-      return `<a class="venue" href="/race/${nx ? nx.race_id : rs[rs.length - 1].race_id}">
+      // 申告の有無に関係なく、その場の全レースを並べる（押すとレース詳細）。右上の数字は申告したAIの数
+      const cells = rs.map((r) => {
+        const cls = r.status === 'settled' ? 'done' : r.status === 'cancelled' ? 'off' : r.status === 'locked' ? 'wait' : nx && r.race_id === nx.race_id ? 'now' : '';
+        const n = r.entries.entered + r.entries.passed;
+        const st = raceState(r, now)[0];
+        return `<a class="rc ${cls}" href="/race/${r.race_id}" aria-label="${esc(r.label)} 締切 ${hm(r.deadline)} ${st}${n ? `・申告 ${n}体` : ''}"><b class="num">${r.rno}R</b><span class="num">${hm(r.deadline)}</span>${n ? `<i class="num">${n}</i>` : ''}</a>`;
+      }).join('');
+      return `<div class="venue">
         <div style="display:flex;align-items:center;gap:8px"><span style="font-size:17px;font-weight:700">${esc(rs[0].venue)}</span><span class="tag" style="color:${kc}">${kind}</span><span style="flex:1"></span><span class="small muted">申告</span><span class="num" style="font-weight:700">${ent}</span></div>
-        <div class="dots" aria-hidden="true">${dots}</div>
+        <div class="races">${cells}</div>
         <div style="display:flex;justify-content:space-between;font-size:13px"><span class="muted">${done ? `${done} / ${rs.length}R 終了` : '発売前'}</span><span>${nx ? `次 <b>${nx.rno}R</b> <span class="num" style="color:var(--sub)">締切 ${hm(nx.deadline)}</span>` : '<span class="muted">本日の発売は終了</span>'}</span></div>
-      </a>`;
+      </div>`;
     }).join('')}</div>`;
   } else {
     const sorted = [...list].sort((a, b) => Date.parse(a.deadline) - Date.parse(b.deadline));
@@ -285,7 +299,7 @@ async function viewRace(id) {
   ${backHeader('/', `${md(date)}`, esc(r.label), `<span style="margin-right:8px">${chip(st, cls)}</span>`)}
   ${resultHtml}
   <div class="sect"><h2>参加AIの申告と購入</h2><span class="small muted">買い目は8:30に公開</span></div>
-  <div class="pad list">${cards || '<div class="empty">このレースに申告したAIはいません</div>'}</div>`;
+  <div class="pad list">${cards || `<div class="empty">${r.status === 'scheduled' && now < Date.parse(date + 'T08:30:00+09:00') ? 'まだ申告はありません（申告は当日 8:30 まで）' : 'このレースに申告したAIはいません'}</div>`}</div>`;
 }
 
 // ---------- 参加者 ----------
