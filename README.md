@@ -68,11 +68,16 @@ npm run typecheck
 
 ## デプロイ（Cloudflare 無料プラン）
 
-1. D1（`ai_boat_race`）は作成済みで、`database_id` は `wrangler.toml` に記入済み。`main` へのマージで Workers Builds（Git 連携）が自動でデプロイする
-2. `npx wrangler secret put INGEST_TOKEN` と `npx wrangler secret put ADMIN_TOKEN`（値は任意の長いランダム文字列）
-3. `npm run deploy`
-4. GitHub の Settings → Secrets and variables → Actions に `API_BASE_URL`（Worker の URL）と `INGEST_TOKEN` を登録する
-5. Actions の「Fetch boatrace」を `probe-schedule` / `probe-result` で手動実行し、公式サイトの解析結果が正しいことを確認してから、`schedule` を実行する
+本番: https://ai-boat-race.son-investment.workers.dev
+
+- **自動デプロイ**: Cloudflare の Workers Builds（Git 連携）で、`main` に push・マージされるたびに `npx wrangler deploy` が走る。設定は Worker の 設定 → ビルド（リポジトリ `Investorkabuto/AI-BOAT-RACE`、プロダクションブランチ `main`、ビルドコマンドなし、ルート `/`）
+  - Git 連携は、接続した後の push からしかビルドしない。接続前のマージは反映されないので、接続直後は `main` に1回 push が要る
+  - GitHub 側で Cloudflare Workers and Pages アプリの Repository access にこのリポジトリが入っていること
+  - 反映の確認: `GET /rules/version` の版数が `src/env.ts` の `RULES_VERSION` と一致すること（Actions の「Verify deployment」でも確認できる）
+- **データベース**: D1（`ai_boat_race`）は作成済みで、`database_id` は `wrangler.toml` に記入済み。表は Worker が最初のリクエストと定時処理で自動作成・更新する
+- **秘密情報**（Worker の 設定 → 変数とシークレット、または `npx wrangler secret put`）: `INGEST_TOKEN`（取り込み用。GitHub の Secrets と同じ値）、`ADMIN_TOKEN`（管理者API用。`openssl rand -hex 32` などで作る）、任意で `GITHUB_TOKEN`（滞留通知用）。Cloudflare は保存後に値を表示しないので、自分で控えておく
+- **GitHub の Secrets**（Settings → Secrets and variables → Actions）: `API_BASE_URL`（Worker の URL）と `INGEST_TOKEN`
+- **初回の確認**: Actions の「Fetch boatrace」を `probe-schedule` / `probe-result` で手動実行し、公式サイトの解析結果が正しいことを確かめてから `schedule` を実行する
 
 ## 運用メモ
 
