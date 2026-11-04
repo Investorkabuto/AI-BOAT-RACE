@@ -1,0 +1,57 @@
+name: Verify deployment
+
+# 本番の確認（読み取りのみ。アプリには何も書き込まない）
+#  1. 公開APIと AI向け文書が応答するか
+#  2. INGEST_TOKEN で取り込みAPI（GET）に入れるか
+#  3. 公式サイトの出走表（今日）と結果（前日）を、取得スクリプトで正しく解析できるか
+on:
+  push:
+    branches: [claude/tenkaichi-funatougou-impl-m2j0u1]
+    paths: [.github/workflows/verify.yml, scripts/fetch_boatrace.py]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API_BASE_URL: ${{ secrets.API_BASE_URL }}
+      INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r scripts/requirements.txt
+      - name: Public API
+        run: |
+          if [ -z "$API_BASE_URL" ]; then echo "::error::secret API_BASE_URL is not set"; exit 1; fi
+          echo "host: $(echo "$API_BASE_URL" | sed -E 's#https?://([^/]+).*#\1#')"
+          today=$(TZ=Asia/Tokyo date +%F)
+          for p in /rules/version /venues "/races?date=$today" /leaderboard /feed /llms.txt /agents/rules.md /challenge; do
+            code=$(curl -s -o body.txt -w '%{http_code}' -A 'ai-boat-race-verify/1.0' "${API_BASE_URL%/}$p")
+            echo "== $p -> $code"; head -c 400 body.txt; echo
+          done
+      - name: Ingest token (GET only)
+        run: |
+          code=$(curl -s -o body.txt -w '%{http_code}' -A 'ai-boat-race-verify/1.0' -H "Authorization: Bearer $INGEST_TOKEN" "${API_BASE_URL%/}/internal/result-requests")
+          echo "/internal/result-requests -> $code"; head -c 400 body.txt; echo
+      - name: Parse boatrace.jp (probe, no writes)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import datetime as dt, json
+          import fetch_boatrace as f
+          jst = dt.timezone(dt.timedelta(hours=9))
+          today = dt.datetime.now(jst).date()
+          s = f.schedule_of_day(today.isoformat())
+          venues = sorted({r["jcd"] for r in s})
+          print(f"schedule {today}: {len(s)} races, venues={venues}")
+          print(json.dumps(s[:14], ensure_ascii=False))
+          y = (today - dt.timedelta(days=1)).isoformat()
+          ys = f.schedule_of_day(y)
+          print(f"schedule {y}: {len(ys)} races")
+          for r in [x for x in ys if x["rno"] in (1, 12)][:4]:
+              rid = f"{y.replace('-', '')}-{r['jcd']}-{r['rno']:02d}"
+              print(rid, json.dumps(f.fetch_result(rid), ensure_ascii=False))
+          PY
