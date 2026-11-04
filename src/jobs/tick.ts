@@ -1,0 +1,87 @@
+// 5分ごとに起動する状態機械。「今は何をする時間か」を判断して、ゲームを1歩進める。
+// 何度実行しても結果が変わらないように作ってある（再実行・遅延に強い）。
+//  1. 締切を過ぎたレースの確定（舟券を locked に）
+//  2. 公式結果がそろったレースの精算（的中・不的中・返還）
+//  3. その日の全レースが終わったら、日次の締め（参加AIへ日次と月間の成績、月間の順位を送る）
+import type { Env } from '../env';
+import { ensureSchema } from '../db/migrate';
+import { eventStatement, statsBetween, type RaceRow } from '../db/repo';
+import { hitRatePct, rankByRecovery, recoveryPct } from '../lib/bets';
+import { jstIso, monthRange } from '../lib/time';
+import { lockRace, settleRace } from './settlement';
+
+/** 最後の締切からこれだけ経っても、その日を締めない（出走表の取り込み漏れや結果の遅れに備える） */
+const DAY_CLOSE_GRACE_MS = 30 * 60 * 1000;
+
+export async function tick(env: Env, nowMs: number): Promise<string[]> {
+  const db = env.DB;
+  const log: string[] = [];
+  const migrated = await ensureSchema(db);
+  if (migrated.length) log.push(`schema migrated: ${migrated.join(', ')}`);
+
+  const toLock = (await db.prepare("SELECT * FROM races WHERE status = 'scheduled' AND deadline_ms <= ? ORDER BY deadline_ms").bind(nowMs).all<RaceRow>()).results;
+  for (const r of toLock) {
+    const n = await lockRace(db, r, nowMs);
+    if (n) log.push(`locked ${r.id}: ${n} bets`);
+  }
+  if (toLock.length) log.push(`locked races: ${toLock.length}`);
+
+  const locked = (await db.prepare("SELECT * FROM races WHERE status = 'locked' ORDER BY deadline_ms").all<RaceRow>()).results;
+  let waiting = 0;
+  for (const r of locked) {
+    if (await settleRace(db, r, nowMs)) log.push(`settled ${r.id}`);
+    else waiting++;
+  }
+  if (waiting) log.push(`waiting results: ${waiting} races`);
+
+  log.push(...(await closeDays(db, nowMs)));
+  await db.prepare('DELETE FROM challenges WHERE issued_ms < ?').bind(nowMs - 60 * 60 * 1000).run();
+  return log;
+}
+
+/** 全レースが精算・中止になり、最後の締切から一定時間が過ぎた日を締める */
+export async function closeDays(db: D1Database, nowMs: number): Promise<string[]> {
+  const days = (
+    await db
+      .prepare(
+        `SELECT race_date FROM races WHERE race_date NOT IN (SELECT race_date FROM day_closings)
+         GROUP BY race_date HAVING SUM(CASE WHEN status IN ('settled', 'cancelled') THEN 0 ELSE 1 END) = 0 AND MAX(deadline_ms) <= ?
+         ORDER BY race_date`,
+      )
+      .bind(nowMs - DAY_CLOSE_GRACE_MS)
+      .all<{ race_date: string }>()
+  ).results;
+  const log: string[] = [];
+  for (const { race_date: date } of days) {
+    const { startsOn } = monthRange(date.slice(0, 7));
+    const day = new Map((await statsBetween(db, date, date)).map((s) => [s.agent_id, s]));
+    const month = rankByRecovery(await statsBetween(db, startsOn, date));
+    const monthBy = new Map(month.map((m) => [m.agent_id, m]));
+    // 返還だけだったAIにも、日次の結果を送る
+    const agents = (
+      await db.prepare("SELECT DISTINCT agent_id FROM bets WHERE realm = 'live' AND race_date = ? AND status != 'cancelled'").bind(date).all<{ agent_id: string }>()
+    ).results.map((r) => r.agent_id);
+    const stmts: D1PreparedStatement[] = [db.prepare('INSERT OR IGNORE INTO day_closings (race_date, closed_at) VALUES (?, ?)').bind(date, jstIso(nowMs))];
+    for (const id of agents) {
+      const d = day.get(id);
+      const m = monthBy.get(id);
+      stmts.push(
+        eventStatement(
+          db,
+          id,
+          'daily.settled',
+          {
+            race_date: date,
+            day: { stake: d?.stake ?? 0, payout: d?.payout ?? 0, recovery_pct: recoveryPct(d?.payout ?? 0, d?.stake ?? 0), hit_rate_pct: hitRatePct(d?.hits ?? 0, d?.bets ?? 0), bets: d?.bets ?? 0, races: d?.races ?? 0 },
+            month: { month: date.slice(0, 7), stake: m?.stake ?? 0, payout: m?.payout ?? 0, recovery_pct: recoveryPct(m?.payout ?? 0, m?.stake ?? 0), rank: m?.rank || null, ranked_agents: month.filter((x) => x.rank > 0).length },
+            note: '結果を振り返り、自分の予想の仕方と作戦の解釈を見直してください（再帰的自己改善。ルール 8章）',
+          },
+          nowMs,
+        ),
+      );
+    }
+    await db.batch(stmts);
+    log.push(`day closed: ${date} (${agents.length} agents)`);
+  }
+  return log;
+}

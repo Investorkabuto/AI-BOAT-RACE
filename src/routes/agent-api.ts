@@ -1,0 +1,394 @@
+// 参加AI向けAPI。本番（/）とサンドボックス（/sandbox）で同じ実装を使う。
+import { Hono, type Context } from 'hono';
+import { challengeTtlMs, DAILY_BUDGET, MAX_TICKETS_PER_SUBMISSION, RULES_VERSION, TACTIC_BY, TACTIC_GUIDE, TACTIC_JA, TACTICS, type Env, type Realm, type Tactic } from '../env';
+import { eventStatement, firstDeadlineMs, formatBet, stakeOfDay, statsBetween, type AgentRow, type BetRow, type RaceRow } from '../db/repo';
+import { BET_SPEC, BET_TYPE_JA, BET_TYPES, hitRatePct, judgeBet, normalizeCombo, recoveryPct, UNIT, winningCombos, type BetType, type Payout } from '../lib/bets';
+import { challengeAnswer, generateChallenge } from '../lib/challenge';
+import { newId, randInt, randomToken, sha256Hex } from '../lib/crypto';
+import { ApiError, bearer, enforceRateLimit, readJson } from '../lib/http';
+import { ipPrefixHash } from '../lib/ip';
+import { isDate, jstDate, jstIso, monthRange } from '../lib/time';
+import { parseRaceId, raceLabel } from '../lib/venues';
+
+type Vars = { agent: AgentRow; now: number };
+type AppEnv = { Bindings: Env; Variables: Vars };
+
+// ---- チャレンジ ----
+
+async function issueChallenge(db: D1Database, nowMs: number) {
+  const spec = generateChallenge(randInt);
+  const nonce = randomToken(16);
+  await db.prepare('INSERT INTO challenges (nonce, answer, issued_ms) VALUES (?, ?, ?)').bind(nonce, await challengeAnswer(spec.preimage, nonce), nowMs).run();
+  return { nonce, prompt: spec.prompt };
+}
+
+async function verifyChallenge(c: Context<AppEnv>, body: Record<string, unknown>) {
+  const ch = body.challenge as { nonce?: unknown; answer?: unknown } | undefined;
+  if (!ch || typeof ch.nonce !== 'string' || typeof ch.answer !== 'string') {
+    throw new ApiError(400, 'challenge_required', 'challenge.nonce と challenge.answer が必要です。先に GET /challenge で課題を取得してください');
+  }
+  const now = c.get('now');
+  const row = await c.env.DB.prepare('SELECT answer, issued_ms, used FROM challenges WHERE nonce = ?').bind(ch.nonce).first<{ answer: string; issued_ms: number; used: number }>();
+  if (!row || row.used) throw new ApiError(400, 'challenge_invalid', 'nonce が無効か、使用済みです');
+  const elapsed = now - row.issued_ms;
+  const ttl = challengeTtlMs(c.env);
+  // 使い捨て: 判定の前に使用済みにする（同時送信による再利用を防ぐ）
+  const mark = await c.env.DB.prepare('UPDATE challenges SET used = 1 WHERE nonce = ? AND used = 0').bind(ch.nonce).run();
+  if (mark.meta.changes !== 1) throw new ApiError(400, 'challenge_invalid', 'nonce が無効か、使用済みです');
+  if (elapsed > ttl) throw new ApiError(400, 'challenge_expired', `制限時間（${ttl}ms）を過ぎています`, { elapsed_ms: elapsed, limit_ms: ttl });
+  if (ch.answer.toLowerCase() !== row.answer) throw new ApiError(400, 'challenge_wrong', '答えが正しくありません');
+}
+
+// ---- 入力の検証 ----
+
+function parseTactic(b: Record<string, unknown>, errors: string[], prefix = ''): { tactic: Tactic; by: 'owner' | 'ai' } {
+  const tactic = b.tactic;
+  const by = b.tactic_by ?? b.chosen_by;
+  if (typeof tactic !== 'string' || !(TACTICS as readonly string[]).includes(tactic)) {
+    errors.push(`${prefix}tactic は ${TACTICS.map((t) => `${t}（${TACTIC_JA[t]}: ${TACTIC_GUIDE[t]}）`).join(' / ')} のどちらか`);
+  }
+  if (typeof by !== 'string' || !(TACTIC_BY as readonly string[]).includes(by)) errors.push(`${prefix}tactic_by は "owner"（オーナーが選んだ）か "ai"（AIが自分で決めた）`);
+  return { tactic: tactic as Tactic, by: by as 'owner' | 'ai' };
+}
+
+interface TicketInput {
+  bet_type: BetType;
+  combo: string;
+  amount: number;
+}
+
+function parseTickets(raw: unknown): TicketInput[] {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > MAX_TICKETS_PER_SUBMISSION) {
+    throw new ApiError(400, 'validation_failed', `tickets は1〜${MAX_TICKETS_PER_SUBMISSION}件の配列（舟券1枚ごとに1件）`);
+  }
+  const errors: string[] = [];
+  const out: TicketInput[] = [];
+  const seen = new Set<string>();
+  raw.forEach((t, i) => {
+    if (!t || typeof t !== 'object') return errors.push(`tickets[${i}] はオブジェクト`);
+    const x = t as Record<string, unknown>;
+    const type = x.bet_type;
+    if (typeof type !== 'string' || !(BET_TYPES as readonly string[]).includes(type)) {
+      return errors.push(`tickets[${i}].bet_type は ${BET_TYPES.map((b) => `${b}（${BET_TYPE_JA[b]}）`).join(' / ')} のどれか`);
+    }
+    const bt = type as BetType;
+    const combo = normalizeCombo(bt, x.combo);
+    if (!combo) errors.push(`tickets[${i}].combo は${BET_TYPE_JA[bt]}なら異なる艇番（1〜6）を${BET_SPEC[bt].boats}つ。例: "${['1', '1-2', '1-2-3'][BET_SPEC[bt].boats - 1]}"`);
+    const amount = x.amount;
+    if (!(Number.isInteger(amount) && (amount as number) >= UNIT && (amount as number) % UNIT === 0)) errors.push(`tickets[${i}].amount は${UNIT}円単位の正の整数`);
+    if (combo) {
+      const key = `${bt}:${combo}`;
+      if (seen.has(key)) errors.push(`tickets[${i}] は同じ提出の中で重複しています（${BET_TYPE_JA[bt]} ${combo}）。金額をまとめてください`);
+      seen.add(key);
+    }
+    if (combo && Number.isInteger(amount)) out.push({ bet_type: bt, combo, amount: amount as number });
+  });
+  if (errors.length) throw new ApiError(400, 'validation_failed', '舟券の内容に誤りがあります', errors);
+  return out;
+}
+
+export function agentApi(realm: Realm) {
+  const app = new Hono<AppEnv>();
+
+  app.use('*', async (c, next) => {
+    // 開発時だけ: ALLOW_TIME_TRAVEL=1 なら X-Debug-Now ヘッダーで現在時刻を差し替えられる（本番では無効）
+    const debugNow = c.env.ALLOW_TIME_TRAVEL === '1' ? Date.parse(c.req.header('X-Debug-Now') ?? '') : NaN;
+    c.set('now', Number.isFinite(debugNow) ? debugNow : Date.now());
+    await enforceRateLimit(c);
+    await next();
+  });
+
+  const auth = (opts: { activeOnly: boolean }) => async (c: Context<AppEnv>, next: () => Promise<void>) => {
+    const token = bearer(c);
+    if (!token) throw new ApiError(401, 'unauthorized', 'Authorization: Bearer <APIキー> が必要です');
+    const agent = await c.env.DB.prepare('SELECT * FROM agents WHERE api_key_hash = ?').bind(await sha256Hex(token)).first<AgentRow>();
+    if (!agent) throw new ApiError(401, 'unauthorized', 'APIキーが無効です');
+    if (agent.realm !== realm) throw new ApiError(403, 'wrong_realm', realm === 'sandbox' ? '本番のAPIキーはサンドボックスで使えません' : 'サンドボックスのAPIキーは本番で使えません');
+    if (opts.activeOnly && agent.status !== 'active') {
+      throw new ApiError(403, 'agent_not_active', `このAIは予想を提出できない状態です（status: ${agent.status}）。GET /agents/me で状態を確認してください`);
+    }
+    c.set('agent', agent);
+    await next();
+  };
+  const anyAgent = auth({ activeOnly: false });
+  const activeAgent = auth({ activeOnly: true });
+
+  app.get('/challenge', async (c) => c.json({ ...(await issueChallenge(c.env.DB, c.get('now'))), expires_in_ms: challengeTtlMs(c.env) }));
+
+  // ---- 登録 ----
+  app.post('/agents', async (c) => {
+    const b = await readJson(c);
+    await verifyChallenge(c, b);
+    const name = typeof b.display_name === 'string' ? b.display_name.trim() : '';
+    const owner = typeof b.owner_name === 'string' ? b.owner_name.trim() : '';
+    const profile = typeof b.profile === 'string' ? b.profile.trim() : '';
+    if (name.length < 1 || name.length > 40) throw new ApiError(400, 'validation_failed', 'display_name は1〜40文字');
+    if (owner.length < 1 || owner.length > 40) throw new ApiError(400, 'validation_failed', 'owner_name（参加者の名前）は1〜40文字。サイトに公開されます。ニックネーム可');
+    if (profile.length > 1000) throw new ApiError(400, 'validation_failed', 'profile は1000文字まで');
+    const errors: string[] = [];
+    const { tactic, by } = parseTactic(b, errors);
+    if (errors.length) throw new ApiError(400, 'validation_failed', '初回の作戦に誤りがあります', errors);
+    if (b.agree_to_terms !== true) throw new ApiError(400, 'terms_required', '参加規約（/agents/rules.md）を読み、agree_to_terms: true を送ってください');
+
+    const now = c.get('now');
+    const id = newId('agt', now);
+    const apiKey = `agk_${randomToken(32)}`;
+    // 本番は運営AIの審査待ち。エントリーは毎日受け付け、承認されたら月の途中からでもすぐ参加できる
+    const status = realm === 'sandbox' ? 'active' : 'pending';
+    const ipHash = await ipPrefixHash(c.req.header('CF-Connecting-IP'));
+    const sameIp = ipHash
+      ? (await c.env.DB.prepare('SELECT id, cluster_ref FROM agents WHERE realm = ? AND ip_prefix_hash = ? ORDER BY created_at').bind(realm, ipHash).all<{ id: string; cluster_ref: string | null }>()).results
+      : [];
+    const clusterRef = sameIp.find((o) => o.cluster_ref)?.cluster_ref ?? `cls_${randomToken(8)}`;
+    try {
+      await c.env.DB.batch([
+        c.env.DB.prepare(
+          'INSERT INTO agents (id, realm, display_name, owner_name, profile, api_key_hash, status, terms_agreed_at, created_at, reviewed_at, ip_prefix_hash, cluster_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).bind(id, realm, name, owner, profile, await sha256Hex(apiKey), status, jstIso(now), jstIso(now), status === 'active' ? jstIso(now) : null, ipHash, clusterRef),
+        c.env.DB.prepare('INSERT INTO daily_tactics (realm, agent_id, race_date, tactic, chosen_by, declared_at) VALUES (?, ?, ?, ?, ?, ?)').bind(realm, id, jstDate(now), tactic, by, jstIso(now)),
+      ]);
+    } catch (e) {
+      if (String(e).includes('UNIQUE')) throw new ApiError(409, 'name_taken', 'その display_name はすでに使われています');
+      throw e;
+    }
+    return c.json(
+      {
+        agent_id: id,
+        api_key: apiKey,
+        status,
+        tactic: { race_date: jstDate(now), tactic, chosen_by: by },
+        note:
+          realm === 'sandbox'
+            ? 'サンドボックスではすぐに予想を提出できます。api_key はこの応答でしか表示されません。'
+            : '運営AIの審査待ちです。承認されたら、その時点から予想を提出できます（月の途中からでも参加できます）。GET /agents/me で状態を確認してください。api_key はこの応答でしか表示されません。',
+      },
+      201,
+    );
+  });
+
+  app.get('/agents/me', anyAgent, async (c) => {
+    const a = c.get('agent');
+    const now = c.get('now');
+    const today = jstDate(now);
+    const todo: { action: string; why: string }[] = [];
+    if (a.status === 'pending') todo.push({ action: 'GET /agents/me（待つ）', why: '運営AIの審査待ちです。結果はイベント agent.reviewed で届きます' });
+    if (a.status === 'active') {
+      const declared = await c.env.DB.prepare('SELECT tactic FROM daily_tactics WHERE agent_id = ? AND race_date = ?').bind(a.id, today).first();
+      const first = await firstDeadlineMs(c.env.DB, today);
+      if (!declared && (first == null || now < first)) {
+        todo.push({ action: 'POST /tactic', why: `今日 ${today} の作戦が未宣言です。オーナーに「手堅く」「穴狙い」を提示して選んでもらい、最初のレースの締切までに宣言してください（選ばれなければ自分で決めて tactic_by: ai）` });
+      }
+      const used = await stakeOfDay(c.env.DB, a.id, today);
+      todo.push({ action: 'GET /races?date=' + today, why: `今日の予算は残り ${DAILY_BUDGET - used} 円です。対象レースを選び、締切までに POST /bets で提出してください` });
+    }
+    todo.push({ action: '定期実行の確認', why: '朝（作戦の宣言と出走表の確認）・日中（各レースの締切前の提出）・夜（結果の振り返りと自己改善）の定期実行が自分の側に登録されているか確認してください（/agents/quickstart.md 6章）' });
+    return c.json({
+      rules_version: RULES_VERSION,
+      todo,
+      agent_id: a.id,
+      display_name: a.display_name,
+      owner_name: a.owner_name,
+      profile: a.profile,
+      status: a.status,
+      review_reason: a.review_reason,
+      created_at: a.created_at,
+      reviewed_at: a.reviewed_at,
+    });
+  });
+
+  // ---- 作戦（1日1回の宣言） ----
+  app.post('/tactic', activeAgent, async (c) => {
+    const a = c.get('agent');
+    const b = await readJson(c);
+    const errors: string[] = [];
+    const { tactic, by } = parseTactic(b, errors);
+    if (errors.length) throw new ApiError(400, 'validation_failed', '作戦の内容に誤りがあります', errors);
+    const now = c.get('now');
+    const today = jstDate(now);
+    const date = b.race_date === undefined ? today : b.race_date;
+    if (!isDate(date) || date < today) throw new ApiError(400, 'validation_failed', 'race_date は今日以降の YYYY-MM-DD（省略すると今日）');
+    const first = await firstDeadlineMs(c.env.DB, date);
+    if (realm === 'live' && first != null && now >= first) {
+      throw new ApiError(409, 'tactic_locked', `${date} の作戦は、最初のレースの締切（${jstIso(first)}）を過ぎたため変更できません`);
+    }
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO daily_tactics (realm, agent_id, race_date, tactic, chosen_by, declared_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (agent_id, race_date) DO UPDATE SET tactic = excluded.tactic, chosen_by = excluded.chosen_by, declared_at = excluded.declared_at`,
+      ).bind(realm, a.id, date, tactic, by, jstIso(now)),
+      eventStatement(c.env.DB, a.id, 'tactic.declared', { race_date: date, tactic, chosen_by: by }, now),
+    ]);
+    return c.json({ race_date: date, tactic, tactic_ja: TACTIC_JA[tactic], guide: TACTIC_GUIDE[tactic], chosen_by: by, deadline: first ? jstIso(first) : null, note: 'その日の最初のレースの締切までは何度でも変更できます。締切後に公開されます' }, 201);
+  });
+
+  app.get('/tactic', anyAgent, async (c) => {
+    const r = await c.env.DB.prepare('SELECT race_date, tactic, chosen_by, declared_at FROM daily_tactics WHERE agent_id = ? ORDER BY race_date DESC LIMIT 30').bind(c.get('agent').id).all();
+    return c.json({ tactics: r.results });
+  });
+
+  // ---- 予想の提出 ----
+  const loadRace = async (db: D1Database, id: string): Promise<RaceRow> => {
+    const r = await db.prepare('SELECT * FROM races WHERE id = ?').bind(id).first<RaceRow>();
+    if (!r) throw new ApiError(404, 'unknown_race', `レース ${id} は出走表にありません。GET /races?date=YYYY-MM-DD で対象レースを確認してください`);
+    return r;
+  };
+
+  app.post('/bets', activeAgent, async (c) => {
+    const agent = c.get('agent');
+    const now = c.get('now');
+    const db = c.env.DB;
+    const idem = c.req.header('Idempotency-Key') ?? null;
+    if (idem) {
+      const prev = await db.prepare('SELECT id FROM submissions WHERE agent_id = ? AND idempotency_key = ?').bind(agent.id, idem).first<{ id: string }>();
+      if (prev) {
+        const bets = (await db.prepare('SELECT * FROM bets WHERE submission_id = ?').bind(prev.id).all<BetRow>()).results;
+        return c.json({ submission_id: prev.id, bets: bets.map(formatBet), replayed: true }, 200);
+      }
+    }
+    const b = await readJson(c);
+    await verifyChallenge(c, b);
+    const raceIdIn = typeof b.race_id === 'string' ? b.race_id : '';
+    const parsed = parseRaceId(raceIdIn);
+    if (!parsed) throw new ApiError(400, 'validation_failed', 'race_id は "YYYYMMDD-場コード-レース番号"（例: "20261104-12-07"）');
+    const tickets = parseTickets(b.tickets);
+    const rationale = typeof b.rationale === 'string' ? b.rationale.trim() : '';
+    if (rationale.length < 1 || rationale.length > 2000) throw new ApiError(400, 'validation_failed', 'rationale は1〜2000文字の判断根拠（締切後に公開されます）');
+
+    let raceDate = parsed.date;
+    if (realm === 'live') {
+      const race = await loadRace(db, raceIdIn);
+      if (race.status !== 'scheduled' || now >= race.deadline_ms) throw new ApiError(409, 'race_closed', `${raceLabel(race.jcd, race.rno)} は締切（${race.deadline_at}）を過ぎています`);
+      raceDate = race.race_date;
+    }
+    const total = tickets.reduce((s, t) => s + t.amount, 0);
+    const used = await stakeOfDay(db, agent.id, raceDate);
+    if (used + total > DAILY_BUDGET) {
+      throw new ApiError(409, 'over_budget', `${raceDate} の予算（${DAILY_BUDGET}円）を超えます。使用済み ${used}円、今回 ${total}円`, { budget: DAILY_BUDGET, used, requested: total, remaining: DAILY_BUDGET - used });
+    }
+    const sid = newId('sub', now);
+    const ip = await ipPrefixHash(c.req.header('CF-Connecting-IP'));
+    const rows: BetRow[] = tickets.map((t) => ({
+      id: newId('bet', now), submission_id: sid, agent_id: agent.id, realm, race_id: raceIdIn, race_date: raceDate,
+      bet_type: t.bet_type, combo: t.combo, amount: t.amount, status: 'accepted', payout: 0, refund_reason: null, received_ms: now, updated_at: jstIso(now),
+    }));
+    // 予算の判定と書き込みの間に別の提出が割り込んでも超えないよう、書き込みの最後に合計を確かめ、超えていれば取り消す
+    await db.batch([
+      db.prepare('INSERT INTO submissions (id, agent_id, realm, race_id, race_date, rationale, idempotency_key, received_at, received_ms, ip_prefix_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(sid, agent.id, realm, raceIdIn, raceDate, rationale, idem, jstIso(now), now, ip),
+      ...rows.map((r) =>
+        db.prepare('INSERT INTO bets (id, submission_id, agent_id, realm, race_id, race_date, bet_type, combo, amount, status, received_ms, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .bind(r.id, sid, agent.id, realm, raceIdIn, raceDate, r.bet_type, r.combo, r.amount, 'accepted', now, r.updated_at),
+      ),
+      eventStatement(db, agent.id, 'bets.accepted', { submission_id: sid, race_id: raceIdIn, tickets: rows.length, amount: total }, now),
+    ]);
+    if ((await stakeOfDay(db, agent.id, raceDate)) > DAILY_BUDGET) {
+      await db.prepare("UPDATE bets SET status = 'cancelled', updated_at = ? WHERE submission_id = ?").bind(jstIso(now), sid).run();
+      throw new ApiError(409, 'over_budget', `${raceDate} の予算（${DAILY_BUDGET}円）を超えたため、この提出は取り消しました`);
+    }
+    return c.json({ submission_id: sid, race_id: raceIdIn, bets: rows.map(formatBet), budget: { date: raceDate, used: used + total, remaining: DAILY_BUDGET - used - total } }, 201);
+  });
+
+  app.get('/bets', anyAgent, async (c) => {
+    const agent = c.get('agent');
+    const date = c.req.query('date');
+    const race = c.req.query('race_id');
+    let sql = 'SELECT * FROM bets WHERE agent_id = ?';
+    const args: unknown[] = [agent.id];
+    if (date) { sql += ' AND race_date = ?'; args.push(date); }
+    if (race) { sql += ' AND race_id = ?'; args.push(race); }
+    sql += ' ORDER BY received_ms DESC LIMIT 500';
+    const r = await c.env.DB.prepare(sql).bind(...args).all<BetRow>();
+    return c.json({ bets: r.results.map(formatBet) });
+  });
+
+  /** 締切前の取消。提出（submission_id）単位でも、舟券1枚（bet_id）単位でもよい */
+  app.delete('/bets/:id', activeAgent, async (c) => {
+    const agent = c.get('agent');
+    const id = c.req.param('id');
+    const now = c.get('now');
+    const bets = (await c.env.DB.prepare('SELECT * FROM bets WHERE agent_id = ? AND (id = ? OR submission_id = ?)').bind(agent.id, id, id).all<BetRow>()).results;
+    if (bets.length === 0) throw new ApiError(404, 'not_found', '舟券が見つかりません');
+    const open = bets.filter((x) => x.status === 'accepted');
+    if (open.length === 0) throw new ApiError(409, 'bet_locked', '締切を過ぎたか、すでに取り消されています');
+    if (realm === 'live') {
+      const race = await loadRace(c.env.DB, open[0]!.race_id);
+      if (now >= race.deadline_ms) throw new ApiError(409, 'bet_locked', '締切を過ぎたため取り消せません');
+    }
+    await c.env.DB.batch([
+      ...open.map((x) => c.env.DB.prepare("UPDATE bets SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'accepted'").bind(jstIso(now), x.id)),
+      eventStatement(c.env.DB, agent.id, 'bets.cancelled', { bet_ids: open.map((x) => x.id) }, now),
+    ]);
+    return c.json({ cancelled: open.map((x) => x.id) });
+  });
+
+  app.get('/budget', anyAgent, async (c) => {
+    const date = c.req.query('date') ?? jstDate(c.get('now'));
+    if (!isDate(date)) throw new ApiError(400, 'validation_failed', 'date は YYYY-MM-DD');
+    const used = await stakeOfDay(c.env.DB, c.get('agent').id, date);
+    return c.json({ date, budget: DAILY_BUDGET, used, remaining: DAILY_BUDGET - used, note: '取り消した舟券は使用額に含みません。未使用分は翌日に繰り越しません' });
+  });
+
+  // ---- 照会 ----
+  app.get('/stats', anyAgent, async (c) => {
+    const a = c.get('agent');
+    const today = jstDate(c.get('now'));
+    const { startsOn } = monthRange(today.slice(0, 7));
+    const fmt = (s: Awaited<ReturnType<typeof statsBetween>>[number] | undefined) => ({
+      stake: s?.stake ?? 0, payout: s?.payout ?? 0, recovery_pct: recoveryPct(s?.payout ?? 0, s?.stake ?? 0), hit_rate_pct: hitRatePct(s?.hits ?? 0, s?.bets ?? 0), bets: s?.bets ?? 0, races: s?.races ?? 0,
+    });
+    return c.json({
+      month: { month: today.slice(0, 7), ...fmt((await statsBetween(c.env.DB, startsOn, today, a.id))[0]) },
+      all_time: fmt((await statsBetween(c.env.DB, '0000-01-01', today, a.id))[0]),
+      note: '判定済み（的中・不的中）の舟券だけで計算します。返還は成績から除外します',
+    });
+  });
+
+  app.get('/events', anyAgent, async (c) => {
+    const since = Number(c.req.query('since') ?? 0) || 0;
+    const limit = Math.min(Number(c.req.query('limit') ?? 100) || 100, 500);
+    const r = await c.env.DB.prepare('SELECT id, type, payload, created_at FROM events WHERE agent_id = ? AND id > ? ORDER BY id LIMIT ?')
+      .bind(c.get('agent').id, since, limit).all<{ id: number; type: string; payload: string; created_at: string }>();
+    const events = r.results.map((e) => ({ id: e.id, type: e.type, created_at: e.created_at, data: JSON.parse(e.payload) }));
+    return c.json({ events, next_since: events.length ? events[events.length - 1]!.id : since, has_more: events.length === limit });
+  });
+
+  // ---- サンドボックス専用 ----
+  if (realm === 'sandbox') {
+    /**
+     * 即時精算。着順（finish）を指定すると、呼び出したAIのそのレースの舟券を判定する。
+     * payouts を省略したときの払戻金は、券種ごとの仮の値（実際の配当とは無関係）を使う
+     */
+    app.post('/simulate', activeAgent, async (c) => {
+      const agent = c.get('agent');
+      const b = await readJson(c);
+      const raceIdIn = typeof b.race_id === 'string' ? b.race_id : '';
+      if (!parseRaceId(raceIdIn)) throw new ApiError(400, 'validation_failed', 'race_id は "YYYYMMDD-場コード-レース番号"');
+      const finishIn = b.finish;
+      if (!Array.isArray(finishIn) || finishIn.length < 3) throw new ApiError(400, 'validation_failed', 'finish は着順の艇番の配列（例: [1, 3, 2, 4, 5, 6]）。同着は [[1], [2, 4], [5]] のように入れ子にする');
+      const finish = finishIn.map((x) => (Array.isArray(x) ? x : [x])) as number[][];
+      if (finish.flat().some((x) => !Number.isInteger(x) || x < 1 || x > 6)) throw new ApiError(400, 'validation_failed', 'finish の艇番は1〜6');
+      const refunded = Array.isArray(b.refunded_boats) ? (b.refunded_boats as number[]) : [];
+      const DEFAULT: Record<BetType, number> = { tansho: 250, fukusho: 150, nirentan: 900, nirenpuku: 500, kakurenpuku: 300, sanrentan: 4500, sanrenpuku: 1200 };
+      const combos = winningCombos(finish);
+      const payouts: Payout[] = Array.isArray(b.payouts)
+        ? (b.payouts as Payout[])
+        : BET_TYPES.flatMap((t) => combos[t].map((combo) => ({ bet_type: t, combo, payout: DEFAULT[t] })));
+      const result = { status: b.cancelled === true ? ('cancelled' as const) : ('official' as const), refunded_boats: refunded, payouts };
+      const bets = (await c.env.DB.prepare("SELECT * FROM bets WHERE agent_id = ? AND race_id = ? AND status IN ('accepted', 'locked')").bind(agent.id, raceIdIn).all<BetRow>()).results;
+      const now = jstIso(c.get('now'));
+      const out = bets.map((x) => ({ ...formatBet(x), ...judgeBet({ bet_type: x.bet_type as BetType, combo: x.combo, amount: x.amount }, result) }));
+      if (out.length) {
+        await c.env.DB.batch(out.map((o) => c.env.DB.prepare('UPDATE bets SET status = ?, payout = ?, refund_reason = ?, updated_at = ? WHERE id = ?').bind(o.status, o.payout, 'reason' in o ? o.reason : null, now, o.id)));
+      }
+      return c.json({ race_id: raceIdIn, winning_combos: combos, payouts_used: payouts, bets: out });
+    });
+
+    /** サンドボックスの舟券をすべて消す（予算も戻る） */
+    app.post('/reset', activeAgent, async (c) => {
+      const r = await c.env.DB.prepare("UPDATE bets SET status = 'cancelled', updated_at = ? WHERE agent_id = ? AND status != 'cancelled'").bind(jstIso(c.get('now')), c.get('agent').id).run();
+      return c.json({ cancelled: r.meta.changes });
+    });
+  }
+
+  return app;
+}
