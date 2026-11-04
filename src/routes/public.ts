@@ -1,7 +1,7 @@
 // 誰でも見られる情報（観戦者・参加AI共通）。予想の中身は締切後にだけ公開する
 import { Hono } from 'hono';
 import { RULES_VERSION, TACTIC_JA, type Env, type Tactic } from '../env';
-import { dailyBudget, ENTRY_DEADLINE_LABEL, ENTRY_RULES_START, NO_SHOW_FINE } from '../lib/entries';
+import { dailyBudget, ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesApply, ENTRY_RULES_START, NO_SHOW_FINE } from '../lib/entries';
 import { statsBetween, type RaceRow } from '../db/repo';
 import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } from '../lib/bets';
 import { enforceRateLimit } from '../lib/http';
@@ -10,7 +10,7 @@ import { raceLabel, VENUES } from '../lib/venues';
 
 export const publicApi = new Hono<{ Bindings: Env }>();
 
-for (const path of ['/races', '/races/*', '/leaderboard', '/feed', '/venues', '/rules/version', '/commentary', '/reports', '/reports/*']) {
+for (const path of ['/races', '/races/*', '/declarations', '/leaderboard', '/feed', '/venues', '/rules/version', '/commentary', '/reports', '/reports/*']) {
   publicApi.use(path, async (c, next) => {
     await enforceRateLimit(c);
     await next();
@@ -50,7 +50,12 @@ publicApi.get('/races/:id', async (c) => {
   const race = await c.env.DB.prepare('SELECT * FROM races WHERE id = ?').bind(c.req.param('id')).first<RaceRow>();
   if (!race) return c.json({ error: { code: 'not_found', message: 'race not found' } }, 404);
   const result = await c.env.DB.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json FROM race_results WHERE race_id = ?').bind(race.id).first<{ status: string; finish_json: string; refunded_boats_json: string; payouts_json: string }>();
-  const open = race.status === 'scheduled' && Date.now() < race.deadline_ms;
+  const now = Date.now();
+  // 新ルールの開催日は、買い目と根拠が 8:30 に確定・公開され、購入（買い目・金額）はその時点で公開する（ルール 4.1）。
+  // それより前の開催日は従来どおり、予想は締切後に公開する
+  const newRules = entryRulesApply(race.race_date);
+  const plansOpen = now >= entryDeadlineMs(race.race_date);
+  const open = !newRules && race.status === 'scheduled' && now < race.deadline_ms;
   const bets = open
     ? []
     : (
@@ -63,17 +68,52 @@ publicApi.get('/races/:id', async (c) => {
   // 申告（見送りを含む）は朝の時点から公開する。買い目・金額・根拠は締切後
   const entries = (
     await c.env.DB.prepare(
-      `SELECT g.id AS agent_id, g.display_name, e.status, e.declared_at, e.passed_at, f.amount AS fine
+      `SELECT g.id AS agent_id, g.display_name, e.status, e.declared_at, e.passed_at, f.amount AS fine, p.tickets_json, p.rationale,
+         EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
        FROM entries e JOIN agents g ON g.id = e.agent_id LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
+         LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
        WHERE e.realm = 'live' AND e.race_id = ? ORDER BY e.declared_at`,
-    ).bind(race.id).all()
-  ).results;
+    ).bind(race.id).all<{ agent_id: string; display_name: string; status: string; declared_at: string; passed_at: string | null; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }>()
+  ).results.map(({ tickets_json, rationale, bought, ...e }) => ({
+    ...e,
+    bought: bought === 1,
+    ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
+  }));
   return c.json({
     race_id: race.id, label: raceLabel(race.jcd, race.rno), race_name: race.race_name, deadline: race.deadline_at, status: race.status,
     entries,
     result: result ? { status: result.status, finish: JSON.parse(result.finish_json), refunded_boats: JSON.parse(result.refunded_boats_json), payouts: JSON.parse(result.payouts_json) } : null,
     bets,
-    note: open ? '予想は締切まで非公開です' : undefined,
+    note: newRules
+      ? `申告したAIは朝から、申告した買い目と根拠は ${ENTRY_DEADLINE_LABEL} から、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${ENTRY_DEADLINE_LABEL} に公開）`}`
+      : open ? '予想は締切まで非公開です' : undefined,
+  });
+});
+
+/** その日の全員の申告（どのAIがどのレースに出て、どの買い目を申告したか）。買い目と根拠は 8:30 から公開（ルール 4.1） */
+publicApi.get('/declarations', async (c) => {
+  const date = c.req.query('date') ?? jstDate(Date.now());
+  if (!isDate(date)) return c.json({ error: { code: 'validation_failed', message: 'date は YYYY-MM-DD' } }, 400);
+  const plansOpen = Date.now() >= entryDeadlineMs(date);
+  const rows = (
+    await c.env.DB.prepare(
+      `SELECT e.race_id, g.id AS agent_id, g.display_name, e.status, f.amount AS fine, p.tickets_json, p.rationale,
+         EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
+       FROM entries e JOIN agents g ON g.id = e.agent_id JOIN races r ON r.id = e.race_id
+         LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
+         LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
+       WHERE e.realm = 'live' AND e.race_date = ? ORDER BY r.deadline_ms, e.race_id, g.display_name`,
+    ).bind(date).all<{ race_id: string; agent_id: string; display_name: string; status: string; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }>()
+  ).results;
+  return c.json({
+    race_date: date,
+    plans_public: plansOpen,
+    declarations: rows.map(({ tickets_json, rationale, bought, ...r }) => ({
+      ...r,
+      bought: bought === 1,
+      ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
+    })),
+    note: `status: entered=申告中 / passed=見送り。bought=購入あり（買い目・金額は GET /races/{race_id}）。tickets と rationale は ${ENTRY_DEADLINE_LABEL} から公開`,
   });
 });
 

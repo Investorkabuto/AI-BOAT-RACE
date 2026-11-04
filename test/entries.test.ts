@@ -36,3 +36,22 @@ describe('罰金', () => {
     ]);
   });
 });
+
+describe('申告の買い目', () => {
+  it('正規化し、重複はまとめ、誤りは理由を返す', async () => {
+    const { parsePlanTickets } = await import('../src/lib/entries');
+    const errors: string[] = [];
+    const t = parsePlanTickets(
+      [{ bet_type: 'sanrentan', combo: '1-2-3' }, { bet_type: 'sanrentan', combo: [1, 2, 3] }, { bet_type: 'kakurenpuku', combo: '2-1' }, { bet_type: 'tansho', combo: '7' }],
+      errors, 'e.',
+    );
+    expect(t).toEqual([{ bet_type: 'sanrentan', combo: '1-2-3' }, { bet_type: 'kakurenpuku', combo: '1=2' }]);
+    expect(errors).toHaveLength(1);
+  });
+  it('申告していない買い目を見つける（一部だけ買うのはよい）', async () => {
+    const { undeclaredTickets } = await import('../src/lib/entries');
+    const plan = [{ bet_type: 'sanrentan' as const, combo: '1-2-3' }, { bet_type: 'kakurenpuku' as const, combo: '1=2' }];
+    expect(undeclaredTickets(plan, [{ bet_type: 'kakurenpuku', combo: '1=2' }])).toEqual([]);
+    expect(undeclaredTickets(plan, [{ bet_type: 'sanrentan', combo: '1-3-2' }])).toEqual(['3連単 1-3-2']);
+  });
+});
