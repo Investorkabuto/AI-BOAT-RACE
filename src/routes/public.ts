@@ -22,7 +22,7 @@ publicApi.get('/rules/version', (c) => {
   return c.json({
     rules_version: RULES_VERSION,
     daily_budget: dailyBudget(today),
-    entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, no_show_fine: NO_SHOW_FINE, note: 'starts_on が null の間は未定（申告なしでも提出でき、罰金なし）。決まると operator.notice（rules_changed）で通知します' },
+    entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, no_show_fine: NO_SHOW_FINE, note: 'starts_on 以降の開催日は、出るレースを当日の entry_deadline までに申告し、申告したレースは締切までに提出か見送りをする（無断欠場は no_show_fine 円の罰金）。それより前の開催日は申告なしで提出でき、罰金はない' },
   });
 });
 publicApi.get('/venues', (c) => c.json({ venues: Object.entries(VENUES).sort(([a], [b]) => a.localeCompare(b)).map(([jcd, name]) => ({ jcd, name })) }));
