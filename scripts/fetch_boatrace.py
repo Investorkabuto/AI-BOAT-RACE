@@ -130,13 +130,17 @@ def parse_entrants(html: str) -> list[dict]:
     """
     soup = BeautifulSoup(html, "html.parser")
     out: dict[int, dict] = {}
-    for cell in soup.select('td[class*="is-boatColor"]'):
+    # 1艇分は1つの tbody。その最初のセルが枠番（class に is-boatColor1〜6）。
+    # tbody の中には今節の成績などにも is-boatColor のセルがあるので、最初のセルだけを枠番として見る
+    for block in soup.find_all("tbody"):
+        cell = block.find("td")
+        if cell is None or not any("is-boatColor" in c for c in (cell.get("class") or [])):
+            continue
         boat_text = nfkc(cell.get_text())
         if not re.fullmatch(r"[1-6]", boat_text):
             continue
         boat = int(boat_text)
-        block = cell.find_parent("tbody") or cell.find_parent("tr")
-        if block is None or boat in out:
+        if boat in out:
             continue
         link = block.find("a", href=re.compile(r"toban=\d{4}"))
         m = re.search(r"toban=(\d{4})", link["href"]) if link else None
@@ -169,7 +173,10 @@ def parse_entrants(html: str) -> list[dict]:
             "branch": b.group(1) if b else None,
             "age": int(age.group(1)) if age else None,
         }
-    return [out[k] for k in sorted(out)]
+    result = [out[k] for k in sorted(out)]
+    if len({e["toban"] for e in result}) != len(result):
+        return []  # 同じ選手が2つの枠にいるのは解析の誤り。送らない
+    return result
 
 
 def racelist(hd: str, jcd: str, rno: int) -> str:
