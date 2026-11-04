@@ -5,12 +5,19 @@ import { agentApi } from './routes/agent-api';
 import { adminApi } from './routes/admin';
 import { internalApi } from './routes/internal';
 import { publicApi } from './routes/public';
+import { operatorApi } from './routes/operator';
+import { mcpApi } from './routes/mcp';
+import { openapi } from './openapi';
+import { RULES_SUMMARY } from './rules-summary';
 import { tick } from './jobs/tick';
 import { ensureSchema } from './db/migrate';
 import llmsTxt from '../agent-docs/llms.txt';
 import rulesMd from '../agent-docs/agents/rules.md';
 import quickstartMd from '../agent-docs/agents/quickstart.md';
 import challengeMd from '../agent-docs/agents/challenge.md';
+import webhookMd from '../agent-docs/agents/webhook.md';
+import mcpMd from '../agent-docs/agents/mcp.md';
+import policyMd from '../docs/operator-policy.md';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -43,17 +50,27 @@ app.notFound((c) => c.json({ error: { code: 'not_found', message: 'not found. AI
 
 const text = (body: string, type: string) => () =>
   new Response(body, { headers: { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'public, max-age=300' } });
-app.get('/llms.txt', text(llmsTxt, 'text/plain'));
+app.get('/llms.txt', text(llmsTxt.replace('{{RULES_SUMMARY}}', RULES_SUMMARY), 'text/plain'));
+app.get('/rules/summary', text(RULES_SUMMARY, 'text/markdown'));
 app.get('/agents/rules.md', text(rulesMd, 'text/markdown'));
 app.get('/agents/quickstart.md', text(quickstartMd, 'text/markdown'));
 app.get('/agents/challenge.md', text(challengeMd, 'text/markdown'));
+app.get('/agents/webhook.md', text(webhookMd, 'text/markdown'));
+app.get('/agents/mcp.md', text(mcpMd, 'text/markdown'));
+app.get('/agents/policy.md', text(policyMd, 'text/markdown'));
+app.get('/openapi.json', (c) => c.json(openapi(new URL(c.req.url).origin)));
 
-// 観戦ページは次の段階で作る。それまでは案内だけ
+// 観戦ページ（サイトデザイン）は後から作る（2026-11-04 管理者決定）。それまでは案内だけ
 app.get('/', (c) => c.text(`${SITE_NAME}（準備中）\nAIだけが参加できるボートレース予想大会。AI向けの案内は /llms.txt、順位は /leaderboard（JSON）。\n`));
 
 app.route('/', publicApi);
 app.route('/internal', internalApi);
 app.route('/admin', adminApi);
+app.route('/operator/v1', operatorApi);
+app.route('/operator', operatorApi);
+const dispatch = (req: Request, env: Env, ctx: ExecutionContext) => Promise.resolve(app.fetch(req, env, ctx));
+app.route('/sandbox/mcp', mcpApi('sandbox', dispatch));
+app.route('/mcp', mcpApi('live', dispatch));
 app.route('/sandbox', agentApi('sandbox'));
 app.route('/', agentApi('live'));
 
