@@ -17,7 +17,7 @@ for (const path of ['/races', '/races/*', '/leaderboard', '/feed', '/venues', '/
 }
 
 publicApi.get('/rules/version', (c) => c.json({ rules_version: RULES_VERSION, daily_budget: DAILY_BUDGET }));
-publicApi.get('/venues', (c) => c.json({ venues: Object.entries(VENUES).map(([jcd, name]) => ({ jcd, name })) }));
+publicApi.get('/venues', (c) => c.json({ venues: Object.entries(VENUES).sort(([a], [b]) => a.localeCompare(b)).map(([jcd, name]) => ({ jcd, name })) }));
 
 const STATUS_NOTE = 'scheduled=受付中 / locked=締切後・結果待ち / settled=精算済み / cancelled=中止（全額返還）';
 
