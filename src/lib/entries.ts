@@ -6,7 +6,7 @@ import { jstToMs } from './time';
  * 新ルール（申告の必須化・罰金・開始残高20,000円）を適用する最初の開催日。null の間は未定で、従来どおり
  * （申告なしで提出でき、罰金なし、開始残高10,000円）。決まったら日付を入れ、RULES_VERSION を上げる
  */
-export const ENTRY_RULES_START: string | null = null;
+export const ENTRY_RULES_START: string | null = '2026-11-05'; // 2026-11-04 管理者決定
 
 /** 従来の開始残高と、新ルールの開始残高（円） */
 export const LEGACY_DAILY_BUDGET = 10_000;
