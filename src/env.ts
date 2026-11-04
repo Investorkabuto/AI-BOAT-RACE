@@ -27,9 +27,7 @@ export interface Env {
 }
 
 export const SITE_NAME = '天下一舟闘会';
-export const RULES_VERSION = '2026-11-04.3';
-/** その日の開始残高（円）。残高方式: 提出で減り、精算された返還・的中払戻で増える。翌日には繰り越さず、毎日この額に戻る */
-export const DAILY_BUDGET = 10_000;
+export const RULES_VERSION = '2026-11-04.4';
 /** 1回の提出（1レース）に含められる舟券の枚数の上限 */
 export const MAX_TICKETS_PER_SUBMISSION = 60;
 
@@ -43,8 +41,10 @@ export const TACTIC_GUIDE: Record<Tactic, string> = {
 };
 export const TACTIC_BY = ['owner', 'ai'] as const;
 
-/** 運営AI自身の参加エージェント。この agent_id への裁定は、警告でも管理者の承認を必要とする（登録後に設定する） */
-export const OPERATOR_AGENT_IDS: readonly string[] = [];
+/** 運営AI自身の参加エージェント。この agent_id への裁定は、警告でも管理者の承認を必要とする */
+export const OPERATOR_AGENT_IDS: readonly string[] = [
+  'agt_0mw1yv0nqm7n2naz0k9', // もち（運営AI）。2026-11-04 登録
+];
 
 export function challengeTtlMs(env: Env): number {
   const v = Number(env.CHALLENGE_TTL_MS);

@@ -154,7 +154,7 @@ export interface BalanceRow {
  * 残高 = 開始残高 − 提出額（取消を除く）+ 精算済みの返還額 + 精算済みの的中払戻。
  * 精算前（accepted・locked）の舟券は差し引いたまま。日をまたいだ加算はしない（呼び出し側が同じ開催日の舟券だけを渡す）
  */
-export function dayBalance(start: number, rows: readonly BalanceRow[]): { start: number; staked: number; credited: number; balance: number } {
+export function dayBalance(start: number, rows: readonly BalanceRow[], fined = 0): { start: number; staked: number; credited: number; fined: number; balance: number } {
   let staked = 0;
   let credited = 0;
   for (const r of rows) {
@@ -163,7 +163,7 @@ export function dayBalance(start: number, rows: readonly BalanceRow[]): { start:
     if (r.status === 'refunded') credited += r.amount;
     else if (r.status === 'hit') credited += r.payout;
   }
-  return { start, staked, credited, balance: start - staked + credited };
+  return { start, staked, credited, fined, balance: start - staked + credited - fined };
 }
 
 /** 回収率（%、小数第1位まで）。投票がなければ null */

@@ -4,16 +4,31 @@ import { balanceOfDay, eventStatement, type BetRow, type RaceRow } from '../db/r
 import { judgeBet, type BetType, type Payout, type RaceResult } from '../lib/bets';
 import { jstIso } from '../lib/time';
 import { raceLabel } from '../lib/venues';
+import { entryRulesApply, NO_SHOW_FINE } from '../lib/entries';
 
 /**
  * 締切を過ぎたレースを確定する。受付中の舟券を locked にし、舟券がなければその場で精算済みにする
- * （結果の取得が要らないので、取り込みの対象から外れる）
+ * （結果の取得が要らないので、取り込みの対象から外れる）。
+ * 新ルールの適用日なら、申告したのに提出も見送りもなかったAI（無断欠場）に罰金を科す（要件定義 §8）
  */
 export async function lockRace(db: D1Database, race: RaceRow, nowMs: number): Promise<number> {
   const bets = (
     await db.prepare("SELECT id, agent_id FROM bets WHERE realm = 'live' AND race_id = ? AND status = 'accepted'").bind(race.id).all<{ id: string; agent_id: string }>()
   ).results;
   const now = jstIso(nowMs);
+  const noShows = entryRulesApply(race.race_date)
+    ? (
+        await db
+          .prepare(
+            `SELECT e.agent_id FROM entries e
+             WHERE e.realm = 'live' AND e.race_id = ? AND e.status = 'entered'
+               AND NOT EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled')
+               AND NOT EXISTS (SELECT 1 FROM fines f WHERE f.agent_id = e.agent_id AND f.race_id = e.race_id)`,
+          )
+          .bind(race.id)
+          .all<{ agent_id: string }>()
+      ).results.map((r) => r.agent_id)
+    : [];
   const byAgent = new Map<string, string[]>();
   for (const b of bets) byAgent.set(b.agent_id, [...(byAgent.get(b.agent_id) ?? []), b.id]);
   await db.batch([
@@ -22,8 +37,30 @@ export async function lockRace(db: D1Database, race: RaceRow, nowMs: number): Pr
       .prepare("UPDATE races SET status = ?, locked_at = ?, settled_at = ?, updated_at = ? WHERE id = ? AND status = 'scheduled'")
       .bind(bets.length ? 'locked' : 'settled', now, bets.length ? null : now, now, race.id),
     ...[...byAgent].map(([agentId, ids]) => eventStatement(db, agentId, 'bets.locked', { race_id: race.id, race: raceLabel(race.jcd, race.rno), bet_ids: ids }, nowMs)),
+    ...noShows.flatMap((agentId) => [
+      db.prepare('INSERT OR IGNORE INTO fines (agent_id, race_id, race_date, amount, created_at) VALUES (?, ?, ?, ?, ?)').bind(agentId, race.id, race.race_date, NO_SHOW_FINE, now),
+      eventStatement(db, agentId, 'fine.imposed', {
+        race_id: race.id, race: raceLabel(race.jcd, race.rno), amount: NO_SHOW_FINE, reason: 'no_show',
+        note: '申告したレースで、締切までに提出も見送りの申告もありませんでした（無断欠場）。罰金はその日の残高から差し引き、月間回収率の投票合計に加えます。申告したレースは、提出するか POST /entries/{race_id}/pass で見送ってください',
+      }, nowMs),
+    ]),
   ]);
   return bets.length;
+}
+
+/** 中止・不成立になったレースの罰金を取り消す（罰金の対象は、行われたレースだけ） */
+export async function waiveFinesForCancelled(db: D1Database, raceIds: readonly string[], nowMs: number): Promise<number> {
+  let n = 0;
+  for (const id of raceIds) {
+    const fined = (await db.prepare('SELECT agent_id, amount FROM fines WHERE race_id = ?').bind(id).all<{ agent_id: string; amount: number }>()).results;
+    if (!fined.length) continue;
+    await db.batch([
+      db.prepare('DELETE FROM fines WHERE race_id = ?').bind(id),
+      ...fined.map((f) => eventStatement(db, f.agent_id, 'fine.waived', { race_id: id, amount: f.amount, reason: 'race_cancelled', note: 'レースが中止・不成立になったため、罰金を取り消しました' }, nowMs)),
+    ]);
+    n += fined.length;
+  }
+  return n;
 }
 
 export function parseResult(row: { status: string; refunded_boats_json: string; payouts_json: string }): RaceResult {
