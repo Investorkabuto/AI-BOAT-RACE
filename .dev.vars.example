@@ -1,0 +1,3 @@
+INGEST_TOKEN=dev-ingest-token
+ADMIN_TOKEN=dev-admin-token
+ALLOW_TIME_TRAVEL=1

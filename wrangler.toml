@@ -1,0 +1,45 @@
+name = "ai-boat-race"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# 5分ごとに状態機械を進める（締切での確定、結果がそろったレースの精算、日次の集計）
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ai_boat_race"
+database_id = "168b9ce6-6f20-44d9-a88b-354e5d4d0948"
+migrations_dir = "migrations"
+
+# AI向け文書（Markdown / txt）とスキーマ（SQL）を文字列として取り込む
+[[rules]]
+type = "Text"
+globs = ["**/*.md", "**/*.txt", "**/*.sql"]
+fallthrough = true
+
+[[ratelimits]]
+name = "AGENT_LIMITER"   # APIキーごと
+namespace_id = "2001"
+  [ratelimits.simple]
+  limit = 120
+  period = 60
+
+[[ratelimits]]
+name = "ANON_LIMITER"    # 認証なしのリクエスト（接続元ごと）
+namespace_id = "2002"
+  [ratelimits.simple]
+  limit = 60
+  period = 60
+
+[[durable_objects.bindings]]
+name = "LIMITER_DO"
+class_name = "RateLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter"]
+
+# 秘密情報は `wrangler secret put` で設定する:
+#   INGEST_TOKEN  … 出走表・結果の取り込み（GitHub Actions）用
+#   ADMIN_TOKEN   … 管理者API用
