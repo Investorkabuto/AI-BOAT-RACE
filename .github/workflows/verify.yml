@@ -38,20 +38,27 @@ jobs:
           echo "/internal/result-requests -> $code"; head -c 400 body.txt; echo
       - name: Parse boatrace.jp (probe, no writes)
         working-directory: scripts
+        timeout-minutes: 8
+        env:
+          BOATRACE_DEBUG: "1"
+          BOATRACE_TIMEOUT: "15"
+          PYTHONUNBUFFERED: "1"
         run: |
           python - <<'PY'
           import datetime as dt, json
           import fetch_boatrace as f
           jst = dt.timezone(dt.timedelta(hours=9))
           today = dt.datetime.now(jst).date()
-          s = f.schedule_of_day(today.isoformat())
-          venues = sorted({r["jcd"] for r in s})
-          print(f"schedule {today}: {len(s)} races, venues={venues}")
-          print(json.dumps(s[:14], ensure_ascii=False))
           y = (today - dt.timedelta(days=1)).isoformat()
-          ys = f.schedule_of_day(y)
-          print(f"schedule {y}: {len(ys)} races")
-          for r in [x for x in ys if x["rno"] in (1, 12)][:4]:
-              rid = f"{y.replace('-', '')}-{r['jcd']}-{r['rno']:02d}"
-              print(rid, json.dumps(f.fetch_result(rid), ensure_ascii=False))
+          hd = today.strftime("%Y%m%d")
+          venues = f.venues_of_day(hd)
+          print(f"venues {today}: {venues}")
+          if venues:
+              print("deadlines", venues[0], f.parse_deadlines(f.get_html("racelist", rno="1", jcd=venues[0], hd=hd)))
+          yv = f.venues_of_day(y.replace("-", ""))
+          print(f"venues {y}: {yv}")
+          for jcd in yv[:2]:
+              for rno in (1, 12):
+                  rid = f"{y.replace('-', '')}-{jcd}-{rno:02d}"
+                  print(rid, json.dumps(f.fetch_result(rid), ensure_ascii=False))
           PY
