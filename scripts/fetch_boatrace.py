@@ -4,6 +4,7 @@ GitHub Actions から定期的に実行する（.github/workflows/boatrace.yml�
 
   schedule [--date YYYY-MM-DD]   その日の開催場と、各レースの締切予定時刻を PUT /internal/races に送る
   results                        GET /internal/result-requests の各レースの結果を取得し、POST /internal/results に送る
+  results-all --date YYYY-MM-DD  その日の全レースのうち結果が未保存のものを取得して保存する（毎朝、前日分。公開・振り返り用）
   probe-schedule --date ...      接続確認: 取得・解析した出走表を表示するだけ（アプリには書き込まない）
   probe-result --race ID         接続確認: 取得・解析した結果を表示するだけ（例 20261103-12-07）
 
@@ -213,7 +214,7 @@ def fetch_result(race_id: str) -> dict | None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["schedule", "results", "probe-schedule", "probe-result"])
+    p.add_argument("command", choices=["schedule", "results", "results-all", "probe-schedule", "probe-result"])
     p.add_argument("--date", help="YYYY-MM-DD（省略時は今日）")
     p.add_argument("--race", help="レースID（probe-result 用）")
     a = p.parse_args()
@@ -229,7 +230,12 @@ def main() -> None:
         if races:
             print(api("PUT", "/internal/races", {"race_date": date, "races": races}))
     else:
-        requests = api("GET", "/internal/result-requests")["requests"]
+        if a.command == "results-all":
+            if not a.date:
+                raise SystemExit("results-all には --date が必要です")
+            requests = api("GET", f"/internal/result-requests?all=1&date={a.date}")["requests"]
+        else:
+            requests = api("GET", "/internal/result-requests")["requests"]
         results = []
         for r in requests:
             try:
@@ -242,8 +248,8 @@ def main() -> None:
                 continue
             results.append({"race_id": r["id"], **res})
         print(f"results: {len(results)} / {len(requests)}")
-        if results:
-            print(api("POST", "/internal/results", {"results": results}))
+        for i in range(0, len(results), 50):
+            print(api("POST", "/internal/results", {"results": results[i:i + 50]}))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { RULES_VERSION, SITE_NAME, type Env } from './env';
+import { RULES_VERSION, type Env } from './env';
 import { ApiError, errorResponse } from './lib/http';
 import { agentApi } from './routes/agent-api';
 import { adminApi } from './routes/admin';
@@ -7,6 +7,11 @@ import { internalApi } from './routes/internal';
 import { publicApi } from './routes/public';
 import { operatorApi } from './routes/operator';
 import { mcpApi } from './routes/mcp';
+import { watchApi } from './routes/watch-api';
+import appHtml from './web/app.html';
+import { ICONS } from './web/icons';
+import { MANIFEST, serviceWorker } from './web/pwa';
+import { sha256Hex } from './lib/crypto';
 import { openapi } from './openapi';
 import { RULES_SUMMARY } from './rules-summary';
 import { tick } from './jobs/tick';
@@ -60,10 +65,24 @@ app.get('/agents/mcp.md', text(mcpMd, 'text/markdown'));
 app.get('/agents/policy.md', text(policyMd, 'text/markdown'));
 app.get('/openapi.json', (c) => c.json(openapi(new URL(c.req.url).origin)));
 
-// 観戦ページ（サイトデザイン）は後から作る（2026-11-04 管理者決定）。それまでは案内だけ
-app.get('/', (c) => c.text(`${SITE_NAME}（準備中）\nAIだけが参加できるボートレース予想大会。AI向けの案内は /llms.txt、順位は /leaderboard（JSON）。\n`));
+// ---- 人間向けの観戦画面（1つの HTML が /、/race/{id}、/participants、/history を表示する）とホーム画面への追加 ----
+// AI向けの案内は /llms.txt。画面は公開APIを読むだけなので、人間とAIが見るデータは同じ
+const page = () => new Response(appHtml, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' } });
+for (const path of ['/', '/race/:id', '/participants', '/participants/:id', '/history']) app.get(path, page);
+app.get('/manifest.webmanifest', () => new Response(MANIFEST, { headers: { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'public, max-age=3600' } }));
+let swVersion: Promise<string> | undefined;
+app.get('/sw.js', async () => {
+  swVersion ??= sha256Hex(appHtml + MANIFEST).then((h) => h.slice(0, 12));
+  return new Response(serviceWorker(await swVersion), { headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache' } });
+});
+app.get('/icons/:name', (c) => {
+  const b64 = ICONS[c.req.param('name') ?? ''];
+  if (!b64) return c.json({ error: { code: 'not_found', message: 'icon not found' } }, 404);
+  return new Response(Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0)), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' } });
+});
 
 app.route('/', publicApi);
+app.route('/', watchApi);
 app.route('/internal', internalApi);
 app.route('/admin', adminApi);
 app.route('/operator/v1', operatorApi);
