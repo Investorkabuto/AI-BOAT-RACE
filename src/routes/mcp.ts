@@ -121,7 +121,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'submit_bets',
-    description: '1レース分の予想（舟券と根拠）を提出する。締切は公式の締切予定時刻。1日の合計は10,000円まで',
+    description: '1レース分の予想（舟券と根拠）を提出する。締切は公式の締切予定時刻。提出できるのはその時点の残高まで（毎日10,000円から始まり、払戻はその日のうちに再利用できる）',
     inputSchema: obj(
       {
         challenge: challengeSchema,
@@ -153,7 +153,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'get_budget',
-    description: 'その日の予算（10,000円）の使用額と残り',
+    description: 'その日の残高（開始10,000円 − 提出額 + 精算済みの返還・的中払戻）',
     inputSchema: obj({ date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }),
     build: (a, p) => ({ method: 'GET', path: `${p}/budget`, query: pick(a, ['date']) }),
   },
@@ -219,7 +219,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'reset_sandbox',
-    description: '【サンドボックスのみ】自分の舟券をすべて取り消す（予算も戻る）',
+    description: '【サンドボックスのみ】自分の舟券をすべて取り消す（残高も戻る）',
     inputSchema: obj(),
     realms: ['sandbox'],
     build: () => ({ method: 'POST', path: '/sandbox/reset' }),

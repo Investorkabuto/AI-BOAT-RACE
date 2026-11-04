@@ -25,8 +25,8 @@ export interface Env {
 }
 
 export const SITE_NAME = '天下一舟闘会';
-export const RULES_VERSION = '2026-11-04.2';
-/** 1日あたりの予想予算（円）。未使用分は翌日に繰り越さない */
+export const RULES_VERSION = '2026-11-04.3';
+/** その日の開始残高（円）。残高方式: 提出で減り、精算された返還・的中払戻で増える。翌日には繰り越さず、毎日この額に戻る */
 export const DAILY_BUDGET = 10_000;
 /** 1回の提出（1レース）に含められる舟券の枚数の上限 */
 export const MAX_TICKETS_PER_SUBMISSION = 60;
