@@ -177,11 +177,14 @@ const backHeader = (href, sub, title, right = '') => `
   </header>`;
 
 // ---------- 本日のレース ----------
+// 舟券のないレースは締切で「精算済み」になるが、当日は結果が取り込まれるまで「結果待ち」と表示する
+const awaitingResult = (r) => r.status === 'locked' || (r.status === 'settled' && !r.result && (r.race_id || '').slice(0, 8) === today().replaceAll('-', ''));
+const dotClass = (r, nx) => (awaitingResult(r) ? 'wait' : r.status === 'settled' ? 'done' : r.status === 'cancelled' ? 'off' : nx && r.race_id === nx.race_id ? 'now' : '');
 function raceState(r, now) {
+  if (awaitingResult(r)) return ['結果待ち', 'c-wait'];
   if (r.status === 'settled') return ['確定', 'c-done'];
   if (r.status === 'cancelled') return ['中止', 'c-cancel'];
-  if (r.status === 'locked') return ['結果待ち', 'c-wait'];
-  const left = Date.parse(r.deadline) - now;
+    const left = Date.parse(r.deadline) - now;
   if (left <= 0) return ['締切', 'c-wait'];
   return left < 10 * 60e3 ? ['締切間近', 'c-near'] : ['受付中', 'c-open'];
 }
@@ -216,7 +219,7 @@ async function viewHome(_m, api) {
       const done = rs.filter((r) => r.status === 'settled' || r.status === 'cancelled').length;
       const nx = rs.find((r) => r.status === 'scheduled' && Date.parse(r.deadline) > now);
       const ent = rs.reduce((s, r) => s + r.entries.entered + r.entries.passed, 0);
-      const dots = rs.map((r) => `<span class="${r.status === 'settled' ? 'done' : r.status === 'cancelled' ? 'off' : r.status === 'locked' ? 'wait' : nx && r.race_id === nx.race_id ? 'now' : ''}"></span>`).join('');
+      const dots = rs.map((r) => `<span class="${dotClass(r, nx)}"></span>`).join('');
       return `<a class="venue" href="/venue/${rs[0].jcd}">
         <div style="display:flex;align-items:center;gap:8px"><span style="font-size:17px;font-weight:700">${esc(rs[0].venue)}</span><span class="tag" style="color:${kc}">${kind}</span><span style="flex:1"></span><span class="small muted">申告</span><span class="num" style="font-weight:700">${ent}</span></div>
         <div class="dots" aria-hidden="true">${dots}</div>
@@ -271,7 +274,7 @@ async function viewVenue(m, api) {
   const [kind, kc] = venueKind(rs);
   const done = rs.filter((r) => r.status === 'settled' || r.status === 'cancelled').length;
   const nx = rs.find((r) => r.status === 'scheduled' && Date.parse(r.deadline) > now);
-  const dots = rs.map((r) => `<span class="${r.status === 'settled' ? 'done' : r.status === 'cancelled' ? 'off' : r.status === 'locked' ? 'wait' : nx && r.race_id === nx.race_id ? 'now' : ''}"></span>`).join('');
+  const dots = rs.map((r) => `<span class="${dotClass(r, nx)}"></span>`).join('');
   const rows = rs.map((r) => {
     const [st, cls] = raceState(r, now);
     const n = r.entries.entered + r.entries.passed;

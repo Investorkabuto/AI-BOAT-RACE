@@ -7,7 +7,7 @@ import { sha256Hex } from '../lib/crypto';
 import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
 import { normalizeEntrants } from '../lib/entrants';
-import { fetchDispatchError } from '../jobs/fetch-dispatch';
+import { fetchDispatchError, RESULT_WANTED_SQL, resultWantedArgs } from '../jobs/fetch-dispatch';
 import { waiveFinesForCancelled } from '../jobs/settlement';
 
 export const internalApi = new Hono<{ Bindings: Env }>();
@@ -114,7 +114,7 @@ internalApi.get('/config-check', async (c) => {
   });
 });
 
-/** 公式結果が必要なレース（締切後で、舟券があり、結果が未取得） */
+/** 公式結果が必要なレース（締切後で結果が未取得。舟券のあるレースと、当日の全レース） */
 internalApi.get('/result-requests', async (c) => {
   // ?date=YYYY-MM-DD&all=1: その日の締切を過ぎた全レースのうち、結果が未保存のもの（毎朝の全レースの結果の保存用。要件定義 §6）
   const date = c.req.query('date');
@@ -125,9 +125,10 @@ internalApi.get('/result-requests', async (c) => {
     ).bind(date, Date.now()).all();
     return c.json({ requests: r.results });
   }
-  const r = await c.env.DB.prepare(
-    "SELECT r.id, r.race_date, r.jcd, r.rno, r.deadline_at FROM races r WHERE r.status = 'locked' AND r.id NOT IN (SELECT race_id FROM race_results) ORDER BY r.deadline_ms",
-  ).all();
+  // 精算待ち（舟券あり）のレースと、当日の締切後のレース（舟券の有無を問わない。観戦画面で当日中に結果を出すため）
+  const r = await c.env.DB.prepare(`SELECT id, race_date, jcd, rno, deadline_at FROM races WHERE ${RESULT_WANTED_SQL} ORDER BY deadline_ms`)
+    .bind(...resultWantedArgs(Date.now()))
+    .all();
   return c.json({ requests: r.results });
 });
 

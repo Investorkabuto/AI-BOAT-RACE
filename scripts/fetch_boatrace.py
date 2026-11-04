@@ -5,7 +5,7 @@ GitHub Actions から定期的に実行する（.github/workflows/boatrace.yml�
   schedule [--date YYYY-MM-DD]   その日の開催場と、各レースの締切予定時刻を PUT /internal/races に送り、
                                  各レースの選手の基本情報（枠番・登録番号・氏名・級別・支部・年齢）を PUT /internal/entrants に送る。
                                  選手は、まだ取り込んでいないレースだけ取得する（2回目の実行は取りこぼしの分だけ）
-  results                        GET /internal/result-requests の各レースの結果を取得し、POST /internal/results に送る
+  results                        GET /internal/result-requests の各レース（精算待ちと、当日の締切後の全レース）の結果を取得し、POST /internal/results に送る
   results-all --date YYYY-MM-DD  その日の全レースのうち結果が未保存のものを取得して保存する（毎朝、前日分。公開・振り返り用）
   probe-schedule --date ...      接続確認: 取得・解析した出走表を表示するだけ（アプリには書き込まない）
   probe-entrants --race ID       接続確認: 取得・解析した選手の基本情報を表示するだけ（例 20261103-12-07）
