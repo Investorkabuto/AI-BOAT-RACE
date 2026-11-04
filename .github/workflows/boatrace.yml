@@ -1,0 +1,58 @@
+name: Fetch boatrace
+
+# 出走表（締切予定時刻）: 毎日 日本時間 7:30 と 9:30 に取得する（2回目は1回目の取りこぼし対策。締切後のレースは変わらない）
+# 公式結果: 日本時間 10:00〜23:59 の10分ごとに、精算待ちのレースの結果を取得する
+# GitHub の cron は UTC で、起動は数分遅れることがある。締切はAPI側で判定するので公平性に影響しない
+on:
+  schedule:
+    - cron: "30 22 * * *"
+    - cron: "30 0 * * *"
+    - cron: "*/10 1-14 * * *"
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "schedule / results / probe-schedule / probe-result（probe-* はアプリに書き込まず、解析結果を表示するだけ）"
+        type: choice
+        options: [results, schedule, probe-schedule, probe-result]
+        default: results
+      date:
+        description: "schedule / probe-schedule の日付（YYYY-MM-DD、省略時は今日）"
+        type: string
+        default: ""
+      race:
+        description: "probe-result のレースID（例 20261103-12-07）"
+        type: string
+        default: ""
+
+concurrency:
+  group: fetch-boatrace
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+      - run: pip install -r scripts/requirements.txt
+      - name: Fetch and ingest
+        env:
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          CMD: ${{ inputs.command }}
+          DATE: ${{ inputs.date }}
+          RACE: ${{ inputs.race }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ -z "$CMD" ]; then
+            case "$SCHEDULE" in "30 22 * * *"|"30 0 * * *") CMD=schedule ;; *) CMD=results ;; esac
+          fi
+          ARGS=()
+          [ -n "$DATE" ] && ARGS+=(--date "$DATE")
+          [ -n "$RACE" ] && ARGS+=(--race "$RACE")
+          python scripts/fetch_boatrace.py "$CMD" "${ARGS[@]}"

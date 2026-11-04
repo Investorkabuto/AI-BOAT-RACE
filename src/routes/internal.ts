@@ -1,0 +1,98 @@
+// 出走表（締切時刻）と公式結果の取り込み（GitHub Actions から呼ぶ）。INGEST_TOKEN で認証する。
+import { Hono } from 'hono';
+import type { Env } from '../env';
+import { BET_TYPES, normalizeCombo, SPECIAL_COMBO, type BetType, type Payout } from '../lib/bets';
+import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
+import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
+import { isJcd, raceId } from '../lib/venues';
+
+export const internalApi = new Hono<{ Bindings: Env }>();
+
+internalApi.use('*', async (c, next) => {
+  const t = bearer(c);
+  if (!c.env.INGEST_TOKEN || !t || !safeEqual(t, c.env.INGEST_TOKEN)) throw new ApiError(401, 'unauthorized', 'invalid ingest token');
+  await next();
+});
+
+interface RaceIn {
+  jcd: string;
+  rno: number;
+  deadline: string; // 'HH:MM'
+  race_name?: string;
+}
+
+/**
+ * 出走表の取り込み（その日の場・レース・締切予定時刻）。何度送ってもよい。
+ * 受付中（scheduled）のレースだけ締切を更新する。締切後のレースは変えない（公平のため）
+ */
+internalApi.put('/races', async (c) => {
+  const b = await readJson(c);
+  const date = b.race_date;
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'race_date must be YYYY-MM-DD');
+  if (!Array.isArray(b.races)) throw new ApiError(400, 'bad_request', 'races must be an array');
+  const now = Date.now();
+  const stmts: D1PreparedStatement[] = [];
+  for (const r of b.races as RaceIn[]) {
+    const hm = typeof r.deadline === 'string' ? parseHm(r.deadline) : null;
+    if (!isJcd(r.jcd) || !Number.isInteger(r.rno) || r.rno < 1 || r.rno > 12 || !hm) throw new ApiError(400, 'bad_request', `invalid race: ${JSON.stringify(r)}`);
+    const ms = jstToMs(date, hm.hour, hm.minute);
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO races (id, race_date, jcd, rno, race_name, deadline_at, deadline_ms, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)
+         ON CONFLICT (id) DO UPDATE SET race_name = excluded.race_name, deadline_at = excluded.deadline_at, deadline_ms = excluded.deadline_ms, updated_at = excluded.updated_at
+         WHERE races.status = 'scheduled' AND races.deadline_ms > ?`,
+      ).bind(raceId(date, r.jcd, r.rno), date, r.jcd, r.rno, typeof r.race_name === 'string' ? r.race_name.slice(0, 80) : null, jstIso(ms), ms, jstIso(now), now),
+    );
+  }
+  if (stmts.length) await c.env.DB.batch(stmts);
+  return c.json({ upserted: stmts.length });
+});
+
+/** 公式結果が必要なレース（締切後で、舟券があり、結果が未取得） */
+internalApi.get('/result-requests', async (c) => {
+  const r = await c.env.DB.prepare(
+    "SELECT r.id, r.race_date, r.jcd, r.rno, r.deadline_at FROM races r WHERE r.status = 'locked' AND r.id NOT IN (SELECT race_id FROM race_results) ORDER BY r.deadline_ms",
+  ).all();
+  return c.json({ requests: r.results });
+});
+
+interface ResultIn {
+  race_id: string;
+  status: 'official' | 'cancelled';
+  finish?: unknown;
+  refunded_boats?: unknown;
+  payouts?: { bet_type: string; combo: string; payout: number }[];
+}
+
+/** 公式結果の書き込み。精算済みのレースの結果は上書きしない */
+internalApi.post('/results', async (c) => {
+  const b = await readJson(c);
+  if (!Array.isArray(b.results)) throw new ApiError(400, 'bad_request', 'results must be an array');
+  const now = jstIso(Date.now());
+  const stmts: D1PreparedStatement[] = [];
+  for (const r of b.results as ResultIn[]) {
+    const bad = (why: string) => new ApiError(400, 'bad_request', `invalid result (${why}): ${JSON.stringify(r).slice(0, 300)}`);
+    if (typeof r.race_id !== 'string' || (r.status !== 'official' && r.status !== 'cancelled')) throw bad('race_id/status');
+    const finish = (Array.isArray(r.finish) ? r.finish : []).map((x) => (Array.isArray(x) ? x : [x]));
+    const refunded = Array.isArray(r.refunded_boats) ? r.refunded_boats : [];
+    if ([...finish.flat(), ...refunded].some((x) => !Number.isInteger(x) || (x as number) < 1 || (x as number) > 6)) throw bad('boat number');
+    const payouts: Payout[] = [];
+    for (const p of r.payouts ?? []) {
+      if (!(BET_TYPES as readonly string[]).includes(p.bet_type) || !(typeof p.payout === 'number' && p.payout >= 0)) throw bad('payout');
+      const combo = p.combo === SPECIAL_COMBO ? SPECIAL_COMBO : normalizeCombo(p.bet_type as BetType, p.combo);
+      if (!combo) throw bad(`combo ${p.combo}`);
+      payouts.push({ bet_type: p.bet_type as BetType, combo, payout: p.payout });
+    }
+    if (r.status === 'official' && (finish.length < 2 || payouts.length === 0)) throw bad('official result needs finish and payouts');
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO race_results (race_id, status, finish_json, refunded_boats_json, payouts_json, fetched_at)
+         SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM races WHERE id = ? AND status IN ('scheduled', 'locked'))
+         ON CONFLICT (race_id) DO UPDATE SET status = excluded.status, finish_json = excluded.finish_json, refunded_boats_json = excluded.refunded_boats_json,
+           payouts_json = excluded.payouts_json, fetched_at = excluded.fetched_at`,
+      ).bind(r.race_id, r.status, JSON.stringify(finish), JSON.stringify(refunded), JSON.stringify(payouts), now, r.race_id),
+    );
+  }
+  if (stmts.length) await c.env.DB.batch(stmts);
+  return c.json({ upserted: stmts.length });
+});
