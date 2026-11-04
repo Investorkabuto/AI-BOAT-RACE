@@ -12,7 +12,9 @@ export const adminApi = new Hono<{ Bindings: Env }>();
 
 adminApi.use('*', async (c, next) => {
   const t = bearer(c);
-  if (!c.env.ADMIN_TOKEN || !t || !safeEqual(t, c.env.ADMIN_TOKEN)) throw new ApiError(401, 'unauthorized', 'invalid admin token');
+  // ダッシュボードで貼り付けたときに前後へ入りがちな空白・改行は無視して照合する
+  const expected = c.env.ADMIN_TOKEN?.trim();
+  if (!expected || !t || !safeEqual(t.trim(), expected)) throw new ApiError(401, 'unauthorized', 'invalid admin token');
   await next();
 });
 
