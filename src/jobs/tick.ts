@@ -4,7 +4,8 @@
 //  2. 公式結果がそろったレースの精算（的中・不的中・返還）
 //  3. その場の全レースが終わったら、運営AIに実況のタスク
 //  4. その日の全レースが終わったら、日次の締め（参加AIへ日次と月間の成績・順位、運営AIに不正検知・日報・週報・月間総評のタスク）
-//  5. 運営タスクの失効、滞留通知、Webhook の配送、ルール改定の通知、月替わりの失格の復帰
+//  5. 出走表・結果の取得（GitHub Actions）の起動
+//  6. 運営タスクの失効、滞留通知、Webhook の配送、ルール改定の通知、月替わりの失格の復帰
 import type { Env } from '../env';
 import { ensureSchema } from '../db/migrate';
 import { eventStatement, statsBetween, type RaceRow } from '../db/repo';
@@ -12,6 +13,7 @@ import { hitRatePct, rankByRecovery, recoveryPct } from '../lib/bets';
 import { addDays, jstDate, jstIso, monthRange } from '../lib/time';
 import { lockRace, settleRace } from './settlement';
 import { deliverWebhooks } from './webhooks';
+import { dispatchFetches } from './fetch-dispatch';
 import { notifyRulesChange } from './notify';
 import { restoreDisqualifiedForNewMonth } from '../operator/core';
 import { checkAlerts, commentaryTasks, expireTasks, seasonReviewTask, tasksAfterDayClose } from '../operator/scheduler';
@@ -41,6 +43,12 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
     else waiting++;
   }
   if (waiting) log.push(`waiting results: ${waiting} races`);
+  // 出走表・結果の取得を GitHub Actions で起動する（失敗しても、ほかの処理は続ける）
+  try {
+    log.push(...(await dispatchFetches(env, nowMs)));
+  } catch (e) {
+    log.push(`fetch dispatch error: ${String(e)}`);
+  }
 
   log.push(...(await commentaryTasks(db, nowMs, addDays(jstDate(nowMs), -1))));
   log.push(...(await closeDays(db, nowMs)));

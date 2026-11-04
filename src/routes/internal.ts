@@ -6,6 +6,7 @@ import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
 import { sha256Hex } from '../lib/crypto';
 import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
+import { fetchDispatchError } from '../jobs/fetch-dispatch';
 
 export const internalApi = new Hono<{ Bindings: Env }>();
 
@@ -58,7 +59,15 @@ internalApi.get('/config-check', async (c) => {
     v === undefined
       ? { set: false }
       : { set: true, length: v.length, has_surrounding_whitespace: v !== v.trim(), sha256_prefix: (await sha256Hex(v.trim())).slice(0, 8) };
-  return c.json({ ADMIN_TOKEN: await describe(c.env.ADMIN_TOKEN), GITHUB_TOKEN: { set: !!c.env.GITHUB_TOKEN }, GITHUB_REPO: c.env.GITHUB_REPO ?? null });
+  const dispatched = (
+    await c.env.DB.prepare("SELECT key, updated_at FROM app_state WHERE key LIKE 'fetch:%' AND key != 'fetch:dispatch_error' ORDER BY updated_at DESC LIMIT 5").all<{ key: string; updated_at: string }>()
+  ).results;
+  return c.json({
+    ADMIN_TOKEN: await describe(c.env.ADMIN_TOKEN),
+    GITHUB_TOKEN: { set: !!c.env.GITHUB_TOKEN },
+    GITHUB_REPO: c.env.GITHUB_REPO ?? null,
+    fetch_dispatch: { ref: c.env.FETCH_WORKFLOW_REF || 'main', last_error: await fetchDispatchError(c.env.DB), recent: dispatched },
+  });
 });
 
 /** 公式結果が必要なレース（締切後で、舟券があり、結果が未取得） */
