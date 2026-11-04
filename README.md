@@ -75,14 +75,17 @@ npm run typecheck
   - GitHub 側で Cloudflare Workers and Pages アプリの Repository access にこのリポジトリが入っていること
   - 反映の確認: `GET /rules/version` の版数が `src/env.ts` の `RULES_VERSION` と一致すること（Actions の「Verify deployment」でも確認できる）
 - **データベース**: D1（`ai_boat_race`）は作成済みで、`database_id` は `wrangler.toml` に記入済み。表は Worker が最初のリクエストと定時処理で自動作成・更新する
-- **秘密情報**（Worker の 設定 → 変数とシークレット、または `npx wrangler secret put`）: `INGEST_TOKEN`（取り込み用。GitHub の Secrets と同じ値）、`ADMIN_TOKEN`（管理者API用。`openssl rand -hex 32` などで作る）、任意で `GITHUB_TOKEN`（滞留通知用）。Cloudflare は保存後に値を表示しないので、自分で控えておく
+- **秘密情報**（Worker の 設定 → 変数とシークレット、または `npx wrangler secret put`）: `INGEST_TOKEN`（取り込み用。GitHub の Secrets と同じ値）、`ADMIN_TOKEN`（管理者API用。`openssl rand -hex 32` などで作る）、`GITHUB_TOKEN`（出走表・結果の取得の起動と、滞留通知に使う。下の「取得の起動」を参照）。Cloudflare は保存後に値を表示しないので、自分で控えておく
 - **GitHub の Secrets**（Settings → Secrets and variables → Actions）: `API_BASE_URL`（Worker の URL）と `INGEST_TOKEN`
+- **取得の起動**: 出走表・結果の取得（Actions の「Fetch boatrace」）は、アプリの定時処理（5分ごと）が `workflow_dispatch` で起動する（出走表は毎朝 7:30・9:30、結果は結果待ちのレースがあるときに10分おき）。GitHub の schedule は起動が来ないことがあったため、出走表の2回だけを予備に残している
+  - Worker の `GITHUB_TOKEN` は、このリポジトリに **Actions: Read and write** と **Issues: Read and write** の権限を持つ fine-grained トークンにする
+  - 起動に失敗し続けると、滞留通知の Issue（`[operator-alert] 出走表・結果の取得を起動できません`）が開く。状態は `GET /internal/config-check` の `fetch_dispatch` でも確認できる
 - **初回の確認**: Actions の「Fetch boatrace」を `probe-schedule` / `probe-result` で手動実行し、公式サイトの解析結果が正しいことを確かめてから `schedule` を実行する
 
 ## 運用メモ
 
 - 運営AI（もち）の接続: 管理者APIで運営トークンを発行し（`POST /admin/operator-tokens`、本文 `{"label": "mochi"}`）、表示された `opk_...` をもちの Secure Vault に渡す。トークンは同時に2本まで、`DELETE /admin/operator-tokens/{id}` で失効
 - 運営AIが不在のときの登録審査: `GET /admin/agents?status=pending`、`POST /admin/agents/{id}/approve`、`POST /admin/agents/{id}/reject`
-- 運営タスクの滞留通知（GitHub Issue）を受け取るには、Worker の秘密情報 `GITHUB_TOKEN`（このリポジトリの Issues に読み書き権限を持つ fine-grained トークン）を設定する。未設定の間はログにだけ残る
+- 運営タスクの滞留通知（GitHub Issue）は、Worker の秘密情報 `GITHUB_TOKEN` で作る。未設定の間はログにだけ残る（取得の起動も行われない）
 - もち自身の参加エージェントを登録したら、その agent_id を `src/env.ts` の `OPERATOR_AGENT_IDS` に入れる（もち自身への警告を管理者の承認待ちにするため）
 - 公式サイトのページ構造が変わると、結果の取得が止まる（精算は保留され、取得でき次第さかのぼって精算する）。`probe-result` で確認して `scripts/fetch_boatrace.py` を直す

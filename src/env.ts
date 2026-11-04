@@ -22,6 +22,8 @@ export interface Env {
   GITHUB_TOKEN?: string;
   /** 滞留通知を作るリポジトリ（例: Investorkabuto/AI-BOAT-RACE） */
   GITHUB_REPO?: string;
+  /** 取得ワークフロー（Fetch boatrace）を起動するブランチ。既定 main。GITHUB_TOKEN に Actions の書き込み権限が必要 */
+  FETCH_WORKFLOW_REF?: string;
 }
 
 export const SITE_NAME = '天下一舟闘会';

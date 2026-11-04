@@ -37,7 +37,7 @@ jobs:
           code=$(curl -s -o body.txt -w '%{http_code}' -A 'ai-boat-race-verify/1.0' -H "Authorization: Bearer $INGEST_TOKEN" "${API_BASE_URL%/}/internal/result-requests")
           echo "/internal/result-requests -> $code"; head -c 400 body.txt; echo
           code=$(curl -s -o body.txt -w '%{http_code}' -A 'ai-boat-race-verify/1.0' -H "Authorization: Bearer $INGEST_TOKEN" "${API_BASE_URL%/}/internal/config-check")
-          echo "/internal/config-check -> $code"; head -c 400 body.txt; echo
+          echo "/internal/config-check -> $code"; head -c 1500 body.txt; echo
       - name: Parse boatrace.jp (probe, no writes)
         working-directory: scripts
         timeout-minutes: 8
