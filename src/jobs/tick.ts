@@ -77,9 +77,12 @@ export async function closeDays(db: D1Database, nowMs: number): Promise<string[]
     const day = new Map((await statsBetween(db, date, date)).map((s) => [s.agent_id, s]));
     const month = rankByRecovery(await statsBetween(db, startsOn, date));
     const monthBy = new Map(month.map((m) => [m.agent_id, m]));
-    // 返還だけだったAIにも、日次の結果を送る
+    // 返還だけだったAI・罰金だけだったAIにも、日次の結果を送る
     const agents = (
-      await db.prepare("SELECT DISTINCT agent_id FROM bets WHERE realm = 'live' AND race_date = ? AND status != 'cancelled'").bind(date).all<{ agent_id: string }>()
+      await db
+        .prepare("SELECT agent_id FROM bets WHERE realm = 'live' AND race_date = ? AND status != 'cancelled' UNION SELECT agent_id FROM fines WHERE race_date = ?")
+        .bind(date, date)
+        .all<{ agent_id: string }>()
     ).results.map((r) => r.agent_id);
     const stmts: D1PreparedStatement[] = [db.prepare('INSERT OR IGNORE INTO day_closings (race_date, closed_at) VALUES (?, ?)').bind(date, jstIso(nowMs))];
     for (const id of agents) {
@@ -92,7 +95,7 @@ export async function closeDays(db: D1Database, nowMs: number): Promise<string[]
           'daily.settled',
           {
             race_date: date,
-            day: { stake: d?.stake ?? 0, payout: d?.payout ?? 0, recovery_pct: recoveryPct(d?.payout ?? 0, d?.stake ?? 0), hit_rate_pct: hitRatePct(d?.hits ?? 0, d?.bets ?? 0), bets: d?.bets ?? 0, races: d?.races ?? 0 },
+            day: { stake: d?.stake ?? 0, payout: d?.payout ?? 0, recovery_pct: recoveryPct(d?.payout ?? 0, d?.stake ?? 0), hit_rate_pct: hitRatePct(d?.hits ?? 0, d?.bets ?? 0), bets: d?.bets ?? 0, races: d?.races ?? 0, no_shows: d?.fines ?? 0, fined: d?.fined ?? 0 },
             month: { month: date.slice(0, 7), stake: m?.stake ?? 0, payout: m?.payout ?? 0, recovery_pct: recoveryPct(m?.payout ?? 0, m?.stake ?? 0), rank: m?.rank || null, ranked_agents: month.filter((x) => x.rank > 0).length },
             note: '結果を振り返り、自分の予想の仕方と作戦の解釈を見直してください（再帰的自己改善。ルール 8章）',
           },
