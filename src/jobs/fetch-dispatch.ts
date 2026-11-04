@@ -1,7 +1,8 @@
 // 出走表・結果の取得（GitHub Actions の Fetch boatrace）を、アプリの定時処理（5分ごと）から起動する。
 // GitHub の schedule（cron）は起動が遅れたり来なかったりするため、確実に動くこちらを正とする。
 //  - 出走表: 毎朝 7:30 と 9:30（日本時間）に1回ずつ。朝の申告期限（8:30）までに出走表がそろうように
-//  - 結果: 締切後で結果待ちのレース（舟券があるレースだけ）があるときに、最短10分おき
+//  - 結果: 締切後で結果が未取得のレースがあるときに、最短10分おき。舟券のあるレース（精算用）に加えて、
+//    当日の全レースを締切の5分後から3時間まで取りに行く（AIの参加に関係なく当日中に観戦画面で結果を出すため。2026-11-05 管理者決定）
 //  - 全レースの結果: 毎朝 6:00 に前日分をまとめて保存する（公開・振り返り用。要件定義 §6）
 // 取り込みは何度実行しても安全なので、GitHub 側の schedule が動いて二重になっても問題ない。
 import type { Env } from '../env';
@@ -17,6 +18,19 @@ export const RESULTS_INTERVAL_MS = 10 * 60 * 1000;
 
 /** 前日の全レースの結果をまとめて取る時刻（日本時間） */
 export const RESULTS_ALL_SLOT = '06:00';
+
+/** 舟券のないレースの結果は、締切からこの時間がたってから取りに行く（レースが終わって結果が出るまでの目安） */
+export const RESULT_WAIT_MS = 5 * 60 * 1000;
+/** 舟券のないレースは、締切からこの時間を過ぎたら当日の取得をあきらめる（残りは翌朝 6:00 の全レースの取得で拾う） */
+export const RESULT_GIVEUP_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * 結果を取りに行くレース（締切後で結果が未取得）。舟券のあるレース（locked、精算待ち）はすぐ、
+ * それ以外は締切の RESULT_WAIT_MS 後から RESULT_GIVEUP_MS まで。bind には resultWantedArgs(nowMs) を渡す
+ */
+export const RESULT_WANTED_SQL =
+  "(status = 'locked' OR (deadline_ms <= ? AND deadline_ms > ? AND status != 'cancelled')) AND id NOT IN (SELECT race_id FROM race_results)";
+export const resultWantedArgs = (nowMs: number) => [nowMs - RESULT_WAIT_MS, nowMs - RESULT_GIVEUP_MS];
 
 export interface Dispatch {
   /** 起動済みの記録に使うキー（app_state.key） */
@@ -73,9 +87,10 @@ export async function dispatchFetches(env: Env, nowMs: number): Promise<string[]
   const state = new Map(
     (await db.prepare("SELECT key, value FROM app_state WHERE key LIKE 'fetch:%'").all<{ key: string; value: string }>()).results.map((r) => [r.key, r.value]),
   );
-  // 結果が必要なのは、締切後で結果が未取得のレース（舟券のないレースは締切で精算済みになるので含まれない）
+  // 結果が必要なのは、締切後で結果が未取得のレース（舟券の有無を問わない。RESULT_WANTED_SQL）
   const pending = await db
-    .prepare("SELECT COUNT(*) AS n FROM races WHERE status = 'locked' AND id NOT IN (SELECT race_id FROM race_results)")
+    .prepare(`SELECT COUNT(*) AS n FROM races WHERE ${RESULT_WANTED_SQL}`)
+    .bind(...resultWantedArgs(nowMs))
     .first<{ n: number }>();
   const due = dueDispatches({ nowMs, done: new Set(state.keys()), lastResultsMs: Number(state.get('fetch:results') ?? 0), pendingResults: pending?.n ?? 0 });
   for (const d of due) {
