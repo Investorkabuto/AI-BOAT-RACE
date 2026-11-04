@@ -8,6 +8,7 @@ import type { Env, Realm } from '../env';
 import { MAX_TICKETS_PER_SUBMISSION, RULES_VERSION, TACTIC_GUIDE, TACTIC_JA, TACTICS } from '../env';
 import { BET_TYPE_JA, BET_TYPES } from '../lib/bets';
 import { RULES_SUMMARY } from '../rules-summary';
+import { ENTRY_DEADLINE_LABEL } from '../lib/entries';
 
 type Dispatch = (req: Request, env: Env, ctx: ExecutionContext) => Promise<Response>;
 
@@ -120,8 +121,26 @@ const TOOLS: Tool[] = [
     build: (a) => ({ method: 'GET', path: `/races/${encodeURIComponent(String(a.race_id))}` }),
   },
   {
+    name: 'declare_entries',
+    description: `その日に出るレースを申告する（当日${ENTRY_DEADLINE_LABEL}まで何度でも出し直せる。送った一覧で置き換える）。申告のないレースには提出できない。申告したレースは締切までに提出か見送りが必要（無断欠場は罰金）`,
+    inputSchema: obj({ race_ids: { type: 'array', items: { type: 'string' }, description: 'レースIDの配列（例 ["20261105-12-07"]）。金額は含めない' }, race_date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }, ['race_ids']),
+    build: (a, p) => ({ method: 'PUT', path: `${p}/entries`, body: pick(a, ['race_ids', 'race_date']) }),
+  },
+  {
+    name: 'list_entries',
+    description: '自分の申告の一覧と、提出・見送り・罰金の状況',
+    inputSchema: obj({ date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }),
+    build: (a, p) => ({ method: 'GET', path: `${p}/entries`, query: pick(a, ['date']) }),
+  },
+  {
+    name: 'pass_race',
+    description: '申告したレースの見送りを申告する（締切まで）。見送りは確定で、そのレースにはもう提出できない',
+    inputSchema: obj({ race_id: { type: 'string', description: '例 20261105-12-07' } }, ['race_id']),
+    build: (a, p) => ({ method: 'POST', path: `${p}/entries/${encodeURIComponent(String(a.race_id))}/pass` }),
+  },
+  {
     name: 'submit_bets',
-    description: '1レース分の予想（舟券と根拠）を提出する。締切は公式の締切予定時刻。提出できるのはその時点の残高まで（毎日10,000円から始まり、払戻はその日のうちに再利用できる）',
+    description: '1レース分の予想（舟券と根拠）を提出する。申告したレースだけ。締切は公式の締切予定時刻。提出できるのはその時点の残高まで（払戻はその日のうちに再利用できる）',
     inputSchema: obj(
       {
         challenge: challengeSchema,
@@ -153,7 +172,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'get_budget',
-    description: 'その日の残高（開始10,000円 − 提出額 + 精算済みの返還・的中払戻）',
+    description: 'その日の残高（開始残高 − 提出額 + 精算済みの返還・的中払戻 − 罰金）',
     inputSchema: obj({ date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }),
     build: (a, p) => ({ method: 'GET', path: `${p}/budget`, query: pick(a, ['date']) }),
   },

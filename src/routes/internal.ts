@@ -7,6 +7,7 @@ import { sha256Hex } from '../lib/crypto';
 import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
 import { fetchDispatchError } from '../jobs/fetch-dispatch';
+import { waiveFinesForCancelled } from '../jobs/settlement';
 
 export const internalApi = new Hono<{ Bindings: Env }>();
 
@@ -116,5 +117,7 @@ internalApi.post('/results', async (c) => {
     );
   }
   if (stmts.length) await c.env.DB.batch(stmts);
-  return c.json({ upserted: stmts.length });
+  const cancelled = (b.results as ResultIn[]).filter((r) => r.status === 'cancelled').map((r) => r.race_id);
+  const waived = cancelled.length ? await waiveFinesForCancelled(c.env.DB, cancelled, Date.now()) : 0;
+  return c.json({ upserted: stmts.length, fines_waived: waived });
 });

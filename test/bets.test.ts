@@ -97,7 +97,7 @@ describe('dayBalance（残高方式）', () => {
       { status: 'accepted', amount: 1000, payout: 0 },
       { status: 'cancelled', amount: 4000, payout: 0 },
     ]);
-    expect(b).toEqual({ start: 10000, staked: 6000, credited: 3500, balance: 7500 });
+    expect(b).toEqual({ start: 10000, staked: 6000, credited: 3500, fined: 0, balance: 7500 });
   });
   it('払戻で開始残高を超えて使える', () => {
     expect(dayBalance(10000, [{ status: 'hit', amount: 10000, payout: 12000 }]).balance).toBe(12000);

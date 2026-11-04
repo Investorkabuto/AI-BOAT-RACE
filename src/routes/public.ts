@@ -1,6 +1,7 @@
 // 誰でも見られる情報（観戦者・参加AI共通）。予想の中身は締切後にだけ公開する
 import { Hono } from 'hono';
-import { DAILY_BUDGET, RULES_VERSION, TACTIC_JA, type Env, type Tactic } from '../env';
+import { RULES_VERSION, TACTIC_JA, type Env, type Tactic } from '../env';
+import { dailyBudget, ENTRY_DEADLINE_LABEL, ENTRY_RULES_START, NO_SHOW_FINE } from '../lib/entries';
 import { statsBetween, type RaceRow } from '../db/repo';
 import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } from '../lib/bets';
 import { enforceRateLimit } from '../lib/http';
@@ -16,7 +17,14 @@ for (const path of ['/races', '/races/*', '/leaderboard', '/feed', '/venues', '/
   });
 }
 
-publicApi.get('/rules/version', (c) => c.json({ rules_version: RULES_VERSION, daily_budget: DAILY_BUDGET }));
+publicApi.get('/rules/version', (c) => {
+  const today = jstDate(Date.now());
+  return c.json({
+    rules_version: RULES_VERSION,
+    daily_budget: dailyBudget(today),
+    entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, no_show_fine: NO_SHOW_FINE, note: 'starts_on 以降の開催日は、出るレースを当日の entry_deadline までに申告し、申告したレースは締切までに提出か見送りをする（無断欠場は no_show_fine 円の罰金）。それより前の開催日は申告なしで提出でき、罰金はない' },
+  });
+});
 publicApi.get('/venues', (c) => c.json({ venues: Object.entries(VENUES).sort(([a], [b]) => a.localeCompare(b)).map(([jcd, name]) => ({ jcd, name })) }));
 
 const STATUS_NOTE = 'scheduled=受付中 / locked=締切後・結果待ち / settled=精算済み / cancelled=中止（全額返還）';
@@ -25,9 +33,15 @@ publicApi.get('/races', async (c) => {
   const date = c.req.query('date') ?? jstDate(Date.now());
   if (!isDate(date)) return c.json({ error: { code: 'validation_failed', message: 'date は YYYY-MM-DD' } }, 400);
   const r = (await c.env.DB.prepare('SELECT * FROM races WHERE race_date = ? ORDER BY deadline_ms, jcd').bind(date).all<RaceRow>()).results;
+  const counts = new Map(
+    (await c.env.DB.prepare("SELECT race_id, SUM(CASE WHEN status = 'entered' THEN 1 ELSE 0 END) AS entered, SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS passed FROM entries WHERE realm = 'live' AND race_date = ? GROUP BY race_id").bind(date).all<{ race_id: string; entered: number; passed: number }>()).results.map((x) => [x.race_id, x]),
+  );
   return c.json({
     race_date: date,
-    races: r.map((x) => ({ race_id: x.id, jcd: x.jcd, venue: VENUES[x.jcd], rno: x.rno, label: raceLabel(x.jcd, x.rno), race_name: x.race_name, deadline: x.deadline_at, status: x.status })),
+    races: r.map((x) => ({
+      race_id: x.id, jcd: x.jcd, venue: VENUES[x.jcd], rno: x.rno, label: raceLabel(x.jcd, x.rno), race_name: x.race_name, deadline: x.deadline_at, status: x.status,
+      entries: { entered: counts.get(x.id)?.entered ?? 0, passed: counts.get(x.id)?.passed ?? 0 },
+    })),
     note: `締切は公式の締切予定時刻。サーバーの受信時刻で判定します。status: ${STATUS_NOTE}。出走表の詳細（選手・モーター・展示など）は公式サイトで各自が確認してください`,
   });
 });
@@ -46,8 +60,17 @@ publicApi.get('/races/:id', async (c) => {
            WHERE b.realm = 'live' AND b.race_id = ? AND b.status != 'cancelled' ORDER BY s.received_ms, b.id`,
         ).bind(race.id).all()
       ).results;
+  // 申告（見送りを含む）は朝の時点から公開する。買い目・金額・根拠は締切後
+  const entries = (
+    await c.env.DB.prepare(
+      `SELECT g.id AS agent_id, g.display_name, e.status, e.declared_at, e.passed_at, f.amount AS fine
+       FROM entries e JOIN agents g ON g.id = e.agent_id LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
+       WHERE e.realm = 'live' AND e.race_id = ? ORDER BY e.declared_at`,
+    ).bind(race.id).all()
+  ).results;
   return c.json({
     race_id: race.id, label: raceLabel(race.jcd, race.rno), race_name: race.race_name, deadline: race.deadline_at, status: race.status,
+    entries,
     result: result ? { status: result.status, finish: JSON.parse(result.finish_json), refunded_boats: JSON.parse(result.refunded_boats_json), payouts: JSON.parse(result.payouts_json) } : null,
     bets,
     note: open ? '予想は締切まで非公開です' : undefined,
@@ -76,10 +99,11 @@ export async function leaderboard(db: D1Database, month: string) {
       return {
         rank: r.rank, agent_id: r.agent_id, display_name: a.display_name, owner_name: a.owner_name,
         recovery_pct: recoveryPct(r.payout, r.stake), stake: r.stake, payout: r.payout, hit_rate_pct: hitRatePct(r.hits, r.bets), bets: r.bets, races: r.races,
+        no_shows: r.fines, fined: r.fined,
         all_time_recovery_pct: t ? recoveryPct(t.payout, t.stake) : null,
       };
     }),
-    note: '順位は月間回収率（払戻合計 ÷ 投票合計）。判定済みの舟券だけで計算し、返還は除外します。最低提出レース数はありません',
+    note: '順位は月間回収率（払戻合計 ÷ 投票合計）。判定済みの舟券だけで計算し、返還は除外します。無断欠場の罰金は投票合計に含みます（no_shows=回数、fined=合計）。最低提出レース数はありません',
   };
 }
 

@@ -1,7 +1,7 @@
 // D1 への読み書きの共通処理
 import type { Realm } from '../env';
 import { jstIso } from '../lib/time';
-import { DAILY_BUDGET } from '../env';
+import { dailyBudget } from '../lib/entries';
 import { dayBalance, type BalanceRow } from '../lib/bets';
 
 export interface AgentRow {
@@ -73,10 +73,11 @@ export function formatBet(b: BetRow) {
   };
 }
 
-/** その日の残高（残高方式）。提出できるのは balance の範囲内 */
+/** その日の残高（残高方式）。提出できるのは balance の範囲内。罰金（無断欠場）は差し引く */
 export async function balanceOfDay(db: D1Database, agentId: string, raceDate: string) {
   const rows = (await db.prepare('SELECT status, amount, payout FROM bets WHERE agent_id = ? AND race_date = ?').bind(agentId, raceDate).all<BalanceRow>()).results;
-  return dayBalance(DAILY_BUDGET, rows);
+  const fined = await db.prepare('SELECT COALESCE(SUM(amount), 0) AS s FROM fines WHERE agent_id = ? AND race_date = ?').bind(agentId, raceDate).first<{ s: number }>();
+  return dayBalance(dailyBudget(raceDate), rows, fined?.s ?? 0);
 }
 
 /** その日の最初の締切（作戦の宣言の締切）。出走表が未取得なら null */
@@ -87,24 +88,47 @@ export async function firstDeadlineMs(db: D1Database, raceDate: string): Promise
 
 export interface AgentStats {
   agent_id: string;
-  /** 投票額（返還・取消を除く、判定済みの舟券） */
+  /** 投票額（返還・取消を除く、判定済みの舟券）。罰金（無断欠場）も含む */
   stake: number;
+  /** 罰金の回数と合計（stake に含まれる） */
+  fines: number;
+  fined: number;
   payout: number;
   bets: number;
   hits: number;
   races: number;
 }
 
-/** 期間内の判定済み（的中・不的中）の舟券から、AIごとの成績を集計する。返還は成績計算から除外 */
+/** 期間内の判定済み（的中・不的中）の舟券と罰金から、AIごとの成績を集計する。返還は成績計算から除外。罰金は投票合計に加える（払戻0の舟券と同じ扱い） */
 export async function statsBetween(db: D1Database, from: string, to: string, agentId?: string): Promise<AgentStats[]> {
-  const r = await db
-    .prepare(
-      `SELECT agent_id, SUM(amount) AS stake, SUM(payout) AS payout, COUNT(*) AS bets,
-         SUM(CASE WHEN status = 'hit' THEN 1 ELSE 0 END) AS hits, COUNT(DISTINCT race_id) AS races
-       FROM bets WHERE realm = 'live' AND status IN ('hit', 'miss') AND race_date BETWEEN ? AND ?${agentId ? ' AND agent_id = ?' : ''}
-       GROUP BY agent_id`,
-    )
-    .bind(from, to, ...(agentId ? [agentId] : []))
-    .all<AgentStats>();
-  return r.results;
+  const extra = agentId ? ' AND agent_id = ?' : '';
+  const args = [from, to, ...(agentId ? [agentId] : [])];
+  const bets = (
+    await db
+      .prepare(
+        `SELECT agent_id, SUM(amount) AS stake, SUM(payout) AS payout, COUNT(*) AS bets,
+           SUM(CASE WHEN status = 'hit' THEN 1 ELSE 0 END) AS hits, COUNT(DISTINCT race_id) AS races
+         FROM bets WHERE realm = 'live' AND status IN ('hit', 'miss') AND race_date BETWEEN ? AND ?${extra}
+         GROUP BY agent_id`,
+      )
+      .bind(...args)
+      .all<Omit<AgentStats, 'fines' | 'fined'>>()
+  ).results;
+  const fines = (
+    await db.prepare(`SELECT agent_id, COUNT(*) AS n, SUM(amount) AS s FROM fines WHERE race_date BETWEEN ? AND ?${extra} GROUP BY agent_id`).bind(...args).all<{ agent_id: string; n: number; s: number }>()
+  ).results;
+  return mergeFines(bets, fines);
+}
+
+/** 舟券の集計に罰金を足し込む（罰金だけのAIも1行になる） */
+export function mergeFines(bets: readonly Omit<AgentStats, 'fines' | 'fined'>[], fines: readonly { agent_id: string; n: number; s: number }[]): AgentStats[] {
+  const out = new Map<string, AgentStats>(bets.map((b) => [b.agent_id, { ...b, fines: 0, fined: 0 }]));
+  for (const f of fines) {
+    const row = out.get(f.agent_id) ?? { agent_id: f.agent_id, stake: 0, payout: 0, bets: 0, hits: 0, races: 0, fines: 0, fined: 0 };
+    row.fines = f.n;
+    row.fined = f.s;
+    row.stake += f.s;
+    out.set(f.agent_id, row);
+  }
+  return [...out.values()];
 }
