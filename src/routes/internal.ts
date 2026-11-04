@@ -6,7 +6,8 @@ import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
 import { sha256Hex } from '../lib/crypto';
 import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
-import { fetchDispatchError } from '../jobs/fetch-dispatch';
+import { normalizeEntrants, normalizeStarts } from '../lib/entrants';
+import { fetchDispatchError, RESULT_WANTED_SQL, resultWantedArgs } from '../jobs/fetch-dispatch';
 import { waiveFinesForCancelled } from '../jobs/settlement';
 
 export const internalApi = new Hono<{ Bindings: Env }>();
@@ -52,6 +53,48 @@ internalApi.put('/races', async (c) => {
 });
 
 /**
+ * 出走表の選手の基本情報の取り込み（枠番・登録番号・氏名・級別・支部・年齢。要件定義 §6）。何度送ってもよい。
+ * body: { race_date, races: [{ jcd, rno, entrants: [...] }] }。先に PUT /races で登録したレースだけ保存する
+ */
+internalApi.put('/entrants', async (c) => {
+  const b = await readJson(c);
+  const date = b.race_date;
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'race_date must be YYYY-MM-DD');
+  if (!Array.isArray(b.races)) throw new ApiError(400, 'bad_request', 'races must be an array');
+  const now = jstIso(Date.now());
+  const stmts: D1PreparedStatement[] = [];
+  const skipped: string[] = [];
+  for (const r of b.races as { jcd: unknown; rno: unknown; entrants: unknown }[]) {
+    if (!isJcd(r.jcd) || typeof r.rno !== 'number' || !Number.isInteger(r.rno) || r.rno < 1 || r.rno > 12) throw new ApiError(400, 'bad_request', `invalid race: ${JSON.stringify({ jcd: r.jcd, rno: r.rno })}`);
+    const id = raceId(date, r.jcd, r.rno);
+    const n = normalizeEntrants(r.entrants);
+    if (!n.ok) {
+      skipped.push(`${id}: ${n.reason}`);
+      continue;
+    }
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO race_entrants (race_id, entrants_json, updated_at) SELECT id, ?, ? FROM races WHERE id = ?
+         ON CONFLICT (race_id) DO UPDATE SET entrants_json = excluded.entrants_json, updated_at = excluded.updated_at`,
+      ).bind(JSON.stringify(n.entrants), now, id),
+    );
+  }
+  const saved = stmts.length ? (await c.env.DB.batch(stmts)).reduce((s, r) => s + (r.meta.changes ?? 0), 0) : 0;
+  return c.json({ saved, skipped });
+});
+
+/** 選手の基本情報がまだ無い、その日の受付中のレース（朝の2回目の取り込みで、取りこぼしだけを取り直すため） */
+internalApi.get('/entrant-requests', async (c) => {
+  const date = c.req.query('date');
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date must be YYYY-MM-DD');
+  const r = await c.env.DB.prepare(
+    `SELECT r.id, r.jcd, r.rno FROM races r LEFT JOIN race_entrants e ON e.race_id = r.id
+     WHERE r.race_date = ? AND r.status = 'scheduled' AND e.race_id IS NULL ORDER BY r.jcd, r.rno`,
+  ).bind(date).all<{ id: string; jcd: string; rno: number }>();
+  return c.json({ requests: r.results });
+});
+
+/**
  * 秘密情報の設定の確認（値そのものは返さない）。管理者トークンが合わないときの調査用。
  * 返すのは、設定の有無・文字数・前後の空白の有無・SHA-256 の先頭8文字だけ
  */
@@ -71,7 +114,7 @@ internalApi.get('/config-check', async (c) => {
   });
 });
 
-/** 公式結果が必要なレース（締切後で、舟券があり、結果が未取得） */
+/** 公式結果が必要なレース（締切後で結果が未取得。舟券のあるレースと、当日の全レース） */
 internalApi.get('/result-requests', async (c) => {
   // ?date=YYYY-MM-DD&all=1: その日の締切を過ぎた全レースのうち、結果が未保存のもの（毎朝の全レースの結果の保存用。要件定義 §6）
   const date = c.req.query('date');
@@ -82,9 +125,10 @@ internalApi.get('/result-requests', async (c) => {
     ).bind(date, Date.now()).all();
     return c.json({ requests: r.results });
   }
-  const r = await c.env.DB.prepare(
-    "SELECT r.id, r.race_date, r.jcd, r.rno, r.deadline_at FROM races r WHERE r.status = 'locked' AND r.id NOT IN (SELECT race_id FROM race_results) ORDER BY r.deadline_ms",
-  ).all();
+  // 精算待ち（舟券あり）のレースと、当日の締切後のレース（舟券の有無を問わない。観戦画面で当日中に結果を出すため）
+  const r = await c.env.DB.prepare(`SELECT id, race_date, jcd, rno, deadline_at FROM races WHERE ${RESULT_WANTED_SQL} ORDER BY deadline_ms`)
+    .bind(...resultWantedArgs(Date.now()))
+    .all();
   return c.json({ requests: r.results });
 });
 
@@ -94,6 +138,7 @@ interface ResultIn {
   finish?: unknown;
   refunded_boats?: unknown;
   payouts?: { bet_type: string; combo: string; payout: number }[];
+  start?: unknown; // スタート情報 [{course, boat, st}]（任意。解析できなければ省く）
 }
 
 /**
@@ -128,9 +173,18 @@ internalApi.post('/results', async (c) => {
          WHERE EXISTS (SELECT 1 FROM races WHERE id = excluded.race_id AND status IN ('scheduled', 'locked'))`,
       ).bind(r.race_id, r.status, JSON.stringify(finish), JSON.stringify(refunded), JSON.stringify(payouts), now, r.race_id),
     );
+    const starts = r.status === 'official' ? normalizeStarts(r.start) : null;
+    if (starts) {
+      stmts.push(
+        c.env.DB.prepare(
+          `INSERT INTO race_starts (race_id, starts_json, updated_at) SELECT id, ?, ? FROM races WHERE id = ?
+           ON CONFLICT (race_id) DO UPDATE SET starts_json = excluded.starts_json, updated_at = excluded.updated_at`,
+        ).bind(JSON.stringify(starts), now, r.race_id),
+      );
+    }
   }
   if (stmts.length) await c.env.DB.batch(stmts);
   const cancelled = (b.results as ResultIn[]).filter((r) => r.status === 'cancelled').map((r) => r.race_id);
   const waived = cancelled.length ? await waiveFinesForCancelled(c.env.DB, cancelled, Date.now()) : 0;
-  return c.json({ upserted: stmts.length, fines_waived: waived });
+  return c.json({ upserted: (b.results as ResultIn[]).length, starts: stmts.length - (b.results as ResultIn[]).length, fines_waived: waived });
 });

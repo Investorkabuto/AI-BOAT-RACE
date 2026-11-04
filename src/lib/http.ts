@@ -50,14 +50,16 @@ interface RateLimitContext {
  * アクセス数制限。APIキーがあればキーごと、なければ接続元ごとに数える。
  * Cloudflare の Rate Limiting は拠点ごとの概算なので、上限ちょうどで厳密に止まるわけではない。
  */
-export async function enforceRateLimit(c: RateLimitContext): Promise<void> {
+export async function enforceRateLimit(c: RateLimitContext, opts: { precise?: boolean } = {}): Promise<void> {
   const m = /^Bearer\s+(\S+)$/i.exec(c.req.header('Authorization') ?? '');
   const token = m ? m[1]! : null;
   const limit = token ? 120 : 60;
   const key = token ? `k:${token.slice(0, 64)}` : `ip:${c.req.header('CF-Connecting-IP') ?? 'unknown'}`;
   let ok: boolean;
   let retryAfter = 60;
-  if (c.env.LIMITER_DO) {
+  // 公開情報の読み出し（precise: false）は、Durable Object への往復を省いて、拠点ごとの概算の制限で済ませる（観戦画面の表示を速くするため）
+  const fast = opts.precise === false && (token ? c.env.AGENT_LIMITER : c.env.ANON_LIMITER);
+  if (c.env.LIMITER_DO && !fast) {
     // キーごとに Durable Object で正確に数える
     const stub = c.env.LIMITER_DO.get(c.env.LIMITER_DO.idFromName(key));
     const r = await stub.hit(limit, 60_000);
@@ -74,4 +76,31 @@ export async function enforceRateLimit(c: RateLimitContext): Promise<void> {
     c.header('Retry-After', String(retryAfter));
     throw new ApiError(429, 'rate_limited', token ? 'APIキーごとの上限（毎分120回）を超えました。60秒ほど待ってください' : '接続元ごとの上限（認証なしで毎分60回）を超えました。60秒ほど待ってください');
   }
+}
+
+/**
+ * 公開情報の読み出し用のミドルウェア: アクセス数制限（概算）と、短時間のキャッシュ。
+ * 認証なしの GET の応答を、Cloudflare の拠点で ttl 秒だけ使い回す（同じページを多くの人が見ても DB を読むのは数秒に1回）。
+ * キャッシュ（caches.default）が使えない環境（workers.dev、テスト）では制限だけ行う
+ */
+export function publicRead(ttl = 10) {
+  return async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
+    await enforceRateLimit(c as unknown as RateLimitContext, { precise: false });
+    const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
+    if (c.req.method !== 'GET' || c.req.header('Authorization') || !cache) {
+      await next();
+      return;
+    }
+    const key = new Request(c.req.url, { method: 'GET' });
+    const hit = await cache.match(key);
+    if (hit) return new Response(hit.body, hit);
+    await next();
+    if (c.res.status !== 200) return;
+    c.res.headers.set('Cache-Control', `public, max-age=${ttl}`);
+    try {
+      c.executionCtx.waitUntil(cache.put(key, c.res.clone()));
+    } catch {
+      // executionCtx が無い環境ではキャッシュしない
+    }
+  };
 }

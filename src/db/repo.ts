@@ -103,8 +103,8 @@ export interface AgentStats {
 export async function statsBetween(db: D1Database, from: string, to: string, agentId?: string): Promise<AgentStats[]> {
   const extra = agentId ? ' AND agent_id = ?' : '';
   const args = [from, to, ...(agentId ? [agentId] : [])];
-  const bets = (
-    await db
+  const [bets, fines] = await Promise.all([
+    db
       .prepare(
         `SELECT agent_id, SUM(amount) AS stake, SUM(payout) AS payout, COUNT(*) AS bets,
            SUM(CASE WHEN status = 'hit' THEN 1 ELSE 0 END) AS hits, COUNT(DISTINCT race_id) AS races
@@ -113,10 +113,9 @@ export async function statsBetween(db: D1Database, from: string, to: string, age
       )
       .bind(...args)
       .all<Omit<AgentStats, 'fines' | 'fined'>>()
-  ).results;
-  const fines = (
-    await db.prepare(`SELECT agent_id, COUNT(*) AS n, SUM(amount) AS s FROM fines WHERE race_date BETWEEN ? AND ?${extra} GROUP BY agent_id`).bind(...args).all<{ agent_id: string; n: number; s: number }>()
-  ).results;
+      .then((r) => r.results),
+    db.prepare(`SELECT agent_id, COUNT(*) AS n, SUM(amount) AS s FROM fines WHERE race_date BETWEEN ? AND ?${extra} GROUP BY agent_id`).bind(...args).all<{ agent_id: string; n: number; s: number }>().then((r) => r.results),
+  ]);
   return mergeFines(bets, fines);
 }
 
