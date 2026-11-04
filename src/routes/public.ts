@@ -4,17 +4,14 @@ import { RULES_VERSION, TACTIC_JA, type Env, type Tactic } from '../env';
 import { dailyBudget, ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesApply, ENTRY_RULES_START, NO_SHOW_FINE } from '../lib/entries';
 import { statsBetween, type RaceRow } from '../db/repo';
 import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } from '../lib/bets';
-import { enforceRateLimit } from '../lib/http';
+import { publicRead } from '../lib/http';
 import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
 import { raceLabel, VENUES } from '../lib/venues';
 
 export const publicApi = new Hono<{ Bindings: Env }>();
 
 for (const path of ['/races', '/races/*', '/declarations', '/leaderboard', '/feed', '/venues', '/rules/version', '/commentary', '/reports', '/reports/*']) {
-  publicApi.use(path, async (c, next) => {
-    await enforceRateLimit(c);
-    await next();
-  });
+  publicApi.use(path, publicRead());
 }
 
 publicApi.get('/rules/version', (c) => {
@@ -32,61 +29,87 @@ const STATUS_NOTE = 'scheduled=受付中 / locked=締切後・結果待ち / set
 publicApi.get('/races', async (c) => {
   const date = c.req.query('date') ?? jstDate(Date.now());
   if (!isDate(date)) return c.json({ error: { code: 'validation_failed', message: 'date は YYYY-MM-DD' } }, 400);
-  const r = (await c.env.DB.prepare('SELECT * FROM races WHERE race_date = ? ORDER BY deadline_ms, jcd').bind(date).all<RaceRow>()).results;
-  const counts = new Map(
-    (await c.env.DB.prepare("SELECT race_id, SUM(CASE WHEN status = 'entered' THEN 1 ELSE 0 END) AS entered, SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS passed FROM entries WHERE realm = 'live' AND race_date = ? GROUP BY race_id").bind(date).all<{ race_id: string; entered: number; passed: number }>()).results.map((x) => [x.race_id, x]),
-  );
+  // 1回の往復でまとめて読む（D1 への往復の回数が表示の速さを左右するため）
+  const [races, counts, results] = await c.env.DB.batch([
+    c.env.DB.prepare('SELECT * FROM races WHERE race_date = ? ORDER BY deadline_ms, jcd').bind(date),
+    c.env.DB.prepare("SELECT race_id, SUM(CASE WHEN status = 'entered' THEN 1 ELSE 0 END) AS entered, SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS passed FROM entries WHERE realm = 'live' AND race_date = ? GROUP BY race_id").bind(date),
+    c.env.DB.prepare('SELECT x.race_id, x.status, x.finish_json, x.payouts_json FROM race_results x JOIN races r ON r.id = x.race_id WHERE r.race_date = ?').bind(date),
+  ]);
+  const count = new Map((counts!.results as { race_id: string; entered: number; passed: number }[]).map((x) => [x.race_id, x]));
+  const result = new Map((results!.results as { race_id: string; status: string; finish_json: string; payouts_json: string }[]).map((x) => [x.race_id, x]));
   return c.json({
     race_date: date,
-    races: r.map((x) => ({
+    races: (races!.results as unknown as RaceRow[]).map((x) => ({
       race_id: x.id, jcd: x.jcd, venue: VENUES[x.jcd], rno: x.rno, label: raceLabel(x.jcd, x.rno), race_name: x.race_name, deadline: x.deadline_at, status: x.status,
-      entries: { entered: counts.get(x.id)?.entered ?? 0, passed: counts.get(x.id)?.passed ?? 0 },
+      entries: { entered: count.get(x.id)?.entered ?? 0, passed: count.get(x.id)?.passed ?? 0 },
+      result: resultSummary(result.get(x.id)),
     })),
-    note: `締切は公式の締切予定時刻。サーバーの受信時刻で判定します。status: ${STATUS_NOTE}。出走表の詳細（選手・モーター・展示など）は公式サイトで各自が確認してください`,
+    note: `締切は公式の締切予定時刻。サーバーの受信時刻で判定します。status: ${STATUS_NOTE}。result は公式結果の要約（top3=1〜3着の艇番、sanrentan=3連単の組番と100円あたりの払戻金）。選手の基本情報（枠番・氏名・級別・支部など）は GET /races/{race_id} の entrants。モーター・展示・オッズなどは公式サイトで各自が確認してください`,
   });
 });
 
+/** 一覧用の結果の要約。1〜3着の艇番（同着は順に並べる）と3連単の払戻 */
+function resultSummary(r: { status: string; finish_json: string; payouts_json: string } | undefined) {
+  if (!r) return null;
+  if (r.status !== 'official') return { status: r.status, top3: [], sanrentan: null };
+  const finish = JSON.parse(r.finish_json) as number[][];
+  const payouts = JSON.parse(r.payouts_json) as { bet_type: string; combo: string; payout: number }[];
+  const s = payouts.find((p) => p.bet_type === 'sanrentan');
+  return { status: r.status, top3: finish.flat().slice(0, 3), sanrentan: s ? { combo: s.combo, payout: s.payout } : null };
+}
+
 publicApi.get('/races/:id', async (c) => {
-  const race = await c.env.DB.prepare('SELECT * FROM races WHERE id = ?').bind(c.req.param('id')).first<RaceRow>();
+  const id = c.req.param('id') ?? '';
+  const db = c.env.DB;
+  // レース・結果・申告・購入・選手を1回の往復でまとめて読む。購入は公開前なら下で捨てる
+  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ] = await db.batch([
+    db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
+    db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json FROM race_results WHERE race_id = ?').bind(id),
+    db.prepare(
+      `SELECT g.id AS agent_id, g.display_name, e.status, e.declared_at, e.passed_at, f.amount AS fine, p.tickets_json, p.rationale,
+         EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
+       FROM entries e JOIN agents g ON g.id = e.agent_id LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
+         LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
+       WHERE e.realm = 'live' AND e.race_id = ? ORDER BY e.declared_at`,
+    ).bind(id),
+    db.prepare(
+      `SELECT g.display_name, g.id AS agent_id, s.id AS submission_id, s.rationale, b.bet_type, b.combo, b.amount, b.status, b.payout
+       FROM bets b JOIN submissions s ON s.id = b.submission_id JOIN agents g ON g.id = b.agent_id
+       WHERE b.realm = 'live' AND b.race_id = ? AND b.status != 'cancelled' ORDER BY s.received_ms, b.id`,
+    ).bind(id),
+    db.prepare('SELECT entrants_json, updated_at FROM race_entrants WHERE race_id = ?').bind(id),
+  ]);
+  const race = raceQ!.results[0] as RaceRow | undefined;
   if (!race) return c.json({ error: { code: 'not_found', message: 'race not found' } }, 404);
-  const result = await c.env.DB.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json FROM race_results WHERE race_id = ?').bind(race.id).first<{ status: string; finish_json: string; refunded_boats_json: string; payouts_json: string }>();
+  const result = resultQ!.results[0] as { status: string; finish_json: string; refunded_boats_json: string; payouts_json: string } | undefined;
+  const entrants = entrantsQ!.results[0] as { entrants_json: string; updated_at: string } | undefined;
   const now = Date.now();
   // 新ルールの開催日は、買い目と根拠が 8:30 に確定・公開され、購入（買い目・金額）はその時点で公開する（ルール 4.1）。
   // それより前の開催日は従来どおり、予想は締切後に公開する
   const newRules = entryRulesApply(race.race_date);
   const plansOpen = now >= entryDeadlineMs(race.race_date);
   const open = !newRules && race.status === 'scheduled' && now < race.deadline_ms;
-  const bets = open
-    ? []
-    : (
-        await c.env.DB.prepare(
-          `SELECT g.display_name, g.id AS agent_id, s.id AS submission_id, s.rationale, b.bet_type, b.combo, b.amount, b.status, b.payout
-           FROM bets b JOIN submissions s ON s.id = b.submission_id JOIN agents g ON g.id = b.agent_id
-           WHERE b.realm = 'live' AND b.race_id = ? AND b.status != 'cancelled' ORDER BY s.received_ms, b.id`,
-        ).bind(race.id).all()
-      ).results;
+  const bets = open ? [] : betsQ!.results;
   // 申告（見送りを含む）は朝の時点から公開する。買い目・金額・根拠は締切後
-  const entries = (
-    await c.env.DB.prepare(
-      `SELECT g.id AS agent_id, g.display_name, e.status, e.declared_at, e.passed_at, f.amount AS fine, p.tickets_json, p.rationale,
-         EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
-       FROM entries e JOIN agents g ON g.id = e.agent_id LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
-         LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
-       WHERE e.realm = 'live' AND e.race_id = ? ORDER BY e.declared_at`,
-    ).bind(race.id).all<{ agent_id: string; display_name: string; status: string; declared_at: string; passed_at: string | null; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }>()
-  ).results.map(({ tickets_json, rationale, bought, ...e }) => ({
-    ...e,
-    bought: bought === 1,
-    ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
-  }));
+  const entries = (entriesQ!.results as { agent_id: string; display_name: string; status: string; declared_at: string; passed_at: string | null; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }[]).map(
+    ({ tickets_json, rationale, bought, ...e }) => ({
+      ...e,
+      bought: bought === 1,
+      ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
+    }),
+  );
   return c.json({
     race_id: race.id, label: raceLabel(race.jcd, race.rno), race_name: race.race_name, deadline: race.deadline_at, status: race.status,
+    entrants: entrants ? JSON.parse(entrants.entrants_json) : null,
     entries,
     result: result ? { status: result.status, finish: JSON.parse(result.finish_json), refunded_boats: JSON.parse(result.refunded_boats_json), payouts: JSON.parse(result.payouts_json) } : null,
     bets,
-    note: newRules
-      ? `申告したAIは朝から、申告した買い目と根拠は ${ENTRY_DEADLINE_LABEL} から、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${ENTRY_DEADLINE_LABEL} に公開）`}`
-      : open ? '予想は締切まで非公開です' : undefined,
+    note: [
+      newRules
+        ? `申告したAIは朝から、申告した買い目と根拠は ${ENTRY_DEADLINE_LABEL} から、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${ENTRY_DEADLINE_LABEL} に公開）`}`
+        : open ? '予想は締切まで非公開です' : '',
+      'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません。モーター・展示・オッズなどは公式サイトで各自が確認してください',
+    ].filter(Boolean).join('。'),
   });
 });
 
@@ -126,11 +149,14 @@ publicApi.get('/leaderboard', async (c) => {
 
 export async function leaderboard(db: D1Database, month: string) {
   const { startsOn, endsOn } = monthRange(month);
-  const agents = new Map(
-    (await db.prepare("SELECT id, display_name, owner_name, status FROM agents WHERE realm = 'live'").all<{ id: string; display_name: string; owner_name: string; status: string }>()).results.map((a) => [a.id, a]),
-  );
-  const allTime = new Map((await statsBetween(db, '0000-01-01', endsOn)).map((s) => [s.agent_id, s]));
-  const rows = rankByRecovery((await statsBetween(db, startsOn, endsOn)).filter((s) => agents.get(s.agent_id)?.status === 'active'));
+  const [agentRows, allTimeRows, monthRows] = await Promise.all([
+    db.prepare("SELECT id, display_name, owner_name, status FROM agents WHERE realm = 'live'").all<{ id: string; display_name: string; owner_name: string; status: string }>(),
+    statsBetween(db, '0000-01-01', endsOn),
+    statsBetween(db, startsOn, endsOn),
+  ]);
+  const agents = new Map(agentRows.results.map((a) => [a.id, a]));
+  const allTime = new Map(allTimeRows.map((s) => [s.agent_id, s]));
+  const rows = rankByRecovery(monthRows.filter((s) => agents.get(s.agent_id)?.status === 'active'));
   return {
     month,
     rows: rows.map((r) => {

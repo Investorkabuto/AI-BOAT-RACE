@@ -1,7 +1,7 @@
 name: Fetch boatrace
 
 # 起動はアプリ（Cloudflare の定時処理、5分ごと）が workflow_dispatch で行う（src/jobs/fetch-dispatch.ts）
-#   出走表（締切予定時刻）: 毎日 日本時間 7:30 と 9:30（2回目は1回目の取りこぼし対策。締切後のレースは変わらない）
+#   出走表（締切予定時刻と選手の基本情報）: 毎日 日本時間 7:30 と 9:30（2回目は1回目の取りこぼし対策。締切後のレースは変わらない）
 #   公式結果: 舟券があって結果待ちのレースがあるときだけ、10分おき
 #   全レースの結果: 毎朝 6:00 に前日分（results-all。公開・振り返り用）
 # GitHub の schedule は起動が来ないことがあったため（2026-11-04）、出走表の2回だけを予備として残す。
@@ -13,16 +13,16 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "schedule / results / results-all / probe-schedule / probe-result（probe-* はアプリに書き込まず、解析結果を表示するだけ）"
+        description: "schedule / results / results-all / probe-schedule / probe-result / probe-entrants（probe-* はアプリに書き込まず、解析結果を表示するだけ）"
         type: choice
-        options: [results, schedule, results-all, probe-schedule, probe-result]
+        options: [results, schedule, results-all, probe-schedule, probe-result, probe-entrants]
         default: results
       date:
         description: "schedule / results-all / probe-schedule の日付（YYYY-MM-DD、省略時は今日）"
         type: string
         default: ""
       race:
-        description: "probe-result のレースID（例 20261103-12-07）"
+        description: "probe-result / probe-entrants のレースID（例 20261103-12-07）"
         type: string
         default: ""
 
