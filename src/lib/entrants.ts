@@ -38,6 +38,7 @@ export function normalizeEntrants(input: unknown): { ok: true; entrants: Entrant
     const age = typeof e.age === 'number' && Number.isInteger(e.age) && e.age >= 15 && e.age <= 80 ? e.age : null;
     out.push({ boat, toban, name, grade: GRADES.includes(grade as Grade) ? (grade as Grade) : null, branch: str(e.branch, 10), age });
   }
+  if (new Set(out.map((e) => e.toban)).size !== out.length) return { ok: false, reason: '同じ選手が複数の枠にいる（解析の誤り）' };
   return { ok: true, entrants: out.sort((a, b) => a.boat - b.boat) };
 }
 
