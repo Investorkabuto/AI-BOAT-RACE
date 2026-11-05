@@ -27,7 +27,7 @@ export interface CardRacer {
   boat_no: number | null;
   boat_2r: number | null; // ボート2連率（%）
   series: SeriesMark[][]; // 今節成績: 前日までの日ごとの着順の並び（出走のない日は空）
-  hayami: number | null; // 公式の項目「早見」
+  next_rno: number | null; // 公式の項目「早見」: 同じ日にもう1レース出走する場合のそのレース番号（空欄は1走だけ。null）
 }
 
 export interface Card {
@@ -88,7 +88,7 @@ export function normalizeCard(input: { racers: unknown; fixed_course?: unknown; 
       age: int(x.age, 15, 90), weight: int(x.weight, 30, 100),
       nat_win: num(x.nat_win, 0, 10), nat_2r: num(x.nat_2r, 0, 100), loc_win: num(x.loc_win, 0, 10), loc_2r: num(x.loc_2r, 0, 100),
       motor_no: int(x.motor_no, 1, 999), motor_2r: num(x.motor_2r, 0, 100), boat_no: int(x.boat_no, 1, 999), boat_2r: num(x.boat_2r, 0, 100),
-      hayami: int(x.hayami, 0, 99),
+      next_rno: int(x.next_rno, 1, 12),
     };
     const bad = Object.entries(f).find(([, v]) => v === undefined);
     if (bad) return { ok: false, reason: `${bad[0]} が不正: ${JSON.stringify(x[bad[0]])}` };
@@ -103,7 +103,7 @@ export function normalizeCard(input: { racers: unknown; fixed_course?: unknown; 
 }
 
 // ---- 保存用の詰めた形 ----
-// 1艇 = [枠番, 登録番号, 氏名, 年齢, 支部, 体重, 級別, 全国勝率, 全国2連率, 当地勝率, 当地2連率, モーター番号, モーター2連率, ボート番号, ボート2連率, 今節成績, 早見]
+// 1艇 = [枠番, 登録番号, 氏名, 年齢, 支部, 体重, 級別, 全国勝率, 全国2連率, 当地勝率, 当地2連率, モーター番号, モーター2連率, ボート番号, ボート2連率, 今節成績, 同日の次のレース番号]
 // 勝率・2連率は ×100 の整数。今節成績は日ごとの並びを "," でつないだ文字列（例 "32,1,24,12"。出走のない日は空）
 
 const x100 = (v: number | null): number | null => (v === null ? null : Math.round(v * 100));
@@ -123,7 +123,7 @@ export function packRacers(racers: readonly CardRacer[]): string {
     racers.map((r): CardRow => [
       r.boat, r.toban, r.name, r.age, r.branch, r.weight, r.grade,
       x100(r.nat_win), x100(r.nat_2r), x100(r.loc_win), x100(r.loc_2r), r.motor_no, x100(r.motor_2r), r.boat_no, x100(r.boat_2r),
-      encodeSeries(r.series), r.hayami,
+      encodeSeries(r.series), r.next_rno,
     ]),
   );
 }
@@ -133,7 +133,7 @@ export function unpackRacers(json: string): CardRacer[] {
     boat: r[0], toban: r[1], name: r[2], age: r[3], branch: r[4], weight: r[5], grade: r[6] as CardGrade,
     nat_win: div100(r[7]), nat_2r: div100(r[8]), loc_win: div100(r[9]), loc_2r: div100(r[10]),
     motor_no: r[11], motor_2r: div100(r[12]), boat_no: r[13], boat_2r: div100(r[14]),
-    series: decodeSeries(r[15]), hayami: r[16],
+    series: decodeSeries(r[15]), next_rno: r[16],
   }));
 }
 

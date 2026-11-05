@@ -8,6 +8,7 @@ import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
 import { normalizeEntrants, normalizeStarts } from '../lib/entrants';
 import { normalizeCard, packRacers } from '../lib/cards';
+import { normalizeRecord, packPayouts, packRows, packUnsold } from '../lib/records';
 import { fetchDispatchError, RESULT_WANTED_SQL, resultWantedArgs } from '../jobs/fetch-dispatch';
 import { waiveFinesForCancelled } from '../jobs/settlement';
 
@@ -161,6 +162,82 @@ internalApi.put('/card-state', async (c) => {
   if (typeof b.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(b.sha256)) throw new ApiError(400, 'bad_request', 'sha256 must be 64 hex chars');
   await c.env.DB.prepare('INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
     .bind(`cards:${b.race_date}`, b.sha256, jstIso(Date.now())).run();
+  return c.json({ ok: true });
+});
+
+/**
+ * 競走成績（Kファイル）の取り込み: 着順・展示タイム・進入コース・スタートタイミング・天候・風・波・決まり手・払戻金（要件定義 v1.0 系統3）。
+ * 何度送ってもよい。body: { race_date, races: [{ jcd, rno, weather, wind_dir, wind_m, wave_cm, kimarite, rows, payouts, unsold }] }
+ *
+ * 保存するのは、すでにあるレースで、締切を過ぎたものだけ（レース前に結果が入らないように）。内容が変わったときだけ更新し、
+ * 旧版は race_record_history に残す。ここでは精算に使わない（精算は公式HTMLの結果。照合と暫定精算は別の工程）
+ */
+internalApi.put('/records', async (c) => {
+  const b = await readJson(c);
+  const date = b.race_date;
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'race_date must be YYYY-MM-DD');
+  if (!Array.isArray(b.races)) throw new ApiError(400, 'bad_request', 'races must be an array');
+  const nowMs = Date.now();
+  const now = jstIso(nowMs);
+  const db = c.env.DB;
+  const stmts: D1PreparedStatement[] = [];
+  const skipped: string[] = [];
+  for (const r of b.races as Record<string, unknown>[]) {
+    if (!isJcd(r.jcd) || typeof r.rno !== 'number' || !Number.isInteger(r.rno) || r.rno < 1 || r.rno > 12) throw new ApiError(400, 'bad_request', `invalid race: ${JSON.stringify({ jcd: r.jcd, rno: r.rno })}`);
+    const id = raceId(date, r.jcd, r.rno);
+    const n = normalizeRecord(r);
+    if (!n.ok) {
+      skipped.push(`${id}: ${n.reason}`);
+      continue;
+    }
+    const v = n.record;
+    const rows = packRows(v.rows);
+    const payouts = packPayouts(v.payouts);
+    const unsold = packUnsold(v.unsold);
+    const same = `race_records.rows = ? AND race_records.payouts = ? AND race_records.unsold = ? AND IFNULL(race_records.weather, '') = ? AND IFNULL(race_records.wind_dir, '') = ?
+      AND IFNULL(race_records.wind_m, -1) = ? AND IFNULL(race_records.wave_cm, -1) = ? AND IFNULL(race_records.kimarite, '') = ?`;
+    const sameArgs = [rows, payouts, unsold, v.weather ?? '', v.wind_dir ?? '', v.wind_m ?? -1, v.wave_cm ?? -1, v.kimarite ?? ''];
+    stmts.push(
+      // 内容が変わるなら、今の版を履歴に残す（保存できる条件は下の更新と同じ）
+      db.prepare(
+        `INSERT OR IGNORE INTO race_record_history (race_id, fetched_at, weather, wind_dir, wind_m, wave_cm, kimarite, rows, payouts, unsold)
+         SELECT race_id, fetched_at, weather, wind_dir, wind_m, wave_cm, kimarite, rows, payouts, unsold FROM race_records
+         WHERE race_id = ? AND NOT (${same.replaceAll('race_records.', '')})`,
+      ).bind(id, ...sameArgs),
+      db.prepare(
+        `INSERT INTO race_records (race_id, weather, wind_dir, wind_m, wave_cm, kimarite, rows, payouts, unsold, fetched_at)
+         SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM races WHERE id = ? AND deadline_ms <= ?
+         ON CONFLICT (race_id) DO UPDATE SET weather = excluded.weather, wind_dir = excluded.wind_dir, wind_m = excluded.wind_m, wave_cm = excluded.wave_cm,
+           kimarite = excluded.kimarite, rows = excluded.rows, payouts = excluded.payouts, unsold = excluded.unsold, fetched_at = excluded.fetched_at
+         WHERE NOT (${same})`,
+      ).bind(v.weather, v.wind_dir, v.wind_m, v.wave_cm, v.kimarite, rows, payouts, unsold, now, id, nowMs, ...sameArgs),
+    );
+  }
+  // D1 の batch は100文までなので、レース2文ずつ（49レース）の区切りで流す
+  let saved = 0;
+  for (let i = 0; i < stmts.length; i += 98) {
+    const res = await db.batch(stmts.slice(i, i + 98));
+    res.forEach((x, k) => {
+      if ((i + k) % 2 === 1) saved += x.meta.changes ?? 0;
+    });
+  }
+  return c.json({ saved, unchanged_or_not_ready: stmts.length / 2 - saved, skipped });
+});
+
+/** 取り込み済みのKファイルのハッシュ（同じなら取り直さない。全レースの送信が済んだ後にだけ記録する） */
+internalApi.get('/record-state', async (c) => {
+  const date = c.req.query('date');
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date must be YYYY-MM-DD');
+  const r = await c.env.DB.prepare('SELECT value, updated_at FROM app_state WHERE key = ?').bind(`records:${date}`).first<{ value: string; updated_at: string }>();
+  return c.json({ race_date: date, sha256: r?.value ?? null, updated_at: r?.updated_at ?? null });
+});
+
+internalApi.put('/record-state', async (c) => {
+  const b = await readJson(c);
+  if (!isDate(b.race_date)) throw new ApiError(400, 'bad_request', 'race_date must be YYYY-MM-DD');
+  if (typeof b.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(b.sha256)) throw new ApiError(400, 'bad_request', 'sha256 must be 64 hex chars');
+  await c.env.DB.prepare('INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+    .bind(`records:${b.race_date}`, b.sha256, jstIso(Date.now())).run();
   return c.json({ ok: true });
 });
 
