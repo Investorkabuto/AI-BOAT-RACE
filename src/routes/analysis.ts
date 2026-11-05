@@ -372,3 +372,98 @@ analysisApi.get('/export', async (c) => {
     note: '1日分の全項目（加工なし）。boats の B の列（name・grade・branch・age・weight・nat_win・nat_2r・loc_win・loc_2r・motor_no・motor_2r・boat_no・boat_2r・series・next_rno）は前日の番組表、K の列（place・place_mark・course・st・tenji・race_time）はレース後の競走成績。series は今節の日ごとの着順を "," でつないだもの。place_mark は F・L・K（欠場）・S（失格）。payouts は100円あたり、pop は人気順、combo "*" は特払い、unsold は不成立の券種。締切前のレースには K の列と払戻金を入れない',
   });
 });
+
+/**
+ * モーターの入れ替え日の推定。モーターは場ごとに年1回入れ替わり、新しいモーターの2連率は0%から数え直しになる。
+ * その場の番組表（前日時点）のモーター2連率の平均が、前の開催日より10ポイント以上下がった最後の日を入れ替え日とみなす。見つからなければ null
+ */
+async function motorPeriodStart(db: D1Database, jcd: string, to: string): Promise<string | null> {
+  const r = await db
+    .prepare('SELECT race_date AS d, AVG(motor_2r) AS a FROM race_boats WHERE jcd = ? AND race_date BETWEEN ? AND ? AND motor_2r IS NOT NULL GROUP BY race_date ORDER BY race_date')
+    .bind(jcd, addDays(to, -400), to)
+    .all<{ d: string; a: number }>();
+  let start: string | null = null;
+  r.results.forEach((x, i) => {
+    if (i > 0 && x.a < r.results[i - 1]!.a - 10) start = x.d;
+  });
+  return start;
+}
+
+/** モーターの期間（since 〜 to）。since を省略すると、推定した入れ替え日（見つからなければ1年前） */
+async function motorPeriod(db: D1Database, jcd: string, q: (k: string) => string | undefined): Promise<{ from: string; to: string; detected: string | null } | string> {
+  const to = q('to') ?? addDays(jstDate(Date.now()), -1);
+  if (!isDate(to)) return 'to は YYYY-MM-DD';
+  const detected = await motorPeriodStart(db, jcd, to);
+  const from = q('since') ?? q('from') ?? detected ?? addDays(to, -364);
+  if (!isDate(from) || from > to) return 'since は YYYY-MM-DD で、to 以前';
+  return { from, to, detected };
+}
+
+/** 展示タイムのレース内順位を付けた、その場の出走（欠場を除く） */
+const RANKED_BOATS = `WITH t AS (SELECT b.*, RANK() OVER (PARTITION BY b.race_id ORDER BY b.tenji) AS tenji_rank FROM race_boats b
+  WHERE b.jcd = ? AND b.race_date BETWEEN ? AND ? AND ${STARTED})`;
+const MOTOR_AGG = `COUNT(*) AS n, SUM(place = 1) AS w1, SUM(place <= 2) AS w2, SUM(place <= 3) AS w3,
+  AVG(CASE WHEN tenji IS NOT NULL THEN tenji_rank END) AS tenji_rank, AVG(CASE WHEN place_mark IS NULL OR place_mark LIKE 'S%' THEN st END) AS avg_st`;
+interface MotorAgg {
+  n: number;
+  w1: number | null;
+  w2: number | null;
+  w3: number | null;
+  tenji_rank: number | null;
+  avg_st: number | null;
+}
+const motorShape = (a: MotorAgg) => ({
+  starts: a.n, win_pct: rate(a.w1 ?? 0, a.n), top2_pct: rate(a.w2 ?? 0, a.n), top3_pct: rate(a.w3 ?? 0, a.n),
+  avg_tenji_rank: a.tenji_rank === null ? null : Math.round(a.tenji_rank * 100) / 100, avg_st: round3(a.avg_st),
+});
+
+/** 7. モーター一覧（場ごと）: 今のモーターの期間の成績。展示タイムのレース内順位の平均は、モーターの足の目安 */
+analysisApi.get('/motors/:jcd', async (c) => {
+  const jcd = c.req.param('jcd');
+  if (!isJcd(jcd)) return c.json(bad('jcd は 01〜24'), 400);
+  const db = c.env.DB;
+  const p = await motorPeriod(db, jcd, (k) => c.req.query(k));
+  if (typeof p === 'string') return c.json(bad(p), 400);
+  const r = await db
+    .prepare(
+      `${RANKED_BOATS}
+       SELECT motor_no, ${MOTOR_AGG}, COUNT(DISTINCT toban) AS riders, MAX(race_date) AS last_date,
+         (SELECT x.motor_2r FROM race_boats x WHERE x.jcd = ? AND x.motor_no = t.motor_no AND x.motor_2r IS NOT NULL AND x.race_date <= ? ORDER BY x.race_date DESC LIMIT 1) AS official_2r
+       FROM t WHERE motor_no IS NOT NULL GROUP BY motor_no ORDER BY motor_no`,
+    )
+    .bind(jcd, p.from, p.to, jcd, p.to)
+    .all<MotorAgg & { motor_no: number; riders: number; last_date: string; official_2r: number | null }>();
+  return c.json({
+    jcd, venue: VENUES[jcd as keyof typeof VENUES] ?? null, ...p,
+    motors: r.results.map((m) => ({ motor_no: m.motor_no, official_2r: m.official_2r, ...motorShape(m), riders: m.riders, last_date: m.last_date })),
+    note: 'since を省略すると、推定したモーターの入れ替え日（detected。番組表のモーター2連率の平均が大きく下がった日）から集計する。official_2r は最新の番組表の公式のモーター2連率。avg_tenji_rank は展示タイムのレース内順位の平均（小さいほど展示で速い）。分母は欠場を除く出走',
+  });
+});
+
+/** 8. モーター1基の詳細: 成績、乗った選手ごとの成績、直近の出走 */
+analysisApi.get('/motor/:jcd/:no', async (c) => {
+  const jcd = c.req.param('jcd');
+  const no = Number(c.req.param('no'));
+  if (!isJcd(jcd)) return c.json(bad('jcd は 01〜24'), 400);
+  if (!Number.isInteger(no) || no < 1 || no > 999) return c.json(bad('モーター番号は 1〜999'), 400);
+  const db = c.env.DB;
+  const p = await motorPeriod(db, jcd, (k) => c.req.query(k));
+  if (typeof p === 'string') return c.json(bad(p), 400);
+  const args = [jcd, p.from, p.to, no];
+  const [total, riders, recent, trend] = await db.batch([
+    db.prepare(`${RANKED_BOATS} SELECT ${MOTOR_AGG} FROM t WHERE motor_no = ?`).bind(...args),
+    db.prepare(`${RANKED_BOATS} SELECT toban, MAX(name) AS name, MAX(grade) AS grade, ${MOTOR_AGG} FROM t WHERE motor_no = ? GROUP BY toban ORDER BY MIN(race_date)`).bind(...args),
+    db.prepare(
+      `${RANKED_BOATS} SELECT race_id, race_date, rno, toban, name, grade, course, place, place_mark, tenji, tenji_rank, st, motor_2r FROM t WHERE motor_no = ? ORDER BY race_date DESC, rno DESC LIMIT 30`,
+    ).bind(...args),
+    db.prepare('SELECT race_date, MAX(motor_2r) AS motor_2r FROM race_boats WHERE jcd = ? AND race_date BETWEEN ? AND ? AND motor_no = ? AND motor_2r IS NOT NULL GROUP BY race_date ORDER BY race_date').bind(...args),
+  ]);
+  return c.json({
+    jcd, venue: VENUES[jcd as keyof typeof VENUES] ?? null, motor_no: no, ...p,
+    total: motorShape(total!.results[0] as unknown as MotorAgg),
+    by_racer: (riders!.results as unknown as (MotorAgg & { toban: string; name: string; grade: string })[]).map((x) => ({ toban: x.toban, name: x.name, grade: x.grade, ...motorShape(x) })),
+    recent: recent!.results,
+    official_2r_trend: trend!.results,
+    note: '期間の決め方は /analysis/motors と同じ。by_racer はこのモーターに乗った選手ごと（選手の腕とモーターの足を分けて見る用）。official_2r_trend は番組表の公式のモーター2連率の推移。整備（部品交換・チルト）は直前情報が要るため、まだ含まない',
+  });
+});

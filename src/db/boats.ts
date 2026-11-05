@@ -26,20 +26,21 @@ export function boatsFromCard(db: D1Database, race: { id: string; date: string; 
     .bind(race.id, race.date, race.jcd, race.rno, json, ...guard.args);
 }
 
-/** 競走成績（K）の値を race_boats に書く（B の列は変えない。B が無いレースでも行を作る） */
+/** 競走成績（K）の値を race_boats に書く（B の列は変えない。B が無いレースでも行を作る。モーター・ボート番号は B が無いときだけ K の値を使う） */
 export function boatsFromRecord(db: D1Database, race: { id: string; date: string; jcd: string; rno: number }, rows: readonly RecordRow[], guard: Guard = ALWAYS): D1PreparedStatement {
   const json = JSON.stringify(
     rows.map((r) => ({
-      boat: r.boat, toban: r.toban, place: typeof r.place === 'number' ? r.place : null, place_mark: typeof r.place === 'string' ? r.place : null,
+      boat: r.boat, toban: r.toban, motor_no: r.motor_no, boat_no: r.boat_no, place: typeof r.place === 'number' ? r.place : null, place_mark: typeof r.place === 'string' ? r.place : null,
       course: r.course, st: r.st, tenji: r.tenji, race_time: r.time,
     })),
   );
   const cols = ['place', 'place_mark', 'course', 'st', 'tenji', 'race_time'];
   return db
     .prepare(
-      `INSERT INTO race_boats (race_id, boat, race_date, jcd, rno, toban, ${cols.join(', ')})
-       SELECT ?, ${v('boat')}, ?, ?, ?, ${v('toban')}, ${cols.map(v).join(', ')} FROM json_each(?) j WHERE ${guard.sql}
-       ON CONFLICT (race_id, boat) DO UPDATE SET ${cols.map((c) => `${c} = excluded.${c}`).join(', ')}`,
+      `INSERT INTO race_boats (race_id, boat, race_date, jcd, rno, toban, motor_no, boat_no, ${cols.join(', ')})
+       SELECT ?, ${v('boat')}, ?, ?, ?, ${v('toban')}, ${v('motor_no')}, ${v('boat_no')}, ${cols.map(v).join(', ')} FROM json_each(?) j WHERE ${guard.sql}
+       ON CONFLICT (race_id, boat) DO UPDATE SET ${cols.map((c) => `${c} = excluded.${c}`).join(', ')},
+         motor_no = IFNULL(race_boats.motor_no, excluded.motor_no), boat_no = IFNULL(race_boats.boat_no, excluded.boat_no)`,
     )
     .bind(race.id, race.date, race.jcd, race.rno, json, ...guard.args);
 }
