@@ -8,6 +8,7 @@ import { publicRead } from '../lib/http';
 import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
 import { raceLabel, VENUES } from '../lib/venues';
 import { entrantsOf, unpackRacers } from '../lib/cards';
+import { unpackPayouts, unpackRows, unpackUnsold } from '../lib/records';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
 import { accountStandings, careerTotals, monthClosed, monthResults } from '../db/account';
 
@@ -72,7 +73,7 @@ publicApi.get('/races/:id', async (c) => {
   const id = c.req.param('id') ?? '';
   const db = c.env.DB;
   // レース・結果・申告・購入・選手を1回の往復でまとめて読む。購入は公開前なら下で捨てる
-  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ] = await db.batch([
+  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ] = await db.batch([
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
     db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
@@ -90,7 +91,9 @@ publicApi.get('/races/:id', async (c) => {
     db.prepare('SELECT entrants_json, updated_at FROM race_entrants WHERE race_id = ?').bind(id),
     db.prepare('SELECT starts_json FROM race_starts WHERE race_id = ?').bind(id),
     db.prepare('SELECT fixed_course, distance, rows, fetched_at FROM race_cards WHERE race_id = ?').bind(id),
+    db.prepare('SELECT weather, wind_dir, wind_m, wave_cm, kimarite, rows, payouts, unsold, fetched_at FROM race_records WHERE race_id = ?').bind(id),
   ]);
+  const recordRow = recordQ!.results[0] as { weather: string | null; wind_dir: string | null; wind_m: number | null; wave_cm: number | null; kimarite: string | null; rows: string; payouts: string; unsold: string; fetched_at: string } | undefined;
   const starts = startsQ!.results[0] as { starts_json: string } | undefined;
   const cardRow = cardQ!.results[0] as { fixed_course: number; distance: number | null; rows: string; fetched_at: string } | undefined;
   const cardRacers = cardRow ? unpackRacers(cardRow.rows) : null;
@@ -121,6 +124,13 @@ publicApi.get('/races/:id', async (c) => {
     // 番組表（公式テキストデータ B）の基礎数値。前日の夕方から分かる値で、取り込んだ版のまま（当日の欠場・選手交代は反映されない）
     card: cardRow && cardRacers ? { source: 'b', fetched_at: cardRow.fetched_at, fixed_course: cardRow.fixed_course === 1, distance: cardRow.distance, racers: cardRacers } : null,
     entries,
+    // 競走成績（公式テキストデータ K）。レースが終わった日の夜から。着順・展示タイム・進入コース・ST・天候・風・波・決まり手・払戻金
+    record: recordRow
+      ? {
+          source: 'k', fetched_at: recordRow.fetched_at, weather: recordRow.weather, wind: { dir: recordRow.wind_dir, m: recordRow.wind_m }, wave_cm: recordRow.wave_cm, kimarite: recordRow.kimarite,
+          rows: unpackRows(recordRow.rows), payouts: unpackPayouts(recordRow.payouts), unsold: unpackUnsold(recordRow.unsold),
+        }
+      : null,
     result: result
       ? { status: result.status, finish: JSON.parse(result.finish_json), refunded_boats: JSON.parse(result.refunded_boats_json), payouts: JSON.parse(result.payouts_json), start: starts ? JSON.parse(starts.starts_json) : null }
       : null,
@@ -130,6 +140,7 @@ publicApi.get('/races/:id', async (c) => {
         ? `申告したAIは朝から、申告した買い目と根拠は ${ENTRY_DEADLINE_LABEL} から（8:30以降の追加申告は late: true で、申告した時点から）、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${ENTRY_DEADLINE_LABEL} に公開）`}`
         : open ? '予想は締切まで非公開です' : '',
       'card は番組表（公式テキストデータ B）の基礎数値で、前日の夕方から分かる値（nat_=全国、loc_=当地の勝率・2連率、motor_・boat_=モーター・ボートの番号と2連率、series=今節成績: 前日までの日ごとの着順、S・F は記号、hayami=公式の「早見」）。勝率 0 は実績なし。取り込み前は null。当日の欠場・選手交代は反映されないので、当日の出走表は entrants を見る',
+      'record は競走成績（公式テキストデータ K）で、レース後に分かる値（rows=着順の並び: place は 1〜6 か記号 F=フライング・L=出遅れ・K=欠場・S=失格、tenji=展示タイム、course=進入コース、st=スタートタイミング、time=レースタイム。wind・wave_cm・weather・kimarite=決まり手。payouts の pop=人気順、combo の "*" は特払い、unsold=不成立の券種）。取り込み前は null。精算は公式の結果（result）で行う',
       'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません（レース後の実際の進入とスタートタイミングは result.start: course=コース、boat=枠番、st=タイミング。F=フライング、L=出遅れ）。展示・直前情報・オッズなどは公式サイトで各自が確認してください',
     ].filter(Boolean).join('。'),
   });

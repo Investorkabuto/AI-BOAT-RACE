@@ -2,7 +2,8 @@
 
   B ファイル（番組表）: 前日の夕方から翌日分が出る。出走表（締切予定時刻つき）と基礎数値
                         （全国/当地の勝率・2連率、モーター/ボートの番号・2連率、今節成績）。
-  K ファイル（競走成績）: 別途追加する（要件定義 v1.0 の系統3）。
+  K ファイル（競走成績）: その日の夜に出る。着順・展示タイム・進入コース・スタートタイミング・天候・風・波・決まり手・全券種の払戻金
+                        （要件定義 v1.0 の系統3。桁位置は 2026-09〜11 の40日分・約4.1万行で確かめた。fixtures/k261104.lzh が実物）。
 
 形式は LZH 圧縮・Shift_JIS（cp932）・桁固定のテキスト。桁位置は 2026-11-05 分の実ファイルで全選手行（864行）を調べて決めた
 （docs/operator-talk.md の連絡、scripts/tests/fixtures/b261105.lzh が実物）。
@@ -273,4 +274,233 @@ def parse_b(data: bytes, date: str) -> dict:
             errors.append(f"{jcd}: レース番号が重複しています: {rnos}")
             continue
         venues.append({"jcd": jcd, "name": venue_name, "day": day, "series_title": title, "races": races})
+    return {"date": date, "sha256": sha256_hex(data), "venues": venues, "errors": errors}
+
+
+# ------------------------------------------------------------------ K ファイル（競走成績）
+
+def k_url(date: str) -> str:
+    """date は YYYY-MM-DD。例 2026-11-04 → .../od2/K/202611/k261104.lzh（その日の夜に出る）"""
+    y, m, d = date.split("-")
+    return f"{OD2}/K/{y}{m}/k{y[2:]}{m}{d}.lzh"
+
+
+# 払戻金の見出しの勝式 → アプリの券種
+K_BET_TYPES = {
+    "単勝": "tansho",
+    "複勝": "fukusho",
+    "2連単": "nirentan",
+    "2連複": "nirenpuku",
+    "拡連複": "kakurenpuku",
+    "3連単": "sanrentan",
+    "3連複": "sanrenpuku",
+}
+# 順序のない券種は、アプリの組番の書き方（"1=3"）にそろえる
+_UNORDERED = {"nirenpuku", "kakurenpuku", "sanrenpuku"}
+
+# 結果の行の項目と桁位置 [開始, 終了)。2026-09〜11 の40日分・約4.1万行で全行を確かめた
+#   '  01  1 4423 坂　口　　貴　彦 53   61  6.81   1    0.03     1.49.4'
+K_COLS = {
+    "rank": (2, 4),  # 01〜06=着順。F=フライング、L0/L1=出遅れ、K0/K1=欠場、S0/S1/S2=失格
+    "boat": (6, 7),
+    "toban": (8, 12),
+    "name": (13, 21),
+    "motor_no": (22, 24),
+    "boat_no": (24, 29),
+    "tenji": (29, 35),  # 展示タイム。欠場は "K ."
+    "course": (35, 40),  # 進入コース。欠場は空
+    "st": (40, 47),  # スタートタイミング。フライングは "F0.02"、出遅れは "L1.14" か "L ."、欠場は "K ."
+    "time": (47, 60),  # レースタイム "1.49.4"（分.秒.十分の一秒）。完走しなかった艇は ".  ."
+}
+
+_K_RACE_HEAD = re.compile(r"^(\d{1,2})R\s+(?:(.*?)\s+)?H(\d+)m\s+(\S+)\s+風\s+(?:(\S+)\s+)?(\d+)m\s+波\s+(\d+)cm")
+_K_ROW_START = re.compile(r"^  (?:\d\d|[SFKL]\d?)\s+[1-6] \d{4} ")
+_K_PAIR = re.compile(r"(\d(?:-\d){1,2})\s+(\d+)\s+人気\s+(\d+)")
+
+
+def _k_float(s: str, what: str) -> float | None:
+    """展示タイム・スタートタイミング。数字が取れなければ None（F/L/K の記号は先頭に付くだけ）"""
+    t = s.strip()
+    m = re.fullmatch(r"[FLK]?\s*(\d?\.\d{2})", t)
+    if m:
+        return round(float(m.group(1)), 2)
+    if re.fullmatch(r"[FLK]?\s*\.?", t):
+        return None
+    raise ParseError(f"{what} を解析できません: {s!r}")
+
+
+def parse_k_row(line: str) -> dict:
+    f = {k: line[a:b] for k, (a, b) in K_COLS.items()}
+    rank = f["rank"].strip()
+    if re.fullmatch(r"0[1-6]", rank):
+        rank = str(int(rank))
+    elif not re.fullmatch(r"[SFKL]\d?", rank):
+        raise ParseError(f"着順の欄が不正です: {rank!r}")
+    if not (f["boat"] in "123456" and re.fullmatch(r"\d{4}", f["toban"])):
+        raise ParseError(f"枠番か登録番号が不正です: {line!r}")
+    tm = f["time"].strip()
+    time_s = None
+    if re.search(r"\d", tm):
+        t = re.fullmatch(r"(\d)\.(\d\d)\.(\d)", tm)
+        if not t:
+            raise ParseError(f"レースタイムを解析できません: {tm!r}")
+        time_s = round(int(t.group(1)) * 60 + int(t.group(2)) + int(t.group(3)) / 10, 1)
+    course = f["course"].strip()
+    if course and course not in "123456":
+        raise ParseError(f"進入コースが不正です: {course!r}")
+    return {
+        "rank": rank,
+        "boat": int(f["boat"]),
+        "toban": f["toban"],
+        "motor_no": _int(f["motor_no"], 1, 999, "モーター番号"),
+        "boat_no": _int(f["boat_no"], 1, 999, "ボート番号"),
+        "tenji": _k_float(f["tenji"], "展示タイム"),
+        "course": int(course) if course else None,
+        "st": _k_float(f["st"], "スタートタイミング"),
+        "time": time_s,
+    }
+
+
+def parse_k_payouts(lines: list[str]) -> tuple[list[dict], list[str]]:
+    """レースごとの払戻金の欄。戻り値は (払戻金の一覧, 不成立の券種)。
+
+    払戻金は {bet_type, combo, payout, pop}。pop は人気順（単勝・複勝には無い）。特払いの組番は "*"。
+    """
+    payouts: list[dict] = []
+    unsold: list[str] = []
+    cur: str | None = None
+    for raw in lines:
+        s = nfkc(raw)
+        if not s:
+            continue
+        m = re.match(r"^(単勝|複勝|2連単|2連複|拡連複|3連単|3連複)\s*(.*)$", s)
+        if m:
+            cur = K_BET_TYPES[m.group(1)]
+            rest = m.group(2)
+        elif cur is not None:
+            rest = s  # 拡連複は3行に分かれる（2行目以降は勝式の名前が無い）
+        else:
+            raise ParseError(f"払戻金の行を解析できません: {s!r}")
+        if rest == "不成立":
+            unsold.append(cur)
+            continue
+        sp = re.fullmatch(r"特払い\s+(\d+)(?:\s+人気\s+\d+)?", rest)
+        if sp:
+            payouts.append({"bet_type": cur, "combo": "*", "payout": int(sp.group(1)), "pop": None})
+            continue
+        if cur in ("tansho", "fukusho"):
+            pairs = re.findall(r"(\d)\s+(\d+)", rest)
+            if not pairs or " ".join(f"{a} {b}" for a, b in pairs) != rest:
+                raise ParseError(f"{m.group(1) if m else cur} の払戻金を解析できません: {rest!r}")
+            payouts += [{"bet_type": cur, "combo": a, "payout": int(b), "pop": None} for a, b in pairs]
+            continue
+        pm = _K_PAIR.fullmatch(rest)
+        if not pm:
+            raise ParseError(f"払戻金を解析できません: {s!r}")
+        combo, pay, pop = pm.groups()
+        if cur in _UNORDERED:
+            combo = combo.replace("-", "=")
+        payouts.append({"bet_type": cur, "combo": combo, "payout": int(pay), "pop": int(pop)})
+    return payouts, unsold
+
+
+def parse_k_race(block: list[str], head: re.Match, kimarite: str) -> dict:
+    rno, _name, _dist, weather, wind_dir, wind_m, wave = head.groups()
+    i = next((k for k, l in enumerate(block) if re.match(r"^-{20,}\s*$", l)), None)
+    if i is None:
+        raise ParseError("着順の表の区切り線がありません")
+    rows: list[dict] = []
+    k = i + 1
+    while k < len(block) and block[k].strip():
+        if not _K_ROW_START.match(block[k]):
+            raise ParseError(f"着順の行を解析できません: {block[k]!r}")
+        rows.append(parse_k_row(block[k]))
+        k += 1
+    boats = [r["boat"] for r in rows]
+    if not 4 <= len(rows) <= 6 or len(set(boats)) != len(boats):
+        raise ParseError(f"艇の並びが不正です: {boats}")
+    if not any(r["rank"] == "1" for r in rows):
+        raise ParseError("1着の艇がいません")
+    payouts, unsold = parse_k_payouts(block[k:])
+    if not payouts:
+        raise ParseError("払戻金がありません")
+    # 着順と3連単の組番が食い違えば、解析か列の読み違い（同着は組番が複数になるので照合しない）
+    order = [r["rank"] for r in rows]
+    top3 = [r["boat"] for r in rows if r["rank"] in ("1", "2", "3")]
+    if len(top3) == 3 and len({r["rank"] for r in rows if r["rank"] in "123"}) == 3:
+        by_rank = {r["rank"]: r["boat"] for r in rows}
+        want = "-".join(str(by_rank[x]) for x in ("1", "2", "3"))
+        for p in payouts:
+            if p["bet_type"] == "sanrentan" and p["combo"] not in ("*", want):
+                raise ParseError(f"着順 {order} と3連単の組番 {p['combo']} が合いません")
+    return {
+        "rno": int(rno),
+        "weather": nfkc(weather),
+        "wind_dir": nfkc(wind_dir) if wind_dir else None,
+        "wind_m": int(wind_m),
+        "wave_cm": int(wave),
+        "kimarite": kimarite or None,
+        "rows": rows,
+        "payouts": payouts,
+        "unsold": unsold,
+    }
+
+
+def parse_k(data: bytes, date: str) -> dict:
+    """K ファイル（バイト列）を解析する。date は YYYY-MM-DD（見出しの日付との照合用）。
+
+    戻り値: {"date", "sha256", "venues": [{jcd, name, day, races: [{rno, weather, wind_dir, wind_m, wave_cm, kimarite,
+             rows: [...], payouts: [...], unsold: [...]}]}], "errors": [理由, ...]}
+    解析できなかったレースは races に入れず errors に理由を積む（B ファイルと同じ方針）。
+    """
+    text = data.decode("cp932")
+    lines = text.split("\r\n") if "\r\n" in text else text.split("\n")
+    if not lines or lines[0].strip() != "STARTK":
+        raise ParseError("先頭が STARTK ではありません。Kファイルではない可能性があります")
+    if not any(l.strip() == "FINALK" for l in lines[-5:]):
+        raise ParseError("末尾が FINALK ではありません。ファイルが途中で切れている可能性があります")
+
+    y, m, d = date.split("-")
+    venues: list[dict] = []
+    errors: list[str] = []
+    i = 0
+    while i < len(lines):
+        mm = re.fullmatch(r"(\d\d)KBGN", lines[i].strip())
+        if not mm:
+            i += 1
+            continue
+        jcd = mm.group(1)
+        end = next((k for k in range(i + 1, len(lines)) if lines[k].strip() == f"{jcd}KEND"), None)
+        if end is None:
+            errors.append(f"{jcd}: KEND がありません")
+            break
+        block = lines[i + 1 : end]
+        i = end + 1
+
+        norm = [unicodedata.normalize("NFKC", l) for l in block]
+        date_m = next((re.search(r"(\d{4})/\s*(\d+)/\s*(\d+)", l) for l in norm[:12] if re.search(r"(\d{4})/\s*(\d+)/\s*(\d+)", l)), None)
+        got = f"{date_m.group(1)}-{int(date_m.group(2)):02d}-{int(date_m.group(3)):02d}" if date_m else ""
+        if got != date:
+            errors.append(f"{jcd}: 日付が {date} ではありません（{got or '不明'}）。この場は取り込みません")
+            continue
+        day_m = next((re.search(r"第\s*(\d+)\s*日", l) for l in norm[:12] if re.search(r"第\s*(\d+)\s*日", l)), None)
+        name_m = re.match(r"(.+?)\s*\[成績\]", norm[0]) if norm else None
+
+        # レースごとの区切り: 見出し行（「1R … H1800m 曇り 風 北 1m 波 1cm」）から次の見出しまで
+        heads = [(k, _K_RACE_HEAD.match(nfkc(l))) for k, l in enumerate(block)]
+        heads = [(k, h) for k, h in heads if h]
+        races: list[dict] = []
+        for n, (k, head) in enumerate(heads):
+            stop = heads[n + 1][0] if n + 1 < len(heads) else len(block)
+            try:
+                after = nfkc(block[k + 1]) if k + 1 < len(block) else ""
+                km = re.search(r"レースタイム\s*(\S*)", after)
+                races.append(parse_k_race(block[k + 1 : stop], head, km.group(1) if km else ""))
+            except ParseError as e:
+                errors.append(f"{jcd} {head.group(1)}R: {e}")
+        rnos = [r["rno"] for r in races]
+        if len(set(rnos)) != len(rnos):
+            errors.append(f"{jcd}: レース番号が重複しています: {rnos}")
+            continue
+        venues.append({"jcd": jcd, "name": re.sub(r"\s+", "", name_m.group(1)) if name_m else "", "day": int(day_m.group(1)) if day_m else None, "races": races})
     return {"date": date, "sha256": sha256_hex(data), "venues": venues, "errors": errors}
