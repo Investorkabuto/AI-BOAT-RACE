@@ -13,6 +13,7 @@ import boatrace_text as bt  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "fixtures" / "k261104.lzh"
 DATE = "2026-11-04"
+CRLF = chr(13) + chr(10)
 
 
 def raw() -> bytes:
@@ -116,6 +117,30 @@ class Edited(unittest.TestCase):
     def test_garbled_time_is_rejected(self) -> None:
         r = parse_edited("     1.49.4", "     1.4x.4")
         self.assertTrue(any("レースタイム" in e for e in r["errors"]), r["errors"])
+
+
+class VoidRace(unittest.TestCase):
+    def test_void_race_is_cancelled_not_an_error(self) -> None:
+        # 2026-09-14 浜名湖6R の書き方: 5艇がフライングで「レース不成立」、残る1艇の着順の欄は "00"
+        text = raw().decode("cp932")
+        head = "   1R       一般"
+        i = text.index(head)
+        j = text.index("   2R ", i)
+        void = CRLF.join([
+            "   1R       一般　　　　                 H1800m  曇り  風  北東　 2m  波　  1cm",
+            "  着 艇 登番 　選　手　名　　ﾓｰﾀｰ ﾎﾞｰﾄ 展示 進入 ｽﾀｰﾄﾀｲﾐﾝｸ ﾚｰｽﾀｲﾑ 　　　　　",
+            "-" * 79,
+            "  F   1 4369 丹　下　　　　将 16   17  6.76   1   F0.11      .  . ",
+            "  00  4 4899 占　部　　一　真 65   72  6.81   4    0.02      .  . ",
+            "",
+            "  レース不成立",
+            "",
+        ])
+        r = bt.parse_k((text[:i] + void + text[j:]).encode("cp932"), DATE)
+        self.assertEqual(r["errors"], [])
+        omura = next(v for v in r["venues"] if v["jcd"] == "24")
+        self.assertIn(1, omura["cancelled"])
+        self.assertNotIn(1, [x["rno"] for x in omura["races"]])
 
 
 class Payouts(unittest.TestCase):
