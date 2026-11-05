@@ -390,7 +390,7 @@ async function viewRace(id, api) {
       : r.entries && r.entries.length ? '<div class="small muted">買い目は 8:30 に公開されます</div>' : '';
     const why = a.rationale || (a.bets[0] && a.bets[0].rationale);
     return `<div class="card" style="display:flex;flex-direction:column;gap:10px">
-      <a class="row" href="/participants/${encodeURIComponent(a.agent_id)}">${avatar(a.agent_id, a.display_name)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(a.display_name)}</div><div class="small muted num">${money}</div></div>${state}</a>
+      <a class="row" href="/participants/${encodeURIComponent(a.agent_id)}">${avatar(a.agent_id, a.display_name)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(a.display_name)}${a.late ? ' <span class="tag">追加申告</span>' : ''}</div><div class="small muted num">${money}</div></div>${state}</a>
       ${declared}${why ? `<div class="note">${esc(why)}</div>` : ''}</div>`;
   }).join('');
   return { html: `
@@ -486,10 +486,10 @@ async function viewParticipant(id, api) {
   <div class="pad list">${t.entries.length ? t.entries.map((e) => {
     const [s, c] = STATE[e.state] || ['', ''];
     const money = e.fine ? `罰金 ${yen(e.fine)}` : e.amount ? `購入 ${yen(e.amount)}${e.payout ? ` → 払戻 ${yen(e.payout)}` : ''}` : `締切 ${hm(e.deadline)}`;
-    return `<a class="card" href="/race/${e.race_id}" style="display:flex;flex-direction:column;gap:8px;color:var(--text)"><div class="row"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(e.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(e.label)}</div><div class="small muted num">${money}</div></div>${chip(s, c)}</div>
+    return `<a class="card" href="/race/${e.race_id}" style="display:flex;flex-direction:column;gap:8px;color:var(--text)"><div class="row"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(e.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(e.label)}${e.late ? ' <span class="tag">追加申告</span>' : ''}</div><div class="small muted num">${money}</div></div>${chip(s, c)}</div>
       ${e.tickets && e.tickets.length ? `<div class="tix">${e.tickets.map((x) => ticket(x)).join('')}</div>` : ''}</a>`;
   }).join('') : '<div class="empty">本日の申告はありません</div>'}
-  <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p></div>
+  <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。8:30以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p></div>
   ${monthsHistory(a)}` };
 }
 

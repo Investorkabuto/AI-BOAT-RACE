@@ -1,5 +1,5 @@
 // 本番 D1 のスキーマを、アプリ自身が最新に揃える（定時処理と、各インスタンスの最初のリクエストで実行）。
-// migrations/*.sql はどの文も「すでにあれば何もしない」形なので、何度流しても安全。
+// migrations/*.sql はどの文も「すでにあれば何もしない」形なので、何度流しても安全（ALTER TABLE を含むものは schema_migrations で1回だけ流す）。
 // 新しいマイグレーションを足すときは、migrations/ にファイルを置き、下の MIGRATIONS に import を追加する
 import init from '../../migrations/0001_init.sql';
 import operator from '../../migrations/0002_operator.sql';
@@ -7,6 +7,7 @@ import entries from '../../migrations/0003_entries.sql';
 import entryPlans from '../../migrations/0004_entry_plans.sql';
 import raceEntrants from '../../migrations/0005_race_entrants.sql';
 import accounts from '../../migrations/0006_accounts.sql';
+import lateEntries from '../../migrations/0007_late_entries.sql';
 
 const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0001_init', sql: init },
@@ -15,6 +16,7 @@ const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0004_entry_plans', sql: entryPlans },
   { name: '0005_race_entrants', sql: raceEntrants },
   { name: '0006_accounts', sql: accounts },
+  { name: '0007_late_entries', sql: lateEntries },
 ];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */
@@ -34,10 +36,14 @@ export async function ensureSchema(db: D1Database): Promise<string[]> {
   const applied: string[] = [];
   for (const m of MIGRATIONS) {
     if (done.has(m.name)) continue;
-    await db.batch([
-      ...splitSql(m.sql).map((s) => db.prepare(s)),
-      db.prepare('INSERT OR IGNORE INTO schema_migrations (name, applied_at) VALUES (?, ?)').bind(m.name, new Date().toISOString()),
-    ]);
+    const mark = db.prepare('INSERT OR IGNORE INTO schema_migrations (name, applied_at) VALUES (?, ?)').bind(m.name, new Date().toISOString());
+    try {
+      await db.batch([...splitSql(m.sql).map((s) => db.prepare(s)), mark]);
+    } catch (e) {
+      // 別のインスタンスが同時に同じ ALTER TABLE ... ADD COLUMN を流し終えていた（列はもうある）
+      if (!/duplicate column/i.test(String(e))) throw e;
+      await mark.run();
+    }
     applied.push(m.name);
   }
   return applied;
