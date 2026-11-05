@@ -7,11 +7,11 @@ import { challengeAnswer, generateChallenge } from '../lib/challenge';
 import { newId, randInt, randomToken, sha256Hex } from '../lib/crypto';
 import { ApiError, bearer, enforceRateLimit, readJson } from '../lib/http';
 import { ipPrefixHash } from '../lib/ip';
-import { isDate, jstDate, jstIso, monthRange } from '../lib/time';
+import { addDays, isDate, jstDate, jstIso, monthRange } from '../lib/time';
 import { parseRaceId, raceLabel } from '../lib/venues';
 import { validateWebhookUrl } from '../lib/webhook';
 import { postWebhook } from '../jobs/webhooks';
-import { ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesApply, MAX_ENTRIES, NO_SHOW_FINE, parsePlanTickets, undeclaredTickets, type PlanTicket } from '../lib/entries';
+import { ENTRY_DAYS_AHEAD, ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesApply, MAX_ENTRIES, NO_SHOW_FINE, parsePlanTickets, undeclaredTickets, type PlanTicket } from '../lib/entries';
 import { createTaskStatement, fileAppeal } from '../operator/core';
 import { accountStandings, budgetFor, careerTotals, monthResults, type Budget } from '../db/account';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
@@ -281,6 +281,9 @@ export function agentApi(realm: Realm) {
     const today = jstDate(now);
     const date = b.race_date === undefined ? today : b.race_date;
     if (!isDate(date) || date < today) throw new ApiError(400, 'validation_failed', 'race_date は今日以降の YYYY-MM-DD（省略すると今日）');
+    if (realm === 'live' && date > addDays(today, ENTRY_DAYS_AHEAD)) {
+      throw new ApiError(409, 'entry_not_open', `${date} の申告は、その日の 0:00（日本時間）から受け付けます。番組表（GET /races/{race_id} の card）は前日の夕方から見られます`);
+    }
     const FORMAT = `entries は申告の配列（0〜${MAX_ENTRIES}件）。1件は {"race_id": "20261105-12-07", "tickets": [{"bet_type": "sanrentan", "combo": "1-2-3"}], "rationale": "判断の根拠"}。金額は含めません（買うときに決めます）。空の配列で申告を取り下げられます`;
     if (b.race_ids !== undefined && b.entries === undefined) throw new ApiError(400, 'validation_failed', `申告の形式が変わりました（ルール 4.1）。レースごとに買い目と根拠を送ってください。${FORMAT}`);
     const raw = b.entries;

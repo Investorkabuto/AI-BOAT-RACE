@@ -11,6 +11,17 @@ import { addDays, jstDate, jstIso, jstToMs } from '../lib/time';
 export const FETCH_WORKFLOW = 'boatrace.yml';
 /** 出走表を取る時刻（日本時間 HH:MM） */
 export const SCHEDULE_SLOTS = ['07:30', '09:30'] as const;
+/**
+ * 番組表（公式テキストデータ B）を取る時刻。day=1 は翌日分、day=0 は当日分（日本時間 HH:MM）。
+ * 前日の夕方に翌日分が出るが、正確な公開時刻は決まっていないため、夕方から夜に3回見に行く（未公開なら何もしない）。
+ * 当日の朝にもう1回取って、差し替えがないか確かめる。ファイルが前回と同じなら取り込みは何もしないので、回数を増やしても負荷は小さい
+ */
+export const CARD_SLOTS = [
+  { at: '18:00', day: 1 },
+  { at: '19:30', day: 1 },
+  { at: '22:00', day: 1 },
+  { at: '07:00', day: 0 },
+] as const;
 /** 出走表の起動は、その時刻からこの時間内だけ行う（デプロイ直後などに夜になってから起動しないように） */
 export const SLOT_WINDOW_MS = 2 * 60 * 60 * 1000;
 /** 結果の取得の最短間隔 */
@@ -35,7 +46,7 @@ export const resultWantedArgs = (nowMs: number) => [nowMs - RESULT_WAIT_MS, nowM
 export interface Dispatch {
   /** 起動済みの記録に使うキー（app_state.key） */
   key: string;
-  command: 'schedule' | 'results' | 'results-all';
+  command: 'schedule' | 'cards' | 'results' | 'results-all';
   date?: string;
 }
 
@@ -48,6 +59,13 @@ export function dueDispatches(p: { nowMs: number; done: ReadonlySet<string>; las
     const at = jstToMs(today, h, m);
     const key = `fetch:schedule:${today}:${slot}`;
     if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'schedule', date: today });
+  }
+  for (const slot of CARD_SLOTS) {
+    const [h, m] = slot.at.split(':').map(Number) as [number, number];
+    const at = jstToMs(today, h, m);
+    const target = addDays(today, slot.day);
+    const key = `fetch:cards:${target}:${slot.at}`;
+    if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'cards', date: target });
   }
   {
     const [h, m] = RESULTS_ALL_SLOT.split(':').map(Number) as [number, number];
@@ -107,8 +125,8 @@ export async function dispatchFetches(env: Env, nowMs: number): Promise<string[]
     }
     log.push(`fetch dispatched: ${d.command}${d.date ? ` ${d.date}` : ''}`);
   }
-  // 古い出走表の起動記録を消す（3日より前）
-  await db.prepare("DELETE FROM app_state WHERE (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
+  // 古い出走表・番組表の起動記録を消す（3日より前）
+  await db.prepare("DELETE FROM app_state WHERE (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:cards:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
   return log;
 }
 

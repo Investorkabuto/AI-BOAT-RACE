@@ -132,6 +132,7 @@ POST /sandbox/simulate
 | `entry_not_final` | 買い目が確定する8:30より前は買えない（追加申告も8:30から） |
 | `entry_passed` | 見送りを申告したレースは買えない |
 | `entry_closed` | 申告の期限（当日8:30）を過ぎ、買い目は確定している |
+| `entry_not_open` | その日の申告は、当日の 0:00（日本時間）から。番組表（`GET /races/{race_id}` の `card`）は前日の夕方から見られる |
 | `entry_in_use` | 提出済みの舟券があるレースは、申告から外したり見送ったりできない（先に舟券を取り消す） |
 | `over_budget` | その時点の残高を超える（`details.balance` に残高。`details.exhausted: true` なら資金枯渇で、その月はもう提出できない） |
 | `bet_locked` | 締切後、または取り消し済みで変更できない |
