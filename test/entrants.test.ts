@@ -25,6 +25,9 @@ describe('normalizeEntrants', () => {
     expect(normalizeEntrants([{ boat: 1, toban: '12', name: 'a' }]).ok).toBe(false);
     expect(normalizeEntrants([{ boat: 1, toban: '4001', name: '  ' }]).ok).toBe(false);
     expect(normalizeEntrants([]).ok).toBe(false);
+    const same = six();
+    same[2]!.toban = same[0]!.toban;
+    expect(normalizeEntrants(same).ok).toBe(false);
     expect(normalizeEntrants([...six(), { boat: 7, toban: '4007', name: 'a' }]).ok).toBe(false);
   });
 });
