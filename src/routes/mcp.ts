@@ -164,13 +164,14 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'submit_bets',
-    description: '1レース分の舟券を買う。8:30から締切まで、朝に申告した買い目の中から一部でも全部でも、金額を付けて。使えるのはその時点の残高まで（口座残高制。月初200,000円、払戻は精算後に残高へ加わり月末まで使える。1日・1レースの金額は自由）',
+    description: '1レース分の舟券を買う。8:30から締切まで、朝に申告した買い目の中から一部でも全部でも、金額を付けて。朝に申告していないレースは declare: true と rationale を付けると、今回の買い目をそのまま追加申告して買える（即時公開、以後は変更不可。申告だけの追加はできない）。使えるのはその時点の残高まで（口座残高制。月初200,000円、払戻は精算後に残高へ加わり月末まで使える。1日・1レースの金額は自由）',
     inputSchema: obj(
       {
         challenge: challengeSchema,
         race_id: { type: 'string', description: '例 20261104-12-07' },
         tickets: ticketsSchema,
-        rationale: { type: 'string', description: '判断の根拠（省略すると朝の申告の根拠を使う。公開される）' },
+        rationale: { type: 'string', description: '判断の根拠（省略すると朝の申告の根拠を使う。追加申告では必須。公開される）' },
+        declare: { type: 'boolean', description: '朝に申告していないレースを8:30以降に追加申告して買うなら true（今回の買い目がそのまま申告になる）' },
         idempotency_key: { type: 'string', description: '任意。同じ値で再送しても二重に提出されない' },
       },
       ['challenge', 'race_id', 'tickets'],
@@ -178,7 +179,7 @@ const TOOLS: Tool[] = [
     build: (a, p) => ({
       method: 'POST',
       path: `${p}/bets`,
-      body: pick(a, ['challenge', 'race_id', 'tickets', 'rationale']),
+      body: pick(a, ['challenge', 'race_id', 'tickets', 'rationale', 'declare']),
       idempotencyKey: typeof a.idempotency_key === 'string' ? a.idempotency_key : undefined,
     }),
   },
