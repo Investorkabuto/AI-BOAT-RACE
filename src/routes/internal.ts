@@ -7,6 +7,7 @@ import { sha256Hex } from '../lib/crypto';
 import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
 import { normalizeEntrants, normalizeStarts } from '../lib/entrants';
+import { normalizeCard, packRacers } from '../lib/cards';
 import { fetchDispatchError, RESULT_WANTED_SQL, resultWantedArgs } from '../jobs/fetch-dispatch';
 import { waiveFinesForCancelled } from '../jobs/settlement';
 
@@ -81,6 +82,86 @@ internalApi.put('/entrants', async (c) => {
   }
   const saved = stmts.length ? (await c.env.DB.batch(stmts)).reduce((s, r) => s + (r.meta.changes ?? 0), 0) : 0;
   return c.json({ saved, skipped });
+});
+
+/**
+ * 番組表（Bファイル）の取り込み: 出走表（締切予定時刻つき）と基礎数値（要件定義 v1.0 系統1）。何度送ってもよい。
+ * body: { race_date, races: [{ jcd, rno, race_name?, deadline, fixed_course?, distance?, racers: [...] }] }
+ *
+ * 正本の分担（2026-11-05 管理者決定）:
+ *  - レースがまだ無ければ、Bファイルの締切で作る（前日の夕方から出走表を公開するため）。すでにあれば締切は変えない
+ *    （当日の締切・欠場・選手交代の正本は公式HTML。PUT /races が上書きする）
+ *  - 基礎数値は、受付中（締切前）のレースだけ保存する。版が変わったら旧版を race_card_history に残す（上書きで消さない）
+ */
+internalApi.put('/cards', async (c) => {
+  const b = await readJson(c);
+  const date = b.race_date;
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'race_date must be YYYY-MM-DD');
+  if (!Array.isArray(b.races)) throw new ApiError(400, 'bad_request', 'races must be an array');
+  const nowMs = Date.now();
+  const now = jstIso(nowMs);
+  const stmts: D1PreparedStatement[] = [];
+  const skipped: string[] = [];
+  const db = c.env.DB;
+  for (const r of b.races as (RaceIn & { racers?: unknown; fixed_course?: unknown; distance?: unknown })[]) {
+    const hm = typeof r.deadline === 'string' ? parseHm(r.deadline) : null;
+    if (!isJcd(r.jcd) || !Number.isInteger(r.rno) || r.rno < 1 || r.rno > 12 || !hm) throw new ApiError(400, 'bad_request', `invalid race: ${JSON.stringify({ jcd: r.jcd, rno: r.rno, deadline: r.deadline })}`);
+    const id = raceId(date, r.jcd, r.rno);
+    const n = normalizeCard({ racers: r.racers, fixed_course: r.fixed_course, distance: r.distance });
+    if (!n.ok) {
+      skipped.push(`${id}: ${n.reason}`);
+      continue;
+    }
+    const ms = jstToMs(date, hm.hour, hm.minute);
+    const rows = packRacers(n.card.racers);
+    const fixed = n.card.fixed_course ? 1 : 0;
+    stmts.push(
+      db.prepare(
+        "INSERT INTO races (id, race_date, jcd, rno, race_name, deadline_at, deadline_ms, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?) ON CONFLICT (id) DO NOTHING",
+      ).bind(id, date, r.jcd, r.rno, typeof r.race_name === 'string' ? r.race_name.slice(0, 80) : null, jstIso(ms), ms, now),
+      // 版が変わるなら、今の版を履歴に残す（保存できる条件は下の更新と同じ）
+      db.prepare(
+        `INSERT OR IGNORE INTO race_card_history (race_id, fetched_at, fixed_course, distance, rows)
+         SELECT c.race_id, c.fetched_at, c.fixed_course, c.distance, c.rows FROM race_cards c JOIN races r ON r.id = c.race_id
+         WHERE c.race_id = ? AND r.status = 'scheduled' AND r.deadline_ms > ? AND (c.rows != ? OR c.fixed_course != ? OR IFNULL(c.distance, 0) != ?)`,
+      ).bind(id, nowMs, rows, fixed, n.card.distance ?? 0),
+      db.prepare(
+        `INSERT INTO race_cards (race_id, fixed_course, distance, rows, fetched_at)
+         SELECT id, ?, ?, ?, ? FROM races WHERE id = ? AND status = 'scheduled' AND deadline_ms > ?
+         ON CONFLICT (race_id) DO UPDATE SET fixed_course = excluded.fixed_course, distance = excluded.distance, rows = excluded.rows, fetched_at = excluded.fetched_at
+         WHERE race_cards.rows != excluded.rows OR race_cards.fixed_course != excluded.fixed_course OR IFNULL(race_cards.distance, 0) != IFNULL(excluded.distance, 0)`,
+      ).bind(fixed, n.card.distance, rows, now, id, nowMs),
+    );
+  }
+  // D1 の batch は100文までなので、レース3文ずつ（33レース）の区切りで流す
+  let created = 0;
+  let saved = 0;
+  for (let i = 0; i < stmts.length; i += 99) {
+    const res = await db.batch(stmts.slice(i, i + 99));
+    res.forEach((x, k) => {
+      const kind = (i + k) % 3; // 0=レースの作成 1=履歴 2=基礎数値の保存
+      if (kind === 0) created += x.meta.changes ?? 0;
+      if (kind === 2) saved += x.meta.changes ?? 0;
+    });
+  }
+  return c.json({ created_races: created, saved, unchanged_or_closed: stmts.length / 3 - saved, skipped });
+});
+
+/** 取り込み済みのBファイルのハッシュ（同じなら取り直さない。全レースの送信が済んだ後にだけ記録する） */
+internalApi.get('/card-state', async (c) => {
+  const date = c.req.query('date');
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date must be YYYY-MM-DD');
+  const r = await c.env.DB.prepare('SELECT value, updated_at FROM app_state WHERE key = ?').bind(`cards:${date}`).first<{ value: string; updated_at: string }>();
+  return c.json({ race_date: date, sha256: r?.value ?? null, updated_at: r?.updated_at ?? null });
+});
+
+internalApi.put('/card-state', async (c) => {
+  const b = await readJson(c);
+  if (!isDate(b.race_date)) throw new ApiError(400, 'bad_request', 'race_date must be YYYY-MM-DD');
+  if (typeof b.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(b.sha256)) throw new ApiError(400, 'bad_request', 'sha256 must be 64 hex chars');
+  await c.env.DB.prepare('INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+    .bind(`cards:${b.race_date}`, b.sha256, jstIso(Date.now())).run();
+  return c.json({ ok: true });
 });
 
 /** 選手の基本情報がまだ無い、その日の受付中のレース（朝の2回目の取り込みで、取りこぼしだけを取り直すため） */
