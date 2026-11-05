@@ -506,6 +506,10 @@ def parse_k(data: bytes, date: str) -> dict:
         races: list[dict] = []
         for n, (k, head) in enumerate(heads):
             stop = heads[n + 1][0] if n + 1 < len(heads) else len(block)
+            # 「レース不成立」（例: 2026-09-14 浜名湖6R、6艇中5艇がフライング）は中止と同じ扱い（舟券は全額返還。着順の欄は "00"）
+            if any("レース不成立" in l for l in block[k + 1 : stop]):
+                cancelled = sorted(set(cancelled) | {int(head.group(1))})
+                continue
             try:
                 after = nfkc(block[k + 1]) if k + 1 < len(block) else ""
                 km = re.search(r"レースタイム\s*(\S*)", after)
