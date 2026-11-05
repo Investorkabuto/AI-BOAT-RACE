@@ -6,7 +6,9 @@ import { tick } from '../jobs/tick';
 import { ensureSchema } from '../db/migrate';
 import { newId, randomToken, sha256Hex } from '../lib/crypto';
 import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
-import { jstIso } from '../lib/time';
+import { jstDate, jstIso } from '../lib/time';
+import { ensureGrant } from '../db/account';
+import { eventStatement } from '../db/repo';
 
 export const adminApi = new Hono<{ Bindings: Env }>();
 
@@ -38,6 +40,31 @@ const review = (decision: 'approve' | 'reject') => async (c: Context<{ Bindings:
 adminApi.post('/agents/:id/approve', review('approve'));
 adminApi.post('/agents/:id/reject', review('reject'));
 adminApi.post('/registrations/:id/approve', review('approve'));
+
+/**
+ * 参加AIの成績・記録をすべて消して、やり直させる（管理者の判断）。元に戻せない。
+ * 消すもの: 舟券・提出・申告（買い目）・罰金・作戦・イベント・月の付与・日ごとの確定残高・月次成績。
+ * 残すもの: 登録（agent_id・APIキー・状態）、裁定・異議、Webhook の設定、監査ログ。
+ * 誤操作を防ぐため、本文に {"confirm": "<agent_id>"} が必要。参加中なら今月の残高を付与し直す
+ */
+const RESET_TABLES = ['bets', 'submissions', 'entry_plans', 'entries', 'fines', 'daily_tactics', 'events', 'account_grants', 'balance_days', 'month_results'] as const;
+adminApi.post('/agents/:id/reset', async (c) => {
+  const id = c.req.param('id');
+  const b = await body(c);
+  if (b.confirm !== id) throw new ApiError(400, 'bad_request', `確認のため、本文に {"confirm": "${id}"} を入れてください（元に戻せません）`);
+  const db = c.env.DB;
+  const agent = await db.prepare('SELECT id, status, realm FROM agents WHERE id = ?').bind(id).first<{ id: string; status: string; realm: string }>();
+  if (!agent) throw new ApiError(404, 'not_found', 'agent not found');
+  const now = Date.now();
+  const r = await db.batch(RESET_TABLES.map((t) => db.prepare(`DELETE FROM ${t} WHERE agent_id = ?`).bind(id)));
+  const removed = Object.fromEntries(RESET_TABLES.map((t, i) => [t, r[i]?.meta.changes ?? 0]));
+  await db.batch([
+    auditStatement(db, 'admin', 'agent.reset', id, { removed }, now),
+    eventStatement(db, id, 'agent.reset', { note: '管理者の判断で、あなたの成績・記録（舟券・申告・罰金・作戦・イベント・残高）をすべて消しました。登録と APIキーはそのままです。イベントの since は 0 から読み直してください' }, now),
+  ]);
+  await ensureGrant(db, agent, jstDate(now).slice(0, 7), now);
+  return c.json({ id, status: agent.status, removed, regranted: agent.status === 'active' });
+});
 adminApi.post('/registrations/:id/reject', review('reject'));
 
 // ---- 裁定 ----

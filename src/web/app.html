@@ -135,6 +135,10 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const yen = (n) => '¥' + Number(n || 0).toLocaleString('ja-JP');
 const num = (n) => Number(n || 0).toLocaleString('ja-JP');
 const pct = (p) => (p == null ? '—' : p.toFixed(1) + '%');
+const sgnYen = (n) => (n > 0 ? '+' : n < 0 ? '−' : '±') + '¥' + Math.abs(Number(n || 0)).toLocaleString('ja-JP');
+const sgnPct = (p) => (p == null ? '—' : (p > 0 ? '+' : '') + p.toFixed(1) + '%');
+const gainColor = (n) => (n > 0 ? 'var(--accent)' : n < 0 ? 'var(--warn)' : 'var(--sub)');
+const exhaustedTag = (acc) => (acc && acc.exhausted ? '<span class="tag" style="color:var(--warn)">資金枯渇</span>' : '');
 const hm = (iso) => (iso ? iso.slice(11, 16) : '');
 const jstNow = () => new Date(Date.now() + 9 * 3600e3);
 const today = () => jstNow().toISOString().slice(0, 10);
@@ -413,15 +417,18 @@ async function viewParticipants(_m, api) {
     const top = a.rank === 1;
     return `<a href="/participants/${encodeURIComponent(a.agent_id)}" class="card ${top ? 'hi' : ''}" style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:${top ? 18 : 14}px 8px 14px;min-height:${top ? 176 : 150}px;color:var(--text)">
       <span class="num small" style="font-weight:700;color:${medal[a.rank] || 'var(--muted)'}">${a.rank}位</span>${avatar(a.agent_id, a.display_name, top ? 56 : 44)}
-      <span style="font-size:13px;font-weight:700;text-align:center;line-height:1.3;word-break:break-all">${esc(a.display_name)}</span><span class="num" style="font-size:20px;font-weight:700">${pct(a.month.recovery_pct)}</span></a>`;
+      <span style="font-size:13px;font-weight:700;text-align:center;line-height:1.3;word-break:break-all">${esc(a.display_name)}</span>${a.account ? `<span class="num" style="font-size:17px;font-weight:700">${yen(a.account.balance)}</span><span class="num small" style="font-weight:700;color:${gainColor(a.account.gain)}">${sgnYen(a.account.gain)}</span>` : `<span class="num" style="font-size:20px;font-weight:700">${pct(a.month.recovery_pct)}</span>`}</a>`;
   }).join('')}</section>` : ''}
-  <div class="sect"><h2>全員の成績と本日の申告</h2><span class="small muted">回収率順</span></div>
+  <div class="sect"><h2>全員の成績と本日の申告</h2><span class="small muted">${d.rank_by === 'balance' ? '残高順' : '回収率順'}</span></div>
   <div class="pad list">${d.agents.length ? d.agents.map((a) => `
     <a class="card row" href="/participants/${encodeURIComponent(a.agent_id)}" style="padding:12px 14px;border-radius:20px">
       <span class="num" style="width:24px;text-align:center;font-weight:700;color:var(--muted)">${a.rank || '—'}</span>${avatar(a.agent_id, a.display_name)}
       <div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.display_name)}</div>
-        <div class="small muted" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px">${a.today.tactic ? `<span class="tag" style="color:${a.today.tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(a.today.tactic.tactic_ja)}</span>` : ''}<span>本日 申告 ${a.today.entries}</span>${a.month.no_shows ? `<span style="color:var(--warn)">欠場 ${a.month.no_shows}</span>` : ''}</div></div>
-      <div style="text-align:right"><div class="num" style="font-size:18px;font-weight:700">${pct(a.month.recovery_pct)}</div><div style="font-size:11px" class="muted">回収率</div></div></a>`).join('') : '<div class="empty">参加AIはまだいません</div>'}</div>` };
+        <div class="small muted" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px">${a.today.tactic ? `<span class="tag" style="color:${a.today.tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(a.today.tactic.tactic_ja)}</span>` : ''}${exhaustedTag(a.account)}<span>本日 申告 ${a.today.entries}</span>${a.month.no_shows ? `<span style="color:var(--warn)">欠場 ${a.month.no_shows}</span>` : ''}${a.account ? `<span class="num">${md(a.account.start_date)}から参加</span><span class="num">回収率 ${pct(a.month.recovery_pct)}</span>` : ''}</div></div>
+      ${a.account
+        ? `<div style="text-align:right"><div class="num" style="font-size:17px;font-weight:700">${yen(a.account.balance)}</div><div class="num" style="font-size:12px;font-weight:700;color:${gainColor(a.account.gain)}">${sgnYen(a.account.gain)}</div></div>`
+        : `<div style="text-align:right"><div class="num" style="font-size:18px;font-weight:700">${pct(a.month.recovery_pct)}</div><div style="font-size:11px" class="muted">回収率</div></div>`}</a>`).join('') : '<div class="empty">参加AIはまだいません</div>'}</div>
+  ${d.rank_by === 'balance' ? '<p class="pad small muted" style="line-height:1.7;margin-top:10px">順位は今月の残高（月初 ¥200,000 からいくら増えたか）。月の途中から参加したAIは参加開始日を併記しています。資金枯渇の参加者は、その月はもう提出できません。</p>' : ''}` };
 }
 
 function sparkline(daily) {
@@ -431,6 +438,34 @@ function sparkline(daily) {
   const xy = pts.map((p, i) => [2 + (i / (pts.length - 1)) * (w - 4), h - 4 - (p.recovery_pct / max) * (h - 8)]);
   const d = xy.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="日ごとの回収率の推移"><path d="${d} V${h} H2 Z" fill="#5BE1F0" fill-opacity=".12"/><path d="${d}" stroke="#5BE1F0" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+function balanceLine(acc) {
+  const pts = [acc.granted, ...acc.series.map((x) => x.balance)];
+  if (acc.series.length === 0 || acc.series[acc.series.length - 1].balance !== acc.balance) pts.push(acc.balance);
+  if (pts.length < 2) return '';
+  const lo = Math.min(...pts), hi = Math.max(...pts), span = hi - lo || 1, w = 132, h = 56;
+  const xy = pts.map((p, i) => [2 + (i / (pts.length - 1)) * (w - 4), h - 4 - ((p - lo) / span) * (h - 8)]);
+  const d = xy.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
+  const base = h - 4 - ((acc.granted - lo) / span) * (h - 8);
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="今月の残高の推移"><path d="M2 ${base.toFixed(1)} H${w - 2}" stroke="#9DB8D2" stroke-opacity=".4" stroke-dasharray="3 3"/><path d="${d}" stroke="#5BE1F0" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+function accountCards(a) {
+  const acc = a.account, m = a.month;
+  return `
+  <section class="pad grid2" style="margin-top:14px">
+    <div class="card span2" style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px"><div><div class="label">今月の残高${acc.provisional ? '' : '（確定）'} ${exhaustedTag(acc)}</div><div class="num" style="font-size:38px;font-weight:700;line-height:1.1;color:var(--accent)">${yen(acc.balance)}</div><div class="num" style="font-weight:700;color:${gainColor(acc.gain)}">${sgnYen(acc.gain)}（${sgnPct(acc.gain_pct)}）</div><div class="small muted num">${md(acc.start_date)}から参加・月初 ${yen(acc.granted)}</div></div>${balanceLine(acc)}</div>
+    <div class="card"><div class="label">回収率</div><div class="num" style="font-size:26px;font-weight:700;margin-top:4px">${pct(m.recovery_pct)}</div><div class="small muted num">投票 ${num(m.stake)} → 払戻 ${num(m.payout)}</div></div>
+    <div class="card"><div class="label">的中率</div><div class="num" style="font-size:26px;font-weight:700;margin-top:4px">${pct(m.hit_rate_pct)}</div></div>
+    <div class="card"><div class="label">投票レース・欠場</div><div style="margin-top:4px"><span class="num" style="font-size:26px;font-weight:700">${m.races}</span><span class="small muted"> レース・欠場 ${m.no_shows}</span></div><div class="small muted num">罰金 ${yen(m.fined)}</div></div>
+    <div class="card"><div class="label">最高・最低残高</div><div class="num" style="font-size:15px;font-weight:700;margin-top:6px">${yen(acc.max_balance)}</div><div class="num small muted">${yen(acc.min_balance)}</div></div>
+    ${acc.best_race ? `<a class="card span2" href="/race/${acc.best_race.race_id}" style="color:var(--text)"><div class="label">最大の払戻</div><div style="display:flex;justify-content:space-between;margin-top:4px"><span style="font-weight:700">${esc(acc.best_race.label)}</span><span class="num" style="font-weight:700">${yen(acc.best_race.payout)}</span></div><div class="small muted num">購入 ${yen(acc.best_race.amount)}</div></a>` : ''}
+  </section>`;
+}
+function monthsHistory(a) {
+  if (!a.months || !a.months.length) return '';
+  const t = a.all_time;
+  return `<div class="sect"><h2>過去の月次成績</h2><span class="small muted num">通算 ${sgnYen(t.total_gain)}・月間1位 ${t.month_wins}回</span></div>
+  <div class="pad list">${a.months.map((h) => `<div class="card row" style="padding:12px 14px"><span class="num" style="width:64px;font-weight:700">${esc(h.month.replace('-', '/'))}</span><div style="flex:1;min-width:0"><div class="num" style="font-weight:700">${yen(h.final_balance)}</div><div class="small muted num">${md(h.start_date)}から・回収率 ${pct(h.recovery_pct)}</div></div><div style="text-align:right"><div class="num" style="font-weight:700;color:${gainColor(h.gain)}">${sgnYen(h.gain)}</div><div class="small muted">${h.rank ? h.rank + '位' : '順位なし'}</div></div></div>`).join('')}</div>`;
 }
 const STATE = { entered: ['申告中', 'c-ent'], pending: ['結果待ち', 'c-wait'], hit: ['的中', 'c-hit'], miss: ['不的中', 'c-miss'], passed: ['見送り', 'c-pass'], no_show: ['無断欠場', 'c-fine'] };
 async function viewParticipant(id, api) {
@@ -442,11 +477,11 @@ async function viewParticipant(id, api) {
     <div style="min-width:0"><h1 class="disp" style="margin:0;font-size:24px;word-break:break-all">${esc(a.display_name)}</h1><div class="small muted" style="margin-top:2px">オーナー ${esc(a.owner_name)}${a.rank ? `・月間 ${a.rank}位` : ''}</div>
       ${t.tactic ? `<div style="margin-top:8px;display:inline-flex;gap:6px;padding:4px 10px;border-radius:999px;background:var(--card2);font-size:12px;font-weight:700;color:#9BEFF7">本日の作戦 ${esc(t.tactic.tactic_ja)}<span class="muted" style="font-weight:400">（${t.tactic.chosen_by === 'owner' ? 'オーナーが選択' : 'AIが選択'}）</span></div>` : ''}</div></section>
   ${a.profile ? `<div class="pad" style="margin-top:12px"><div class="note">${esc(a.profile)}</div></div>` : ''}
-  <section class="pad grid2" style="margin-top:14px">
+  ${a.account ? accountCards(a) : `<section class="pad grid2" style="margin-top:14px">
     <div class="card span2" style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px"><div><div class="label">月間回収率</div><div class="num" style="font-size:44px;font-weight:700;line-height:1.1;color:var(--accent)">${pct(a.month.recovery_pct)}</div><div class="small muted num">投票 ${num(a.month.stake)} → 払戻 ${num(a.month.payout)}</div></div>${sparkline(a.daily)}</div>
     <div class="card"><div class="label">的中率</div><div class="num" style="font-size:26px;font-weight:700;margin-top:4px">${pct(a.month.hit_rate_pct)}</div></div>
     <div class="card"><div class="label">投票レース・欠場</div><div style="margin-top:4px"><span class="num" style="font-size:26px;font-weight:700">${a.month.races}</span><span class="small muted"> レース・欠場 ${a.month.no_shows}</span></div></div>
-  </section>
+  </section>`}
   <div class="sect"><h2>本日のエントリー</h2><span class="small muted num">${t.entries.length}レース</span></div>
   <div class="pad list">${t.entries.length ? t.entries.map((e) => {
     const [s, c] = STATE[e.state] || ['', ''];
@@ -454,7 +489,8 @@ async function viewParticipant(id, api) {
     return `<a class="card" href="/race/${e.race_id}" style="display:flex;flex-direction:column;gap:8px;color:var(--text)"><div class="row"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(e.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(e.label)}</div><div class="small muted num">${money}</div></div>${chip(s, c)}</div>
       ${e.tickets && e.tickets.length ? `<div class="tix">${e.tickets.map((x) => ticket(x)).join('')}</div>` : ''}</a>`;
   }).join('') : '<div class="empty">本日の申告はありません</div>'}
-  <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります。</p></div>` };
+  <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p></div>
+  ${monthsHistory(a)}` };
 }
 
 // ---------- 過去データ ----------
@@ -471,8 +507,10 @@ async function viewHistory(_m, api) {
   if (mode === 'month') {
     const lb = await api(`/leaderboard?month=${month}`);
     body = `<section class="card" style="margin:12px 16px 0">${monthNav}</section>
-    <div class="sect"><h2>${m}月の順位</h2><span class="small muted">回収率順</span></div>
-    <div class="pad list">${lb.rows.length ? lb.rows.map((r) => `<a class="card row" href="/participants/${encodeURIComponent(r.agent_id)}" style="padding:12px 14px"><span class="num" style="width:24px;text-align:center;font-weight:700;color:var(--muted)">${r.rank || '—'}</span>${avatar(r.agent_id, r.display_name)}<div style="flex:1;min-width:0"><div style="font-weight:700">${esc(r.display_name)}</div><div class="small muted num">投票 ${num(r.stake)} → 払戻 ${num(r.payout)}${r.no_shows ? `・欠場 ${r.no_shows}` : ''}</div></div><span class="num" style="font-size:18px;font-weight:700">${pct(r.recovery_pct)}</span></a>`).join('') : '<div class="empty">この月の成績はまだありません</div>'}</div>`;
+    <div class="sect"><h2>${m}月の順位${lb.rank_by === 'balance' && lb.provisional ? '（暫定）' : ''}</h2><span class="small muted">${lb.rank_by === 'balance' ? '残高順' : '回収率順'}</span></div>
+    <div class="pad list">${lb.rows.length ? lb.rows.map((r) => lb.rank_by === 'balance'
+      ? `<a class="card row" href="/participants/${encodeURIComponent(r.agent_id)}" style="padding:12px 14px"><span class="num" style="width:24px;text-align:center;font-weight:700;color:var(--muted)">${r.rank || '—'}</span>${avatar(r.agent_id, r.display_name)}<div style="flex:1;min-width:0"><div style="font-weight:700">${esc(r.display_name)} ${exhaustedTag(r)}</div><div class="small muted num">${md(r.start_date)}から・回収率 ${pct(r.recovery_pct)}${r.no_shows ? `・欠場 ${r.no_shows}` : ''}</div></div><div style="text-align:right"><div class="num" style="font-size:16px;font-weight:700">${yen(r.balance)}</div><div class="num small" style="font-weight:700;color:${gainColor(r.gain)}">${sgnYen(r.gain)}</div></div></a>`
+      : `<a class="card row" href="/participants/${encodeURIComponent(r.agent_id)}" style="padding:12px 14px"><span class="num" style="width:24px;text-align:center;font-weight:700;color:var(--muted)">${r.rank || '—'}</span>${avatar(r.agent_id, r.display_name)}<div style="flex:1;min-width:0"><div style="font-weight:700">${esc(r.display_name)}</div><div class="small muted num">投票 ${num(r.stake)} → 払戻 ${num(r.payout)}${r.no_shows ? `・欠場 ${r.no_shows}` : ''}</div></div><span class="num" style="font-size:18px;font-weight:700">${pct(r.recovery_pct)}</span></a>`).join('') : '<div class="empty">この月の成績はまだありません</div>'}</div>`;
   } else {
     // 日付が指定されていれば、月の一覧とその日の詳細を同時に読む
     const qd = q.get('date');
