@@ -347,7 +347,7 @@ async function viewRace(id, api) {
       <div class="small muted num">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div></div>${right ? `<div style="text-align:right;flex-shrink:0">${right}</div>` : ''}</div>`;
   }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。${start.length ? 'コースとSTはレースでの実際の進入とスタートタイミング。' : '進入コースは展示・本番で変わることがあります（レース後に実際のコースを表示します）。'}モーター・展示・オッズは公式サイトで確認できます。</p>`
     : `<div class="card small muted" style="line-height:1.7">選手の情報はまだ取り込まれていません（毎朝 7:30 ごろに更新）。</div>`}</div>`
-    + `<p class="small muted num" style="margin:10px 20px 0;line-height:1.8">データ取得: ${[['番組表', r.data && r.data.card], ['出走表', r.data && r.data.entrants], ['結果', r.data && r.data.result], ['成績', r.data && r.data.record]].map(([k, t]) => `${k} ${t ? hm(t) : '—'}`).join('　')}</p>`;
+    + `<p class="small muted num" style="margin:10px 20px 0;line-height:1.8">データ取得: ${[['番組表', r.data && r.data.card], ['出走表', r.data && r.data.entrants], ['結果', r.data && r.data.result], ['成績', r.data && r.data.record]].map(([k, t]) => `${k} ${t ? hm(t) : '—'}`).join('　')}${r.data && r.data.check ? `　照合 ${r.data.check.ok ? '一致' : '<b style="color:#FFB3B3">不一致</b>'}` : ''}</p>`;
   const res = r.result;
   let resultHtml = '';
   if (res && res.status === 'official') {
