@@ -44,14 +44,17 @@ COLS = {
     "motor_2r": (43, 49),  # 100.00 のとき 6 桁を使い切る
     "boat_no": (49, 52),
     "boat_2r": (52, 58),
-    "series": (59, 69),  # 今節成績: 1日2枠 × 最大5日（前日までの着順。当日の分は空白）
-    "next_rno": (69, 73),  # 公式の項目「早見」: 同じ日にもう1レース出走する場合のそのレース番号（空欄は1走だけ）
+    "series": (59, 71),  # 今節成績: 1日2枠 × 最大6日（前日までの着順。当日の分は空白。6日目以降の節で12桁を使い切ることを 2026-11-02 の江戸川で確認）
+    "next_rno": (71, 73),  # 公式の項目「早見」: 同じ日にもう1レース出走する場合のそのレース番号（空欄は1走だけ）
 }
 ROW_LEN = 73
 SERIES_SLOTS_PER_DAY = 2
+SERIES_DAYS = 6
 
 _RACE_HEAD = re.compile(r"^\s*(\d{1,2})R\s+(.*?)\s+H(\d+)m\s+電話投票締切予定(\d{1,2}):(\d{2})\s*$")
 _ROW_START = re.compile(r"^[1-6] \d{4}")
+# 場のデータが無いときの定型文（B: 「更新は、いましばらくお待ちください」、K: 「全レース終了後に登録されます」。2024-11-04 の江戸川で確認）
+_NO_DATA = re.compile(r"お待ちください|登録されます")
 
 
 class ParseError(ValueError):
@@ -126,12 +129,12 @@ def _int(s: str, lo: int, hi: int, what: str) -> int | None:
 
 
 def parse_series(cell: str, day: int | None) -> list[list[int | str]]:
-    """今節成績（10桁）を日ごとの着順の並びにする。前日まで（day-1 日分）、1日2枠。
+    """今節成績（12桁）を日ごとの着順の並びにする。前日まで（day-1 日分）、1日2枠。
 
     着順は 1〜6 の整数。数字以外の記号（S, F）はそのまま文字で残す（意味は公式の凡例に従う）。
     出走しなかった日は空の並び。1日に1走だけなら先頭の枠に入る（2枠目だけに入る行は不正として拒否する）。
     """
-    if len(cell) != SERIES_SLOTS_PER_DAY * 5:
+    if len(cell) != SERIES_SLOTS_PER_DAY * SERIES_DAYS:
         raise ParseError(f"今節成績の桁数が違います: {cell!r}")
     days = [cell[i : i + SERIES_SLOTS_PER_DAY] for i in range(0, len(cell), SERIES_SLOTS_PER_DAY)]
     if day is not None:
@@ -171,7 +174,7 @@ def parse_racer(line: str, day: int | None) -> dict:
         # 勝率は 0.00〜10.00。0.00 は「実績なし」の意味で入ることがある（新人や当地初出走など）
         "nat_win": _num(f["nat_win"], 0, 10, "全国勝率", 2),
         "nat_2r": _num(f["nat_2r"], 0, 100, "全国2連率", 2),
-        "loc_win": _num(f["loc_win"], 0, 10, "当地勝率", 2),
+        "loc_win": _num(f["loc_win"], 0, 30, "当地勝率", 2),  # 出走数が少ないと 10 を超える（2023-11 に 12.00 を確認）
         "loc_2r": _num(f["loc_2r"], 0, 100, "当地2連率", 2),
         "motor_no": _int(f["motor_no"], 1, 999, "モーター番号"),
         "motor_2r": _num(f["motor_2r"], 0, 100, "モーター2連率", 2),
@@ -212,6 +215,7 @@ def parse_b(data: bytes, date: str) -> dict:
     want_date = f"{y}年{int(m)}月{int(d)}日"
     venues: list[dict] = []
     errors: list[str] = []
+    missing: list[str] = []
     i = 0
     while i < len(lines):
         mm = re.fullmatch(r"(\d\d)BBGN", lines[i].strip())
@@ -225,6 +229,9 @@ def parse_b(data: bytes, date: str) -> dict:
             break
         block = lines[i + 1 : end]
         i = end + 1
+        if any(_NO_DATA.search(l) for l in block):  # 公式のアーカイブに、この場のデータが入っていない（本文が定型文だけ）
+            missing.append(jcd)
+            continue
 
         # 場の見出し: 第N日、日付、節の名前
         norm = [unicodedata.normalize("NFKC", l) for l in block]
@@ -274,7 +281,7 @@ def parse_b(data: bytes, date: str) -> dict:
             errors.append(f"{jcd}: レース番号が重複しています: {rnos}")
             continue
         venues.append({"jcd": jcd, "name": venue_name, "day": day, "series_title": title, "races": races})
-    return {"date": date, "sha256": sha256_hex(data), "venues": venues, "errors": errors}
+    return {"date": date, "sha256": sha256_hex(data), "venues": venues, "errors": errors, "missing": missing}
 
 
 # ------------------------------------------------------------------ K ファイル（競走成績）
@@ -449,8 +456,8 @@ def parse_k_race(block: list[str], head: re.Match, kimarite: str) -> dict:
 def parse_k(data: bytes, date: str) -> dict:
     """K ファイル（バイト列）を解析する。date は YYYY-MM-DD（見出しの日付との照合用）。
 
-    戻り値: {"date", "sha256", "venues": [{jcd, name, day, races: [{rno, weather, wind_dir, wind_m, wave_cm, kimarite,
-             rows: [...], payouts: [...], unsold: [...]}]}], "errors": [理由, ...]}
+    戻り値: {"date", "sha256", "venues": [{jcd, name, day, cancelled: [中止のレース番号], races: [{rno, weather, wind_dir, wind_m, wave_cm,
+             kimarite, rows: [...], payouts: [...], unsold: [...]}]}], "errors": [理由, ...], "missing": [データの無い場のコード]}
     解析できなかったレースは races に入れず errors に理由を積む（B ファイルと同じ方針）。
     """
     text = data.decode("cp932")
@@ -463,6 +470,7 @@ def parse_k(data: bytes, date: str) -> dict:
     y, m, d = date.split("-")
     venues: list[dict] = []
     errors: list[str] = []
+    missing: list[str] = []
     i = 0
     while i < len(lines):
         mm = re.fullmatch(r"(\d\d)KBGN", lines[i].strip())
@@ -476,6 +484,9 @@ def parse_k(data: bytes, date: str) -> dict:
             break
         block = lines[i + 1 : end]
         i = end + 1
+        if any(_NO_DATA.search(l) for l in block):
+            missing.append(jcd)
+            continue
 
         norm = [unicodedata.normalize("NFKC", l) for l in block]
         date_m = next((re.search(r"(\d{4})/\s*(\d+)/\s*(\d+)", l) for l in norm[:12] if re.search(r"(\d{4})/\s*(\d+)/\s*(\d+)", l)), None)
@@ -485,6 +496,9 @@ def parse_k(data: bytes, date: str) -> dict:
             continue
         day_m = next((re.search(r"第\s*(\d+)\s*日", l) for l in norm[:12] if re.search(r"第\s*(\d+)\s*日", l)), None)
         name_m = re.match(r"(.+?)\s*\[成績\]", norm[0]) if norm else None
+
+        # 払戻金の一覧に「7R 中 止」と出るレースは中止（成績の表は無い）
+        cancelled = sorted({int(m.group(1)) for l in norm for m in [re.match(r"^\s*(\d{1,2})R\s+中\s*止", l)] if m})
 
         # レースごとの区切り: 見出し行（「1R … H1800m 曇り 風 北 1m 波 1cm」）から次の見出しまで
         heads = [(k, _K_RACE_HEAD.match(nfkc(l))) for k, l in enumerate(block)]
@@ -502,5 +516,5 @@ def parse_k(data: bytes, date: str) -> dict:
         if len(set(rnos)) != len(rnos):
             errors.append(f"{jcd}: レース番号が重複しています: {rnos}")
             continue
-        venues.append({"jcd": jcd, "name": re.sub(r"\s+", "", name_m.group(1)) if name_m else "", "day": int(day_m.group(1)) if day_m else None, "races": races})
-    return {"date": date, "sha256": sha256_hex(data), "venues": venues, "errors": errors}
+        venues.append({"jcd": jcd, "name": re.sub(r"\s+", "", name_m.group(1)) if name_m else "", "day": int(day_m.group(1)) if day_m else None, "races": races, "cancelled": cancelled})
+    return {"date": date, "sha256": sha256_hex(data), "venues": venues, "errors": errors, "missing": missing}
