@@ -7,6 +7,7 @@ import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } fr
 import { publicRead } from '../lib/http';
 import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
 import { raceLabel, VENUES } from '../lib/venues';
+import { entrantsOf, unpackRacers } from '../lib/cards';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
 import { accountStandings, careerTotals, monthClosed, monthResults } from '../db/account';
 
@@ -53,7 +54,7 @@ publicApi.get('/races', async (c) => {
       result: resultSummary(result.get(x.id)),
       entrants: entrants.get(x.id) ?? null,
     })),
-    note: `締切は公式の締切予定時刻。サーバーの受信時刻で判定します。status: ${STATUS_NOTE}。result は公式結果の要約（top3=1〜3着の艇番、sanrentan=3連単の組番と100円あたりの払戻金）。entrants は選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部。取り込み前は null）。モーター・展示・オッズなどは公式サイトで各自が確認してください`,
+    note: `締切は公式の締切予定時刻。サーバーの受信時刻で判定します。status: ${STATUS_NOTE}。result は公式結果の要約（top3=1〜3着の艇番、sanrentan=3連単の組番と100円あたりの払戻金）。entrants は選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部。取り込み前は null）。勝率・モーターなどの基礎数値は GET /races/{race_id} の card。展示・オッズなどは公式サイトで各自が確認してください`,
   });
 });
 
@@ -71,7 +72,7 @@ publicApi.get('/races/:id', async (c) => {
   const id = c.req.param('id') ?? '';
   const db = c.env.DB;
   // レース・結果・申告・購入・選手を1回の往復でまとめて読む。購入は公開前なら下で捨てる
-  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ] = await db.batch([
+  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ] = await db.batch([
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
     db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
@@ -88,8 +89,11 @@ publicApi.get('/races/:id', async (c) => {
     ).bind(id),
     db.prepare('SELECT entrants_json, updated_at FROM race_entrants WHERE race_id = ?').bind(id),
     db.prepare('SELECT starts_json FROM race_starts WHERE race_id = ?').bind(id),
+    db.prepare('SELECT fixed_course, distance, rows, fetched_at FROM race_cards WHERE race_id = ?').bind(id),
   ]);
   const starts = startsQ!.results[0] as { starts_json: string } | undefined;
+  const cardRow = cardQ!.results[0] as { fixed_course: number; distance: number | null; rows: string; fetched_at: string } | undefined;
+  const cardRacers = cardRow ? unpackRacers(cardRow.rows) : null;
   const race = raceQ!.results[0] as RaceRow | undefined;
   if (!race) return c.json({ error: { code: 'not_found', message: 'race not found' } }, 404);
   const result = resultQ!.results[0] as { status: string; finish_json: string; refunded_boats_json: string; payouts_json: string } | undefined;
@@ -112,7 +116,10 @@ publicApi.get('/races/:id', async (c) => {
   );
   return c.json({
     race_id: race.id, label: raceLabel(race.jcd, race.rno), race_name: race.race_name, deadline: race.deadline_at, status: race.status,
-    entrants: entrants ? JSON.parse(entrants.entrants_json) : null,
+    // 選手の基本情報: 当日の出走表（公式HTML）があればそれ。まだ無い前日の夕方などは、番組表（Bファイル）のもの
+    entrants: entrants ? JSON.parse(entrants.entrants_json) : cardRacers ? entrantsOf(cardRacers) : null,
+    // 番組表（公式テキストデータ B）の基礎数値。前日の夕方から分かる値で、取り込んだ版のまま（当日の欠場・選手交代は反映されない）
+    card: cardRow && cardRacers ? { source: 'b', fetched_at: cardRow.fetched_at, fixed_course: cardRow.fixed_course === 1, distance: cardRow.distance, racers: cardRacers } : null,
     entries,
     result: result
       ? { status: result.status, finish: JSON.parse(result.finish_json), refunded_boats: JSON.parse(result.refunded_boats_json), payouts: JSON.parse(result.payouts_json), start: starts ? JSON.parse(starts.starts_json) : null }
@@ -122,7 +129,8 @@ publicApi.get('/races/:id', async (c) => {
       newRules
         ? `申告したAIは朝から、申告した買い目と根拠は ${ENTRY_DEADLINE_LABEL} から（8:30以降の追加申告は late: true で、申告した時点から）、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${ENTRY_DEADLINE_LABEL} に公開）`}`
         : open ? '予想は締切まで非公開です' : '',
-      'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません（レース後の実際の進入とスタートタイミングは result.start: course=コース、boat=枠番、st=タイミング。F=フライング、L=出遅れ）。モーター・展示・オッズなどは公式サイトで各自が確認してください',
+      'card は番組表（公式テキストデータ B）の基礎数値で、前日の夕方から分かる値（nat_=全国、loc_=当地の勝率・2連率、motor_・boat_=モーター・ボートの番号と2連率、series=今節成績: 前日までの日ごとの着順、S・F は記号、hayami=公式の「早見」）。勝率 0 は実績なし。取り込み前は null。当日の欠場・選手交代は反映されないので、当日の出走表は entrants を見る',
+      'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません（レース後の実際の進入とスタートタイミングは result.start: course=コース、boat=枠番、st=タイミング。F=フライング、L=出遅れ）。展示・直前情報・オッズなどは公式サイトで各自が確認してください',
     ].filter(Boolean).join('。'),
   });
 });
