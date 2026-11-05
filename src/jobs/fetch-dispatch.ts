@@ -4,6 +4,7 @@
 //  - 結果: 締切後で結果が未取得のレースがあるときに、最短10分おき。舟券のあるレース（精算用）に加えて、
 //    当日の全レースを締切の5分後から3時間まで取りに行く（AIの参加に関係なく当日中に観戦画面で結果を出すため。2026-11-05 管理者決定）
 //  - 全レースの結果: 毎朝 6:00 に前日分をまとめて保存する（公開・振り返り用。要件定義 §6）
+//  - 過去分（B・K から過去のレースを作る）: 毎晩 2:00 に、直近から1年前まで（2026-11-05 管理者決定。容量を見て延ばす）、取り込み済みでない日を新しい順に（要件定義 v1.1・v1.2）
 //  - 競走成績（K）: 当日の 21:30・23:20 と、翌朝 6:30 に前日分（展示タイム・進入・ST・天候・決まり手・払戻金。要件定義 v1.0 系統3）
 // 取り込みは何度実行しても安全なので、GitHub 側の schedule が動いて二重になっても問題ない。
 import type { Env } from '../env';
@@ -33,6 +34,11 @@ export const RECORD_SLOTS = [
   { at: '23:20', day: 0 },
   { at: '06:30', day: -1 },
 ] as const;
+/**
+ * 過去分（B と K から過去のレースを作る）を進める時刻（日本時間）。毎晩1回、直近から1年前まで（既定。スクリプトの HISTORY_DEFAULT_DAYS）、取り込み済みでない日を新しい順に進める。
+ * 1回の実行で最大60日・40分まで（スクリプト側の上限）。B・K は1日2ファイルなので、公式サイトへの負荷は小さい
+ */
+export const HISTORY_SLOT = '02:00';
 /** 出走表の起動は、その時刻からこの時間内だけ行う（デプロイ直後などに夜になってから起動しないように） */
 export const SLOT_WINDOW_MS = 2 * 60 * 60 * 1000;
 /** 結果の取得の最短間隔 */
@@ -57,7 +63,7 @@ export const resultWantedArgs = (nowMs: number) => [nowMs - RESULT_WAIT_MS, nowM
 export interface Dispatch {
   /** 起動済みの記録に使うキー（app_state.key） */
   key: string;
-  command: 'schedule' | 'cards' | 'records' | 'results' | 'results-all';
+  command: 'schedule' | 'cards' | 'records' | 'history' | 'results' | 'results-all';
   date?: string;
 }
 
@@ -84,6 +90,12 @@ export function dueDispatches(p: { nowMs: number; done: ReadonlySet<string>; las
     const target = addDays(today, slot.day);
     const key = `fetch:records:${target}:${slot.at}`;
     if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'records', date: target });
+  }
+  {
+    const [h, m] = HISTORY_SLOT.split(':').map(Number) as [number, number];
+    const at = jstToMs(today, h, m);
+    const key = `fetch:history:${today}`;
+    if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'history' });
   }
   {
     const [h, m] = RESULTS_ALL_SLOT.split(':').map(Number) as [number, number];
@@ -144,7 +156,7 @@ export async function dispatchFetches(env: Env, nowMs: number): Promise<string[]
     log.push(`fetch dispatched: ${d.command}${d.date ? ` ${d.date}` : ''}`);
   }
   // 古い出走表・番組表の起動記録を消す（3日より前）
-  await db.prepare("DELETE FROM app_state WHERE (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:cards:%' OR key LIKE 'fetch:records:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
+  await db.prepare("DELETE FROM app_state WHERE (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:cards:%' OR key LIKE 'fetch:records:%' OR key LIKE 'fetch:history:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
   return log;
 }
 
