@@ -596,7 +596,16 @@ const ANALYSIS_TABS = [['factors', '予想の要素'], ['venue', '場×コース
 const pctCell = (v) => `<td class="num" style="text-align:right">${v === null || v === undefined ? '—' : `${v}%`}</td>`;
 const statTable = (head, rows) => `<section class="card" style="margin:8px 16px 0;padding:6px 12px;overflow-x:auto"><table class="pay" style="width:100%"><thead><tr>${head.map((h, i) => `<th class="small muted" style="text-align:${i ? 'right' : 'left'};font-weight:500;padding:6px 4px">${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td class="small muted" colspan="${head.length}">データがありません</td></tr>`}</tbody></table></section>`;
 const rateRow = (label, x) => `<tr><td>${esc(label)}</td><td class="num" style="text-align:right">${Number(x.starts).toLocaleString('ja-JP')}</td>${pctCell(x.win_pct)}${'top2_pct' in x ? pctCell(x.top2_pct) : ''}${pctCell(x.top3_pct)}${'avg_st' in x ? `<td class="num" style="text-align:right">${x.avg_st === null ? '—' : x.avg_st.toFixed(2)}</td><td class="num" style="text-align:right">${x.flying}</td>` : ''}</tr>`;
+// 分析は一時停止中（2026-11-05 管理者決定。API の /analysis/... も 503）。メニューのボタンは残し、画面は案内だけを出す
+const ANALYSIS_SUSPENDED = true;
 async function viewAnalysis(_m, api) {
+  if (ANALYSIS_SUSPENDED) {
+    return {
+      html: `<header class="top"><div><div class="small muted">過去のレースの検索と集計</div><h1 class="disp" style="margin:2px 0 0;font-size:26px">分析</h1></div></header>
+        <div class="empty">分析は一時停止中です。再開まで、しばらくお待ちください。</div>`,
+      bind() {},
+    };
+  }
   const q = new URLSearchParams(location.search);
   const t = ANALYSIS_TABS.some(([k]) => k === q.get('t')) ? q.get('t') : 'factors';
   const venues = (await api('/venues')).venues;
