@@ -132,13 +132,30 @@ internalApi.get('/result-requests', async (c) => {
   return c.json({ requests: r.results });
 });
 
-interface ResultIn {
+export interface ResultIn {
   race_id: string;
   status: 'official' | 'cancelled';
   finish?: unknown;
   refunded_boats?: unknown;
   payouts?: { bet_type: string; combo: string; payout: number }[];
   start?: unknown; // スタート情報 [{course, boat, st}]（任意。解析できなければ省く）
+}
+
+/** 取り込む結果1件を検証して正規化する。誤りがあれば理由の文字列を返す */
+export function validateResult(r: ResultIn): { finish: number[][]; refunded: number[]; payouts: Payout[] } | string {
+  if (!r || typeof r.race_id !== 'string' || (r.status !== 'official' && r.status !== 'cancelled')) return 'race_id/status';
+  const finish = (Array.isArray(r.finish) ? r.finish : []).map((x) => (Array.isArray(x) ? x : [x])) as number[][];
+  const refunded = (Array.isArray(r.refunded_boats) ? r.refunded_boats : []) as number[];
+  if ([...finish.flat(), ...refunded].some((x) => !Number.isInteger(x) || x < 1 || x > 6)) return 'boat number';
+  const payouts: Payout[] = [];
+  for (const p of r.payouts ?? []) {
+    if (!(BET_TYPES as readonly string[]).includes(p.bet_type) || !(typeof p.payout === 'number' && p.payout >= 0)) return 'payout';
+    const combo = p.combo === SPECIAL_COMBO ? SPECIAL_COMBO : normalizeCombo(p.bet_type as BetType, p.combo);
+    if (!combo) return `combo ${p.combo}`;
+    payouts.push({ bet_type: p.bet_type as BetType, combo, payout: p.payout });
+  }
+  if (r.status === 'official' && (finish.length < 2 || payouts.length === 0)) return 'official result needs finish and payouts';
+  return { finish, refunded, payouts };
 }
 
 /**
@@ -150,20 +167,17 @@ internalApi.post('/results', async (c) => {
   if (!Array.isArray(b.results)) throw new ApiError(400, 'bad_request', 'results must be an array');
   const now = jstIso(Date.now());
   const stmts: D1PreparedStatement[] = [];
+  // 1レースの不正な結果（レース直後で着順が未掲載など）で全体を拒否しない。そのレースだけ保存せず rejected で返し、次の取得で取り直す
+  const rejected: { race_id: unknown; reason: string }[] = [];
+  const accepted: ResultIn[] = [];
+  let startsCount = 0;
   for (const r of b.results as ResultIn[]) {
-    const bad = (why: string) => new ApiError(400, 'bad_request', `invalid result (${why}): ${JSON.stringify(r).slice(0, 300)}`);
-    if (typeof r.race_id !== 'string' || (r.status !== 'official' && r.status !== 'cancelled')) throw bad('race_id/status');
-    const finish = (Array.isArray(r.finish) ? r.finish : []).map((x) => (Array.isArray(x) ? x : [x]));
-    const refunded = Array.isArray(r.refunded_boats) ? r.refunded_boats : [];
-    if ([...finish.flat(), ...refunded].some((x) => !Number.isInteger(x) || (x as number) < 1 || (x as number) > 6)) throw bad('boat number');
-    const payouts: Payout[] = [];
-    for (const p of r.payouts ?? []) {
-      if (!(BET_TYPES as readonly string[]).includes(p.bet_type) || !(typeof p.payout === 'number' && p.payout >= 0)) throw bad('payout');
-      const combo = p.combo === SPECIAL_COMBO ? SPECIAL_COMBO : normalizeCombo(p.bet_type as BetType, p.combo);
-      if (!combo) throw bad(`combo ${p.combo}`);
-      payouts.push({ bet_type: p.bet_type as BetType, combo, payout: p.payout });
+    const v = validateResult(r);
+    if (typeof v === 'string') {
+      rejected.push({ race_id: r?.race_id, reason: v });
+      continue;
     }
-    if (r.status === 'official' && (finish.length < 2 || payouts.length === 0)) throw bad('official result needs finish and payouts');
+    accepted.push(r);
     stmts.push(
       c.env.DB.prepare(
         `INSERT INTO race_results (race_id, status, finish_json, refunded_boats_json, payouts_json, fetched_at)
@@ -171,7 +185,7 @@ internalApi.post('/results', async (c) => {
          ON CONFLICT (race_id) DO UPDATE SET status = excluded.status, finish_json = excluded.finish_json, refunded_boats_json = excluded.refunded_boats_json,
            payouts_json = excluded.payouts_json, fetched_at = excluded.fetched_at
          WHERE EXISTS (SELECT 1 FROM races WHERE id = excluded.race_id AND status IN ('scheduled', 'locked'))`,
-      ).bind(r.race_id, r.status, JSON.stringify(finish), JSON.stringify(refunded), JSON.stringify(payouts), now, r.race_id),
+      ).bind(r.race_id, r.status, JSON.stringify(v.finish), JSON.stringify(v.refunded), JSON.stringify(v.payouts), now, r.race_id),
     );
     const starts = r.status === 'official' ? normalizeStarts(r.start) : null;
     if (starts) {
@@ -181,10 +195,12 @@ internalApi.post('/results', async (c) => {
            ON CONFLICT (race_id) DO UPDATE SET starts_json = excluded.starts_json, updated_at = excluded.updated_at`,
         ).bind(JSON.stringify(starts), now, r.race_id),
       );
+      startsCount++;
     }
   }
   if (stmts.length) await c.env.DB.batch(stmts);
-  const cancelled = (b.results as ResultIn[]).filter((r) => r.status === 'cancelled').map((r) => r.race_id);
+  const cancelled = accepted.filter((r) => r.status === 'cancelled').map((r) => r.race_id);
   const waived = cancelled.length ? await waiveFinesForCancelled(c.env.DB, cancelled, Date.now()) : 0;
-  return c.json({ upserted: (b.results as ResultIn[]).length, starts: stmts.length - (b.results as ResultIn[]).length, fines_waived: waived });
+  if (rejected.length) console.log(`results rejected: ${JSON.stringify(rejected).slice(0, 1000)}`);
+  return c.json({ upserted: accepted.length, starts: startsCount, fines_waived: waived, rejected });
 });

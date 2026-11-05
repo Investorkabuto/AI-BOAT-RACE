@@ -311,11 +311,31 @@ def parse_result(html: str) -> dict | None:
         if re.search(r"レース中止|中止となりました|不成立", text):
             return {"status": "cancelled", "finish": [], "refunded_boats": [], "payouts": []}
         return None
+    # レース直後は、払戻金が先に載り、着順の表がまだ空（または途中）のことがある。そろうまで「まだ無い」扱いにして次の取得に回す
+    if not finish_complete(finish, payouts):
+        return None
     out = {"status": "official", "finish": finish, "refunded_boats": sorted(refunded), "payouts": payouts}
     start = parse_start(soup)
     if start:
         out["start"] = start
     return out
+
+
+def finish_complete(finish: list[list[int]], payouts: list[dict]) -> bool:
+    """着順が払戻金と矛盾なくそろっているか。1〜3着がそろい、同着がなければ3連単・2連単の組番と一致すること"""
+    if len(finish) < 2 or sum(len(x) for x in finish) < 3:
+        return False
+    if any(len(x) > 1 for x in finish[:3]):
+        return True  # 同着は払戻の組番が複数になるので、照合しない
+    order = [x[0] for x in finish]
+    for p in payouts:
+        if p["combo"] == "*":
+            continue
+        if p["bet_type"] == "sanrentan" and len(order) >= 3 and p["combo"] != "-".join(map(str, order[:3])):
+            return False
+        if p["bet_type"] == "nirentan" and p["combo"] != "-".join(map(str, order[:2])):
+            return False
+    return True
 
 
 def fetch_result(race_id: str) -> dict | None:
@@ -394,7 +414,10 @@ def main() -> None:
             results.append({"race_id": r["id"], **res})
         print(f"results: {len(results)} / {len(requests)}")
         for i in range(0, len(results), 50):
-            print(api("POST", "/internal/results", {"results": results[i:i + 50]}))
+            res = api("POST", "/internal/results", {"results": results[i:i + 50]})
+            for rej in res.pop("rejected", []):  # 1レースの不正な結果で全体を止めない（サーバーはそのレースだけ保存しない）
+                print(f"warn: {rej.get('race_id')}: サーバーが受け付けませんでした（{rej.get('reason')}）。次の取得で取り直します", file=sys.stderr)
+            print(res)
 
 
 if __name__ == "__main__":
