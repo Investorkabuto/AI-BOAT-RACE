@@ -239,6 +239,8 @@ def cards_payload(parsed: dict) -> list[dict]:
             "fixed_course": r["fixed_course"],
             "distance": r["distance"],
             "racers": r["racers"],
+            "day": v["day"],
+            "series_title": v["series_title"],
         }
         for v in parsed["venues"]
         for r in v["races"]
@@ -359,7 +361,7 @@ def history_payload(b: dict, k: dict | None) -> tuple[list[dict], list[str]]:
             seen.add(key)
             item = {
                 "jcd": v["jcd"], "rno": r["rno"], "race_name": r["race_name"], "deadline": r["deadline"],
-                "card": {"fixed_course": r["fixed_course"], "distance": r["distance"], "racers": r["racers"]},
+                "card": {"fixed_course": r["fixed_course"], "distance": r["distance"], "racers": r["racers"], "day": v["day"], "series_title": v["series_title"]},
             }
             if key in kr:
                 item["record"] = kr[key]

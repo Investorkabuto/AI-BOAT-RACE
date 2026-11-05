@@ -105,7 +105,7 @@ internalApi.put('/cards', async (c) => {
   const stmts: D1PreparedStatement[] = [];
   const skipped: string[] = [];
   const db = c.env.DB;
-  for (const r of b.races as (RaceIn & { racers?: unknown; fixed_course?: unknown; distance?: unknown })[]) {
+  for (const r of b.races as (RaceIn & { racers?: unknown; fixed_course?: unknown; distance?: unknown; day?: unknown; series_title?: unknown })[]) {
     const hm = typeof r.deadline === 'string' ? parseHm(r.deadline) : null;
     if (!isJcd(r.jcd) || !Number.isInteger(r.rno) || r.rno < 1 || r.rno > 12 || !hm) throw new ApiError(400, 'bad_request', `invalid race: ${JSON.stringify({ jcd: r.jcd, rno: r.rno, deadline: r.deadline })}`);
     const id = raceId(date, r.jcd, r.rno);
@@ -117,6 +117,7 @@ internalApi.put('/cards', async (c) => {
     const ms = jstToMs(date, hm.hour, hm.minute);
     const rows = packRacers(n.card.racers);
     const fixed = n.card.fixed_course ? 1 : 0;
+    const { day, title } = seriesOf(r);
     stmts.push(
       db.prepare(
         "INSERT INTO races (id, race_date, jcd, rno, race_name, deadline_at, deadline_ms, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?) ON CONFLICT (id) DO NOTHING",
@@ -128,11 +129,13 @@ internalApi.put('/cards', async (c) => {
          WHERE c.race_id = ? AND r.status = 'scheduled' AND r.deadline_ms > ? AND (c.rows != ? OR c.fixed_course != ? OR IFNULL(c.distance, 0) != ?)`,
       ).bind(id, nowMs, rows, fixed, n.card.distance ?? 0),
       db.prepare(
-        `INSERT INTO race_cards (race_id, fixed_course, distance, rows, fetched_at)
-         SELECT id, ?, ?, ?, ? FROM races WHERE id = ? AND status = 'scheduled' AND deadline_ms > ?
-         ON CONFLICT (race_id) DO UPDATE SET fixed_course = excluded.fixed_course, distance = excluded.distance, rows = excluded.rows, fetched_at = excluded.fetched_at
-         WHERE race_cards.rows != excluded.rows OR race_cards.fixed_course != excluded.fixed_course OR IFNULL(race_cards.distance, 0) != IFNULL(excluded.distance, 0)`,
-      ).bind(fixed, n.card.distance, rows, now, id, nowMs),
+        `INSERT INTO race_cards (race_id, fixed_course, distance, rows, fetched_at, day, series_title)
+         SELECT id, ?, ?, ?, ?, ?, ? FROM races WHERE id = ? AND status = 'scheduled' AND deadline_ms > ?
+         ON CONFLICT (race_id) DO UPDATE SET fixed_course = excluded.fixed_course, distance = excluded.distance, rows = excluded.rows, fetched_at = excluded.fetched_at,
+           day = excluded.day, series_title = excluded.series_title
+         WHERE race_cards.rows != excluded.rows OR race_cards.fixed_course != excluded.fixed_course OR IFNULL(race_cards.distance, 0) != IFNULL(excluded.distance, 0)
+           OR race_cards.day IS NULL OR race_cards.series_title IS NULL`,
+      ).bind(fixed, n.card.distance, rows, now, day, title, id, nowMs),
       // 検索用の表（race_boats）にも同じ値を書く。今回この版を保存したときだけ
       boatsFromCard(db, { id, date, jcd: r.jcd, rno: r.rno }, n.card.racers, { sql: 'EXISTS (SELECT 1 FROM race_cards WHERE race_id = ? AND fetched_at = ?)', args: [id, now] }),
     );
@@ -150,6 +153,13 @@ internalApi.put('/cards', async (c) => {
   }
   return c.json({ created_races: created, saved, unchanged_or_closed: stmts.length / 4 - saved, skipped });
 });
+
+/** 番組表（B）の場ごとの値（第何日・節の名前）。不正なら null */
+function seriesOf(r: { day?: unknown; series_title?: unknown }): { day: number | null; title: string | null } {
+  const day = typeof r.day === 'number' && Number.isInteger(r.day) && r.day >= 1 && r.day <= 12 ? r.day : null;
+  const title = typeof r.series_title === 'string' && r.series_title.trim() ? r.series_title.normalize('NFKC').trim().slice(0, 80) : null;
+  return { day, title };
+}
 
 /** 取り込み済みのBファイルのハッシュ（同じなら取り直さない。全レースの送信が済んだ後にだけ記録する） */
 internalApi.get('/card-state', async (c) => {
@@ -299,8 +309,10 @@ internalApi.put('/history', async (c) => {
       else
         push(
           'card',
-          db.prepare('INSERT OR IGNORE INTO race_cards (race_id, fixed_course, distance, rows, fetched_at) SELECT id, ?, ?, ?, ? FROM races WHERE id = ?').bind(
-            n.card.fixed_course ? 1 : 0, n.card.distance, packRacers(n.card.racers), now, id,
+          db.prepare(`INSERT INTO race_cards (race_id, fixed_course, distance, rows, fetched_at, day, series_title) SELECT id, ?, ?, ?, ?, ?, ? FROM races WHERE id = ?
+             ON CONFLICT (race_id) DO UPDATE SET day = IFNULL(race_cards.day, excluded.day), series_title = IFNULL(race_cards.series_title, excluded.series_title)
+             WHERE race_cards.day IS NULL OR race_cards.series_title IS NULL`).bind(
+            n.card.fixed_course ? 1 : 0, n.card.distance, packRacers(n.card.racers), now, seriesOf(card).day, seriesOf(card).title, id,
           ),
         );
       if (n.ok) push('boats', boatsFromCard(db, { id, date, jcd: r.jcd, rno: r.rno }, n.card.racers, { sql: 'EXISTS (SELECT 1 FROM races WHERE id = ?)', args: [id] }));
