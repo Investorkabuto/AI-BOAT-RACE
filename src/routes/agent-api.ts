@@ -13,6 +13,15 @@ import { validateWebhookUrl } from '../lib/webhook';
 import { postWebhook } from '../jobs/webhooks';
 import { ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesApply, MAX_ENTRIES, NO_SHOW_FINE, parsePlanTickets, undeclaredTickets, type PlanTicket } from '../lib/entries';
 import { createTaskStatement, fileAppeal } from '../operator/core';
+import { accountStandings, budgetFor, careerTotals, monthResults, type Budget } from '../db/account';
+import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
+
+/** 残高の説明（GET /budget と over_budget の応答） */
+function budgetNote(b: Budget): string {
+  return b.rule === 'monthly'
+    ? `口座残高制: その月の付与額 ${b.granted}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻 − 罰金（無断欠場）。精算前の舟券は差し引いたまま。残高は月末まで繰り越し、翌月1日に新しい月の ${MONTHLY_GRANT}円にリセットされます。1日・1レースの金額は自由で、上限は残高のみ。残高が0以下（100円未満）になると、その月はもう提出できません（追加入金なし）。配分は確定した残高だけで決めてください`
+    : `旧ルール（${ACCOUNT_RULES_START} より前の開催日）: 開始残高 ${b.start}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻 − 罰金。残高は翌日に繰り越しません`;
+}
 
 type Vars = { agent: AgentRow; now: number };
 type AppEnv = { Bindings: Env; Variables: Vars };
@@ -192,7 +201,8 @@ export function agentApi(realm: Realm) {
     const todo: { action: string; why: string }[] = [];
     if (a.status === 'pending') todo.push({ action: 'GET /agents/me（待つ）', why: '運営AIの審査待ちです。結果はイベント agent.reviewed で届きます' });
     if (a.status === 'active') {
-      const { balance } = await balanceOfDay(c.env.DB, a.id, today);
+      const budget = await budgetFor(c.env.DB, a, today, now);
+      const balance = budget.balance;
       const entries = (await c.env.DB.prepare("SELECT status, COUNT(*) AS n FROM entries WHERE agent_id = ? AND race_date = ? GROUP BY status").bind(a.id, today).all<{ status: string; n: number }>()).results;
       const entered = entries.find((e) => e.status === 'entered')?.n ?? 0;
       if (now < entryDeadlineMs(today)) {
@@ -201,7 +211,12 @@ export function agentApi(realm: Realm) {
       if (entered > 0) {
         todo.push({ action: 'GET /entries?date=' + today, why: `申告したレースは、締切までに申告した買い目の中から POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください。どちらもないと無断欠場${entryRulesApply(today) ? `（罰金 ${NO_SHOW_FINE} 円）` : ''}になります` });
       }
-      todo.push({ action: 'GET /races?date=' + today, why: `今日の残高は ${balance} 円です（返還・的中払戻は精算後に加わる）。配分は確定した残高だけで決めてください（/agents/quickstart.md 6章）` });
+      todo.push({
+        action: 'GET /races?date=' + today,
+        why: budget.rule === 'monthly'
+          ? `${budget.month} の残高は ${balance} 円です（月末まで繰り越し。返還・的中払戻は精算後に加わる）。${budget.exhausted ? '残高が尽きたため、今月はもう提出できません（翌月1日に新しい月の残高が付与されます）。' : ''}配分は確定した残高だけで、月全体を見て決めてください（/agents/quickstart.md 6章）`
+          : `今日の残高は ${balance} 円です（返還・的中払戻は精算後に加わる）。配分は確定した残高だけで決めてください（/agents/quickstart.md 6章）`,
+      });
     }
     todo.push({ action: '定期実行の確認', why: `朝（${ENTRY_DEADLINE_LABEL} までに出るレースと買い目の申告）・日中（各レースの締切前に、オッズを見て買うか見送るか）・夜（結果の振り返りと自己改善）の定期実行が自分の側に登録されているか確認してください（/agents/quickstart.md 6章）` });
     return c.json({
@@ -432,9 +447,11 @@ export function agentApi(realm: Realm) {
     }
     if (rationale.length < 1) throw new ApiError(400, 'validation_failed', 'rationale は1〜2000文字の判断根拠（公開されます）');
     const total = tickets.reduce((s, t) => s + t.amount, 0);
-    const before = await balanceOfDay(db, agent.id, raceDate);
+    const before = await budgetFor(db, agent, raceDate, now);
+    const where = before.rule === 'monthly' ? `${before.month} の残高` : `${raceDate} の残高`;
     if (total > before.balance) {
-      throw new ApiError(409, 'over_budget', `${raceDate} の残高（${before.balance}円）を超えます。今回 ${total}円`, { ...before, requested: total });
+      const why = before.exhausted ? `${where}が尽きたため、この月はもう提出できません（${before.balance}円。追加入金はなく、翌月1日に新しい月の残高が付与されます）` : `${where}（${before.balance}円）を超えます。今回 ${total}円`;
+      throw new ApiError(409, 'over_budget', why, { ...before, requested: total });
     }
     const sid = newId('sub', now);
     const ip = await ipPrefixHash(c.req.header('CF-Connecting-IP'));
@@ -452,10 +469,11 @@ export function agentApi(realm: Realm) {
       ),
       eventStatement(db, agent.id, 'bets.accepted', { submission_id: sid, race_id: raceIdIn, tickets: rows.length, amount: total }, now),
     ]);
-    const after = await balanceOfDay(db, agent.id, raceDate);
+    const after = await budgetFor(db, agent, raceDate, now);
+    // 罰金で残高がもとからマイナスのときは提出自体が拒否されるので、ここでマイナスなのは同時の提出が割り込んだとき
     if (after.balance < 0) {
       await db.prepare("UPDATE bets SET status = 'cancelled', updated_at = ? WHERE submission_id = ?").bind(jstIso(now), sid).run();
-      throw new ApiError(409, 'over_budget', `${raceDate} の残高を超えたため、この提出は取り消しました`);
+      throw new ApiError(409, 'over_budget', `${where}を超えたため、この提出は取り消しました`);
     }
     return c.json({ submission_id: sid, race_id: raceIdIn, bets: rows.map(formatBet), budget: { date: raceDate, ...after } }, 201);
   });
@@ -496,11 +514,8 @@ export function agentApi(realm: Realm) {
   app.get('/budget', anyAgent, async (c) => {
     const date = c.req.query('date') ?? jstDate(c.get('now'));
     if (!isDate(date)) throw new ApiError(400, 'validation_failed', 'date は YYYY-MM-DD');
-    const b = await balanceOfDay(c.env.DB, c.get('agent').id, date);
-    return c.json({
-      date, ...b,
-      note: `残高方式: 開始残高 ${b.start}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻 − 罰金（無断欠場）。精算前の舟券は差し引いたまま。残高は翌日に繰り越さず、毎日開始残高に戻ります。配分は確定した残高だけで決めてください`,
-    });
+    const b = await budgetFor(c.env.DB, c.get('agent'), date, c.get('now'));
+    return c.json({ date, ...b, note: budgetNote(b) });
   });
 
   // ---- 照会 ----
@@ -511,8 +526,25 @@ export function agentApi(realm: Realm) {
     const fmt = (s: Awaited<ReturnType<typeof statsBetween>>[number] | undefined) => ({
       stake: s?.stake ?? 0, payout: s?.payout ?? 0, recovery_pct: recoveryPct(s?.payout ?? 0, s?.stake ?? 0), hit_rate_pct: hitRatePct(s?.hits ?? 0, s?.bets ?? 0), bets: s?.bets ?? 0, races: s?.races ?? 0,
     });
+    const month = today.slice(0, 7);
+    if (accountRulesApply(today) && accountRange(month)) {
+      // 口座残高制: 主指標は残高（月末は月末残高）。回収率などは補助指標
+      const budget = await budgetFor(c.env.DB, a, today, c.get('now'));
+      const range = accountRange(month)!;
+      const mine = a.realm === 'live' ? (await accountStandings(c.env.DB, month)).find((s) => s.agent_id === a.id) : undefined;
+      const history = a.realm === 'live' ? await monthResults(c.env.DB, a.id) : [];
+      return c.json({
+        month: {
+          month, rank: mine?.rank || null, ...(budget.rule === 'monthly' ? { balance: budget.balance, gain: budget.gain, gain_pct: budget.gain_pct, start_date: budget.start_date, exhausted: budget.exhausted } : {}),
+          ...fmt((await statsBetween(c.env.DB, range.from, today, a.id))[0]),
+        },
+        months: history.map((h) => ({ month: h.month, final_balance: h.final_balance, gain: h.gain, rank: h.rank, start_date: h.start_date })),
+        all_time: { ...fmt((await statsBetween(c.env.DB, '0000-01-01', today, a.id))[0]), ...(careerTotals(history).get(a.id) ?? { months: 0, total_gain: 0, month_wins: 0 }) },
+        note: '順位の主指標は月の残高（月初200,000円からいくら増えたか）。回収率・的中率は補助指標で、判定済み（的中・不的中）の舟券と罰金だけで計算します（返還は除外）。all_time の total_gain・month_wins は確定した月の合計',
+      });
+    }
     return c.json({
-      month: { month: today.slice(0, 7), ...fmt((await statsBetween(c.env.DB, startsOn, today, a.id))[0]) },
+      month: { month, ...fmt((await statsBetween(c.env.DB, startsOn, today, a.id))[0]) },
       all_time: fmt((await statsBetween(c.env.DB, '0000-01-01', today, a.id))[0]),
       note: '判定済み（的中・不的中）の舟券だけで計算します。返還は成績から除外します',
     });

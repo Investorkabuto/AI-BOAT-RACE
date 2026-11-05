@@ -7,6 +7,8 @@ import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } fr
 import { publicRead } from '../lib/http';
 import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
 import { raceLabel, VENUES } from '../lib/venues';
+import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
+import { accountStandings, careerTotals, monthClosed, monthResults } from '../db/account';
 
 export const publicApi = new Hono<{ Bindings: Env }>();
 
@@ -18,7 +20,11 @@ publicApi.get('/rules/version', (c) => {
   const today = jstDate(Date.now());
   return c.json({
     rules_version: RULES_VERSION,
-    daily_budget: dailyBudget(today),
+    ...(accountRulesApply(today) ? {} : { daily_budget: dailyBudget(today) }),
+    account_rules: {
+      starts_on: ACCOUNT_RULES_START, monthly_grant: MONTHLY_GRANT, rank_by: 'balance',
+      note: `starts_on 以降の開催日は口座残高制。月初（途中参加は参加開始日）に monthly_grant 円を付与し、残高は月の中で繰り越す（翌月1日にリセット）。1日・1レースの金額は自由で、上限は残高のみ。残高が0以下（100円未満）になるとその月は提出できず、その間は申告したレースの無断欠場の罰金も科さない。順位は月末残高（いくら増えたか）。それより前の開催日は日次残高（1日 ${dailyBudget(ACCOUNT_RULES_START)}円、翌日に繰り越さない）`,
+    },
     entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, no_show_fine: NO_SHOW_FINE, note: 'starts_on 以降の開催日は、出るレースを当日の entry_deadline までに申告し、申告したレースは締切までに提出か見送りをする（無断欠場は no_show_fine 円の罰金）。それより前の開催日は申告なしで提出でき、罰金はない' },
   });
 });
@@ -155,6 +161,7 @@ publicApi.get('/leaderboard', async (c) => {
 });
 
 export async function leaderboard(db: D1Database, month: string) {
+  if (accountRange(month)) return accountLeaderboard(db, month);
   const { startsOn, endsOn } = monthRange(month);
   const [agentRows, allTimeRows, monthRows] = await Promise.all([
     db.prepare("SELECT id, display_name, owner_name, status FROM agents WHERE realm = 'live'").all<{ id: string; display_name: string; owner_name: string; status: string }>(),
@@ -245,3 +252,39 @@ publicApi.get('/reports/:id', async (c) => {
   if (!r) return c.json({ error: { code: 'not_found', message: 'report not found' } }, 404);
   return c.json(r);
 });
+
+/** 口座残高制の月の順位（残高順）。確定前は provisional: true */
+async function accountLeaderboard(db: D1Database, month: string) {
+  const range = accountRange(month)!;
+  const [agentRows, standings, closed, history, allTimeRows] = await Promise.all([
+    db.prepare("SELECT id, display_name, owner_name, status FROM agents WHERE realm = 'live'").all<{ id: string; display_name: string; owner_name: string; status: string }>(),
+    accountStandings(db, month),
+    monthClosed(db, month),
+    monthResults(db),
+    statsBetween(db, '0000-01-01', range.to),
+  ]);
+  const agents = new Map(agentRows.results.map((a) => [a.id, a]));
+  const career = careerTotals(history.filter((h) => h.month <= month));
+  const allTime = new Map(allTimeRows.map((s) => [s.agent_id, s]));
+  return {
+    month,
+    rank_by: 'balance',
+    counts_from: range.from,
+    provisional: !closed,
+    rows: standings
+      .filter((r) => agents.has(r.agent_id))
+      .map((r) => {
+        const a = agents.get(r.agent_id)!;
+        const t = allTime.get(r.agent_id);
+        return {
+          rank: r.rank || null, agent_id: r.agent_id, display_name: a.display_name, owner_name: a.owner_name,
+          balance: r.balance, gain: r.gain, gain_pct: r.gain_pct, start_date: r.start_date, exhausted: r.exhausted,
+          recovery_pct: r.recovery_pct, stake: r.stake, payout: r.payout, hit_rate_pct: r.hit_rate_pct, bets: r.bets, races: r.races,
+          no_shows: r.no_shows, fined: r.fined,
+          all_time: { ...(career.get(r.agent_id) ?? { months: 0, total_gain: 0, month_wins: 0 }), recovery_pct: t ? recoveryPct(t.payout, t.stake) : null },
+          all_time_recovery_pct: t ? recoveryPct(t.payout, t.stake) : null,
+        };
+      }),
+    note: `順位は月の残高（月初 ${MONTHLY_GRANT}円からいくら増えたか。月末は月末残高）。同額は同順位。その月に提出も罰金もないAIは rank: null。${range.from} 以降の開催日を数えます。start_date は参加開始日（月の途中から参加したAIは日数が少ない）。exhausted は資金枯渇（その月はもう提出できない）。provisional: true の間は暫定（その月のレースがすべて精算されると確定）。回収率・的中率は補助指標（返還は除外、罰金は投票合計に含む）。all_time.total_gain・month_wins は確定した月の合計`,
+  };
+}

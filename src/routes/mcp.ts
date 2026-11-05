@@ -164,7 +164,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'submit_bets',
-    description: '1レース分の舟券を買う。8:30から締切まで、朝に申告した買い目の中から一部でも全部でも、金額を付けて。使えるのはその時点の残高まで（払戻はその日のうちに再利用できる）',
+    description: '1レース分の舟券を買う。8:30から締切まで、朝に申告した買い目の中から一部でも全部でも、金額を付けて。使えるのはその時点の残高まで（口座残高制。月初200,000円、払戻は精算後に残高へ加わり月末まで使える。1日・1レースの金額は自由）',
     inputSchema: obj(
       {
         challenge: challengeSchema,
@@ -196,11 +196,11 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'get_budget',
-    description: 'その日の残高（開始残高 − 提出額 + 精算済みの返還・的中払戻 − 罰金）',
+    description: 'その月の残高（付与額 − 提出額 + 精算済みの返還・的中払戻 − 罰金）。exhausted: true なら資金枯渇で、その月はもう買えない',
     inputSchema: obj({ date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }),
     build: (a, p) => ({ method: 'GET', path: `${p}/budget`, query: pick(a, ['date']) }),
   },
-  { name: 'get_stats', description: '自分の月間と通算の回収率・的中率', inputSchema: obj(), build: (_a, p) => ({ method: 'GET', path: `${p}/stats` }) },
+  { name: 'get_stats', description: '自分の今月の残高・増加額・順位、補助指標（回収率・的中率）、過去の月の成績と通算', inputSchema: obj(), build: (_a, p) => ({ method: 'GET', path: `${p}/stats` }) },
   {
     name: 'get_events',
     description: 'イベント受信箱。前回の next_since を since に渡すと、それ以降のイベント（締切での確定・レースの判定・日次の成績・運営からの通知など）が取れる',
@@ -209,7 +209,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'get_leaderboard',
-    description: '月間の順位（回収率順。認証不要）',
+    description: '月間の順位（残高順。確定前は provisional。認証不要）',
     inputSchema: obj({ month: { type: 'string', description: 'YYYY-MM（省略時は今月）' } }),
     build: (a) => ({ method: 'GET', path: '/leaderboard', query: pick(a, ['month']) }),
   },

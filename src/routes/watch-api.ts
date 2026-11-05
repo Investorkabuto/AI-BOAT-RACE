@@ -3,6 +3,7 @@
 //   GET /roster/{agent_id}?date= 参加者1体（プロフィール、月間・通算成績、日ごとの推移、その日の申告と結果）
 //   GET /days?month=             月の日ごとのまとめ（レース数、全体の回収率、無断欠場など）
 //   GET /days/{date}             1日のまとめ（日間トップ、高配当の的中）
+//   GET /months                  月次成績表（確定した月の最終残高・増加額・順位）と通算（増加額の合計・月間1位の回数）
 import { Hono } from 'hono';
 import { TACTIC_JA, type Env, type Tactic } from '../env';
 import { statsBetween } from '../db/repo';
@@ -11,10 +12,12 @@ import { entryDeadlineMs } from '../lib/entries';
 import { publicRead } from '../lib/http';
 import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
 import { raceLabel, VENUES } from '../lib/venues';
+import { accountRange, MONTHLY_GRANT } from '../lib/account';
+import { accountStandings, careerTotals, monthClosed, monthResults, type AccountStanding } from '../db/account';
 
 export const watchApi = new Hono<{ Bindings: Env }>();
 
-for (const path of ['/roster', '/roster/*', '/days', '/days/*']) {
+for (const path of ['/roster', '/roster/*', '/days', '/days/*', '/months']) {
   watchApi.use(path, publicRead());
 }
 
@@ -57,6 +60,34 @@ const fmtStats = (s: { stake: number; payout: number; hits: number; bets: number
   fined: s?.fined ?? 0,
 });
 
+const fmtAccount = (a: AccountStanding) => ({ balance: a.balance, gain: a.gain, gain_pct: a.gain_pct, granted: a.granted, start_date: a.start_date, exhausted: a.exhausted });
+const fmtAccountStats = (a: AccountStanding) => ({
+  recovery_pct: a.recovery_pct, stake: a.stake, payout: a.payout, hit_rate_pct: a.hit_rate_pct, races: a.races, no_shows: a.no_shows, fined: a.fined,
+});
+
+/** 月のパフォーマンス（参加者詳細）: 日ごとの確定残高の推移、最高・最低残高、最大の払戻があったレース */
+async function accountDetail(db: D1Database, id: string, month: string, acc: AccountStanding) {
+  const range = accountRange(month)!;
+  const [series, best] = await Promise.all([
+    db.prepare('SELECT race_date, balance FROM balance_days WHERE agent_id = ? AND month = ? ORDER BY race_date').bind(id, month).all<{ race_date: string; balance: number }>(),
+    db
+      .prepare(
+        `SELECT b.race_id, r.jcd, r.rno, SUM(b.payout) AS payout, SUM(b.amount) AS amount FROM bets b JOIN races r ON r.id = b.race_id
+         WHERE b.agent_id = ? AND b.status = 'hit' AND b.race_date BETWEEN ? AND ? GROUP BY b.race_id ORDER BY payout DESC LIMIT 1`,
+      )
+      .bind(id, range.from, range.to)
+      .first<{ race_id: string; jcd: string; rno: number; payout: number; amount: number }>(),
+  ]);
+  const points = [acc.granted, ...series.results.map((x) => x.balance), acc.balance];
+  return {
+    ...fmtAccount(acc),
+    series: series.results.map((x) => ({ date: x.race_date, balance: x.balance })),
+    max_balance: Math.max(...points),
+    min_balance: Math.min(...points),
+    best_race: best ? { race_id: best.race_id, label: raceLabel(best.jcd, best.rno), payout: best.payout, amount: best.amount } : null,
+  };
+}
+
 // ---- 参加者 ----
 
 watchApi.get('/roster', async (c) => {
@@ -79,18 +110,22 @@ watchApi.get('/roster', async (c) => {
   ]);
   const agents = agentsQ.results;
   const month = new Map(rankByRecovery(monthStats).map((s) => [s.agent_id, s]));
+  const monthly = accountRange(date.slice(0, 7)) !== null;
+  const account = new Map((monthly ? await accountStandings(db, date.slice(0, 7), date) : []).map((s) => [s.agent_id, s]));
   const entries = new Map(entriesQ.results.map((r) => [r.agent_id, r]));
   const tactics = new Map(tacticsQ.results.map((t) => [t.agent_id, t]));
   const rows = agents.map((a) => {
     const m = month.get(a.id);
     const e = entries.get(a.id);
     const t = tactics.get(a.id);
+    const acc = account.get(a.id);
     return {
       agent_id: a.id,
       display_name: a.display_name,
       owner_name: a.owner_name,
-      rank: m?.rank || null,
-      month: fmtStats(m),
+      rank: monthly ? acc?.rank || null : m?.rank || null,
+      account: acc ? fmtAccount(acc) : null,
+      month: monthly ? (acc ? fmtAccountStats(acc) : fmtStats(undefined)) : fmtStats(m),
       today: {
         tactic: t ? { tactic: t.tactic, tactic_ja: TACTIC_JA[t.tactic], chosen_by: t.chosen_by } : null,
         entries: (e?.entered ?? 0) + (e?.passed ?? 0),
@@ -99,8 +134,13 @@ watchApi.get('/roster', async (c) => {
       },
     };
   });
-  rows.sort((x, y) => (x.rank ?? 1e9) - (y.rank ?? 1e9) || y.today.entries - x.today.entries);
-  return c.json({ date, month: date.slice(0, 7), agents: rows, note: '月間成績は判定済みの舟券と罰金で計算（返還は除外）。rank は月間回収率の順位（投票のないAIは null）' });
+  rows.sort((x, y) => (x.rank ?? 1e9) - (y.rank ?? 1e9) || (y.account?.balance ?? 0) - (x.account?.balance ?? 0) || y.today.entries - x.today.entries);
+  return c.json({
+    date, month: date.slice(0, 7), rank_by: monthly ? 'balance' : 'recovery', agents: rows,
+    note: monthly
+      ? `account は口座残高制の残高（balance=現在残高、gain=月初 ${MONTHLY_GRANT}円との差、start_date=参加開始日、exhausted=資金枯渇でその月は提出できない）。rank は残高の順位（その月に提出も罰金もないAIは null）。month の回収率などは補助指標（判定済みの舟券と罰金。返還は除外）`
+      : '月間成績は判定済みの舟券と罰金で計算（返還は除外）。rank は月間回収率の順位（投票のないAIは null）',
+  });
 });
 
 watchApi.get('/roster/:id', async (c) => {
@@ -134,6 +174,11 @@ watchApi.get('/roster/:id', async (c) => {
       .all<{ race_id: string; status: string; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; pending: number }>(),
   ]);
   if (!a) return c.json({ error: { code: 'not_found', message: 'agent not found' } }, 404);
+  const ym = date.slice(0, 7);
+  const monthly = accountRange(ym) !== null;
+  const [standings, history] = await Promise.all([monthly ? accountStandings(db, ym, date) : Promise.resolve([]), monthResults(db, id)]);
+  const acc = standings.find((s) => s.agent_id === id);
+  const account = acc ? { ...(await accountDetail(db, id, ym, acc)), rank: acc.rank || null, ranked_agents: standings.filter((s) => s.rank > 0).length, provisional: !(await monthClosed(db, ym)) } : null;
   const month = rankByRecovery(monthStats).find((s) => s.agent_id === id);
   const allTime = allTimeStats[0];
   const daily = [...dailyMap.values()]
@@ -152,12 +197,15 @@ watchApi.get('/roster/:id', async (c) => {
   return c.json({
     agent_id: a.id, display_name: a.display_name, owner_name: a.owner_name, profile: a.profile, status: a.status, joined_at: a.created_at,
     date,
-    rank: month?.rank || null,
-    month: fmtStats(month),
-    all_time: fmtStats(allTime),
+    rank: monthly ? acc?.rank || null : month?.rank || null,
+    rank_by: monthly ? 'balance' : 'recovery',
+    account,
+    month: monthly ? (acc ? fmtAccountStats(acc) : fmtStats(undefined)) : fmtStats(month),
+    months: history.map((h) => ({ month: h.month, start_date: h.start_date, final_balance: h.final_balance, gain: h.gain, rank: h.rank, stake: h.stake, payout: h.payout, recovery_pct: recoveryPct(h.payout, h.stake), fined: h.fined, races: h.races })),
+    all_time: { ...fmtStats(allTime), ...(careerTotals(history).get(id) ?? { months: 0, total_gain: 0, month_wins: 0 }) },
     daily,
     today: { tactic: tactic ? { tactic: tactic.tactic, tactic_ja: TACTIC_JA[tactic.tactic], chosen_by: tactic.chosen_by } : null, plans_public: plansOpen, entries },
-    note: 'state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は 8:30 から公開',
+    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は 8:30 から公開',
   });
 });
 
@@ -228,5 +276,29 @@ watchApi.get('/days/:date', async (c) => {
       race_id: h.race_id, label: raceLabel(h.jcd, h.rno), agent_id: h.agent_id, display_name: names.get(h.agent_id) ?? h.agent_id,
       bet_type: h.bet_type, bet_type_ja: BET_TYPE_JA[h.bet_type], combo: h.combo, amount: h.amount, payout: h.payout,
     })),
+  });
+});
+
+// ---- 月次成績表 ----
+
+watchApi.get('/months', async (c) => {
+  const db = c.env.DB;
+  const [rows, agentsQ] = await Promise.all([
+    monthResults(db),
+    db.prepare("SELECT id, display_name FROM agents WHERE realm = 'live'").all<{ id: string; display_name: string }>(),
+  ]);
+  const names = new Map(agentsQ.results.map((a) => [a.id, a.display_name]));
+  const byMonth = new Map<string, typeof rows>();
+  for (const r of rows) byMonth.set(r.month, [...(byMonth.get(r.month) ?? []), r]);
+  const career = careerTotals(rows);
+  return c.json({
+    months: [...byMonth].map(([month, list]) => ({
+      month,
+      rows: list.map((r) => ({ rank: r.rank, agent_id: r.agent_id, display_name: names.get(r.agent_id) ?? r.agent_id, start_date: r.start_date, final_balance: r.final_balance, gain: r.gain, recovery_pct: recoveryPct(r.payout, r.stake), races: r.races, fined: r.fined })),
+    })),
+    career: [...career]
+      .map(([agent_id, t]) => ({ agent_id, display_name: names.get(agent_id) ?? agent_id, ...t }))
+      .sort((a, b) => b.month_wins - a.month_wins || b.total_gain - a.total_gain),
+    note: `確定した月だけを載せます（その月の開催日のレースがすべて精算された時点で確定）。final_balance=月末残高、gain=月初 ${MONTHLY_GRANT}円との差、rank=月間順位（提出も罰金もない月は null）。career は通算（months=参加した月数、total_gain=増加額の合計、month_wins=月間1位の回数）。今月の暫定順位は GET /leaderboard`,
   });
 });
