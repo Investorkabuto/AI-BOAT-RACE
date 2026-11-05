@@ -267,6 +267,45 @@ def send_cards(date: str, parsed: dict, force: bool) -> bool:
     return ok
 
 
+# ------------------------------------------------------------------ 競走成績（公式テキストデータ K）
+
+# 1回の送信に含めるレース数（アプリは D1 の batch を100文までに区切るので、1レース2文 × 49。余裕を見て48）
+RECORDS_PER_REQUEST = 48
+
+
+def load_records(date: str) -> dict | None:
+    """その日の競走成績（K）を取得して解析する。まだ公開されていなければ None"""
+    lzh = bt.download(bt.k_url(date), timeout=TIMEOUT)
+    if lzh is None:
+        return None
+    return bt.parse_k(bt.unpack(lzh), date)
+
+
+def records_payload(parsed: dict) -> list[dict]:
+    return [{"jcd": v["jcd"], **r} for v in parsed["venues"] for r in v["races"]]
+
+
+def send_records(date: str, parsed: dict, force: bool) -> bool:
+    """競走成績をアプリに送る。すべて保存できたら True（ハッシュを記録する）"""
+    sha = parsed["sha256"]
+    if not force and api("GET", f"/internal/record-state?date={date}").get("sha256") == sha:
+        print(f"{date}: 競走成績は前回と同じです（{sha[:12]}）。何もしません")
+        return True
+    races = records_payload(parsed)
+    ok = not parsed["errors"]
+    saved = 0
+    for i in range(0, len(races), RECORDS_PER_REQUEST):
+        res = api("PUT", "/internal/records", {"race_date": date, "races": races[i : i + RECORDS_PER_REQUEST]})
+        saved += res["saved"]
+        for s in res["skipped"]:
+            print(f"warn: サーバーが受け付けませんでした: {s}", file=sys.stderr)
+            ok = False
+    print(f"{date}: 競走成績 {len(races)} レース（保存・更新 {saved}）")
+    if ok:  # 解析の失敗やサーバーの拒否があれば記録しない（次の実行で取り直す）
+        api("PUT", "/internal/record-state", {"race_date": date, "sha256": sha})
+    return ok
+
+
 # ------------------------------------------------------------------ 結果
 
 def parse_combo(cell) -> str | None:
@@ -409,10 +448,10 @@ def fetch_result(race_id: str) -> dict | None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["schedule", "cards", "results", "results-all", "probe-cards", "probe-schedule", "probe-result", "probe-entrants"])
+    p.add_argument("command", choices=["schedule", "cards", "records", "results", "results-all", "probe-cards", "probe-records", "probe-schedule", "probe-result", "probe-entrants"])
     p.add_argument("--date", help="YYYY-MM-DD（省略時は今日）")
     p.add_argument("--race", help="レースID（probe-result 用）")
-    p.add_argument("--force", action="store_true", help="cards: 前回と同じ内容でも送り直す")
+    p.add_argument("--force", action="store_true", help="cards / records: 前回と同じ内容でも送り直す")
     a = p.parse_args()
     date = a.date or dt.datetime.now(JST).date().isoformat()
 
@@ -436,6 +475,25 @@ def main() -> None:
         # 解析できたレースは送る。失敗があれば最後に終了コード1で知らせる（Actions の失敗通知で気づけるように）
         if not send_cards(date, parsed, a.force):
             raise SystemExit(f"{date}: 番組表の一部を取り込めませんでした（上の warn を参照）")
+    elif a.command in ("records", "probe-records"):
+        parsed = load_records(date)
+        if parsed is None:
+            print(f"{date}: 競走成績（K）はまだ公開されていません（{bt.k_url(date)}）")
+            return
+        races = records_payload(parsed)
+        for e in parsed["errors"]:
+            print(f"warn: {e}", file=sys.stderr)
+        if a.command == "probe-records":
+            print(f"{date}: 場 {len(parsed['venues'])}、レース {len(races)}、解析の失敗 {len(parsed['errors'])}、sha256 {parsed['sha256'][:16]}")
+            for v in parsed["venues"]:
+                print(f"  {v['jcd']} {v['name']} 第{v['day']}日 ({len(v['races'])}R)")
+            if races:
+                print(json.dumps(races[0], ensure_ascii=False, indent=1))
+            return
+        if not races:
+            raise SystemExit(f"{date}: 解析できたレースがありません。形式が変わった可能性があります")
+        if not send_records(date, parsed, a.force):
+            raise SystemExit(f"{date}: 競走成績の一部を取り込めませんでした（上の warn を参照）")
     elif a.command == "probe-schedule":
         races, entrants = schedule_of_day(date)
         print(json.dumps({"races": races, "entrants_1R": entrants}, ensure_ascii=False, indent=1))

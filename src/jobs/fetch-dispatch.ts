@@ -4,6 +4,7 @@
 //  - 結果: 締切後で結果が未取得のレースがあるときに、最短10分おき。舟券のあるレース（精算用）に加えて、
 //    当日の全レースを締切の5分後から3時間まで取りに行く（AIの参加に関係なく当日中に観戦画面で結果を出すため。2026-11-05 管理者決定）
 //  - 全レースの結果: 毎朝 6:00 に前日分をまとめて保存する（公開・振り返り用。要件定義 §6）
+//  - 競走成績（K）: 当日の 21:30・23:20 と、翌朝 6:30 に前日分（展示タイム・進入・ST・天候・決まり手・払戻金。要件定義 v1.0 系統3）
 // 取り込みは何度実行しても安全なので、GitHub 側の schedule が動いて二重になっても問題ない。
 import type { Env } from '../env';
 import { addDays, jstDate, jstIso, jstToMs } from '../lib/time';
@@ -21,6 +22,16 @@ export const CARD_SLOTS = [
   { at: '19:30', day: 1 },
   { at: '22:00', day: 1 },
   { at: '07:00', day: 0 },
+] as const;
+/**
+ * 競走成績（公式テキストデータ K）を取る時刻。day=0 は当日分、day=-1 は前日分（日本時間 HH:MM）。
+ * 実測（2026-11）では、その日の分が 20:50 ごろに出て、22:55 ごろに更新されることがある。夜に2回見て、翌朝に取り残しがないか確かめる。
+ * ファイルが前回と同じなら取り込みは何もしないので、回数を増やしても負荷は小さい
+ */
+export const RECORD_SLOTS = [
+  { at: '21:30', day: 0 },
+  { at: '23:20', day: 0 },
+  { at: '06:30', day: -1 },
 ] as const;
 /** 出走表の起動は、その時刻からこの時間内だけ行う（デプロイ直後などに夜になってから起動しないように） */
 export const SLOT_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -46,7 +57,7 @@ export const resultWantedArgs = (nowMs: number) => [nowMs - RESULT_WAIT_MS, nowM
 export interface Dispatch {
   /** 起動済みの記録に使うキー（app_state.key） */
   key: string;
-  command: 'schedule' | 'cards' | 'results' | 'results-all';
+  command: 'schedule' | 'cards' | 'records' | 'results' | 'results-all';
   date?: string;
 }
 
@@ -66,6 +77,13 @@ export function dueDispatches(p: { nowMs: number; done: ReadonlySet<string>; las
     const target = addDays(today, slot.day);
     const key = `fetch:cards:${target}:${slot.at}`;
     if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'cards', date: target });
+  }
+  for (const slot of RECORD_SLOTS) {
+    const [h, m] = slot.at.split(':').map(Number) as [number, number];
+    const at = jstToMs(today, h, m);
+    const target = addDays(today, slot.day);
+    const key = `fetch:records:${target}:${slot.at}`;
+    if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'records', date: target });
   }
   {
     const [h, m] = RESULTS_ALL_SLOT.split(':').map(Number) as [number, number];
@@ -126,7 +144,7 @@ export async function dispatchFetches(env: Env, nowMs: number): Promise<string[]
     log.push(`fetch dispatched: ${d.command}${d.date ? ` ${d.date}` : ''}`);
   }
   // 古い出走表・番組表の起動記録を消す（3日より前）
-  await db.prepare("DELETE FROM app_state WHERE (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:cards:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
+  await db.prepare("DELETE FROM app_state WHERE (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:cards:%' OR key LIKE 'fetch:records:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
   return log;
 }
 
