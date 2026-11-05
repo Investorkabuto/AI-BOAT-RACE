@@ -9,6 +9,17 @@ import { addDays, isDate, jstDate } from '../lib/time';
 import { isJcd, VENUES } from '../lib/venues';
 
 export const analysisApi = new Hono<{ Bindings: Env }>();
+
+/**
+ * 分析API の一時停止（2026-11-05 管理者決定）。集計が D1 の読み取り量（無料プランは1日500万行）を使い切るおそれがあるため、
+ * 再開の方法（事前集計・キャッシュ・回数の制限）を決めるまで、どの /analysis/... も DB を読まずに 503 を返す。
+ * 観戦画面の「分析」（/analysis のページ）とメニューのボタンは残し、画面は停止中の案内だけを出す（src/web/app.html）
+ */
+export const ANALYSIS_SUSPENDED = true;
+analysisApi.use('*', async (c, next) => {
+  if (!ANALYSIS_SUSPENDED) return next();
+  return c.json({ error: { code: 'analysis_suspended', message: '分析APIは一時停止中です' } }, 503, { 'Cache-Control': 'no-store', 'Retry-After': '86400' });
+});
 analysisApi.use('*', publicRead());
 
 const MAX_DAYS = 4 * 366;
