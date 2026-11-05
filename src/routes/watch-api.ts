@@ -161,7 +161,7 @@ watchApi.get('/roster/:id', async (c) => {
     db.prepare('SELECT tactic, chosen_by FROM daily_tactics WHERE agent_id = ? AND race_date = ?').bind(id, date).first<{ tactic: Tactic; chosen_by: string }>(),
     db
       .prepare(
-        `SELECT e.race_id, e.status, e.passed_at, r.jcd, r.rno, r.deadline_at, r.status AS race_status, f.amount AS fine, p.tickets_json, p.rationale,
+        `SELECT e.race_id, e.status, e.late, e.passed_at, r.jcd, r.rno, r.deadline_at, r.status AS race_status, f.amount AS fine, p.tickets_json, p.rationale,
            (SELECT COALESCE(SUM(amount), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status NOT IN ('cancelled')) AS amount,
            (SELECT COALESCE(SUM(payout), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS payout,
            (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS hits,
@@ -171,7 +171,7 @@ watchApi.get('/roster/:id', async (c) => {
          WHERE e.agent_id = ? AND e.realm = 'live' AND e.race_date = ? ORDER BY r.deadline_ms`,
       )
       .bind(id, date)
-      .all<{ race_id: string; status: string; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; pending: number }>(),
+      .all<{ race_id: string; status: string; late: number; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; pending: number }>(),
   ]);
   if (!a) return c.json({ error: { code: 'not_found', message: 'agent not found' } }, 404);
   const ym = date.slice(0, 7);
@@ -189,7 +189,7 @@ watchApi.get('/roster/:id', async (c) => {
     // 状況: passed=見送り / no_show=無断欠場 / hit・miss=判定済み / pending=購入済み・結果待ち / entered=申告中（未購入）
     const state = e.status === 'passed' ? 'passed' : e.fine ? 'no_show' : e.amount > 0 ? (e.pending > 0 ? 'pending' : e.hits > 0 ? 'hit' : 'miss') : 'entered';
     return {
-      race_id: e.race_id, label: raceLabel(e.jcd, e.rno), deadline: e.deadline_at, race_status: e.race_status, state,
+      race_id: e.race_id, label: raceLabel(e.jcd, e.rno), deadline: e.deadline_at, race_status: e.race_status, state, late: e.late === 1,
       amount: e.amount, payout: e.payout, fine: e.fine,
       ...(plansOpen ? { tickets: e.tickets_json ? JSON.parse(e.tickets_json) : [], rationale: e.rationale } : {}),
     };

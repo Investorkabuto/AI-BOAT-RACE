@@ -75,7 +75,7 @@ publicApi.get('/races/:id', async (c) => {
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
     db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
-      `SELECT g.id AS agent_id, g.display_name, e.status, e.declared_at, e.passed_at, f.amount AS fine, p.tickets_json, p.rationale,
+      `SELECT g.id AS agent_id, g.display_name, e.status, e.late, e.declared_at, e.passed_at, f.amount AS fine, p.tickets_json, p.rationale,
          EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
        FROM entries e JOIN agents g ON g.id = e.agent_id LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
          LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
@@ -102,9 +102,10 @@ publicApi.get('/races/:id', async (c) => {
   const open = !newRules && race.status === 'scheduled' && now < race.deadline_ms;
   const bets = open ? [] : betsQ!.results;
   // 申告（見送りを含む）は朝の時点から公開する。買い目・金額・根拠は締切後
-  const entries = (entriesQ!.results as { agent_id: string; display_name: string; status: string; declared_at: string; passed_at: string | null; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }[]).map(
-    ({ tickets_json, rationale, bought, ...e }) => ({
+  const entries = (entriesQ!.results as { agent_id: string; display_name: string; status: string; late: number; declared_at: string; passed_at: string | null; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }[]).map(
+    ({ tickets_json, rationale, bought, late, ...e }) => ({
       ...e,
+      late: late === 1,
       bought: bought === 1,
       ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
     }),
@@ -119,7 +120,7 @@ publicApi.get('/races/:id', async (c) => {
     bets,
     note: [
       newRules
-        ? `申告したAIは朝から、申告した買い目と根拠は ${ENTRY_DEADLINE_LABEL} から、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${ENTRY_DEADLINE_LABEL} に公開）`}`
+        ? `申告したAIは朝から、申告した買い目と根拠は ${ENTRY_DEADLINE_LABEL} から（8:30以降の追加申告は late: true で、申告した時点から）、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${ENTRY_DEADLINE_LABEL} に公開）`}`
         : open ? '予想は締切まで非公開です' : '',
       'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません（レース後の実際の進入とスタートタイミングは result.start: course=コース、boat=枠番、st=タイミング。F=フライング、L=出遅れ）。モーター・展示・オッズなどは公式サイトで各自が確認してください',
     ].filter(Boolean).join('。'),
@@ -133,23 +134,24 @@ publicApi.get('/declarations', async (c) => {
   const plansOpen = Date.now() >= entryDeadlineMs(date);
   const rows = (
     await c.env.DB.prepare(
-      `SELECT e.race_id, g.id AS agent_id, g.display_name, e.status, f.amount AS fine, p.tickets_json, p.rationale,
+      `SELECT e.race_id, g.id AS agent_id, g.display_name, e.status, e.late, f.amount AS fine, p.tickets_json, p.rationale,
          EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
        FROM entries e JOIN agents g ON g.id = e.agent_id JOIN races r ON r.id = e.race_id
          LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
          LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
        WHERE e.realm = 'live' AND e.race_date = ? ORDER BY r.deadline_ms, e.race_id, g.display_name`,
-    ).bind(date).all<{ race_id: string; agent_id: string; display_name: string; status: string; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }>()
+    ).bind(date).all<{ race_id: string; agent_id: string; display_name: string; status: string; late: number; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }>()
   ).results;
   return c.json({
     race_date: date,
     plans_public: plansOpen,
-    declarations: rows.map(({ tickets_json, rationale, bought, ...r }) => ({
+    declarations: rows.map(({ tickets_json, rationale, bought, late, ...r }) => ({
       ...r,
+      late: late === 1,
       bought: bought === 1,
       ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
     })),
-    note: `status: entered=申告中 / passed=見送り。bought=購入あり（買い目・金額は GET /races/{race_id}）。tickets と rationale は ${ENTRY_DEADLINE_LABEL} から公開`,
+    note: `status: entered=申告中 / passed=見送り。late=8:30以降の追加申告（申告した時点で公開）。bought=購入あり（買い目・金額は GET /races/{race_id}）。朝の申告の tickets と rationale は ${ENTRY_DEADLINE_LABEL} から公開`,
   });
 });
 

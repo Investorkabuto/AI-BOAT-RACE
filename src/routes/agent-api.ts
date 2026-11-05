@@ -286,7 +286,7 @@ export function agentApi(realm: Realm) {
     const raw = b.entries;
     if (!Array.isArray(raw) || raw.length > MAX_ENTRIES) throw new ApiError(400, 'validation_failed', FORMAT);
     if (realm === 'live' && now >= entryDeadlineMs(date)) {
-      throw new ApiError(409, 'entry_closed', `${date} の申告は ${ENTRY_DEADLINE_LABEL} で締め切り、買い目は確定しました。申告したレースは、申告した買い目の中から POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください`);
+      throw new ApiError(409, 'entry_closed', `${date} の申告は ${ENTRY_DEADLINE_LABEL} で締め切り、買い目は確定しました。申告したレースは、申告した買い目の中から POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください。朝に申告していないレースは、締切まで POST /bets に "declare": true と根拠を付けて「追加申告＋購入」ができます（申告だけの追加はできません）`);
     }
     const errors: string[] = [];
     const plans = new Map<string, { tickets: PlanTicket[]; rationale: string }>();
@@ -362,23 +362,23 @@ export function agentApi(realm: Realm) {
     if (!isDate(date)) throw new ApiError(400, 'validation_failed', 'date は YYYY-MM-DD');
     const rows = (
       await c.env.DB.prepare(
-        `SELECT e.race_id, e.status, e.declared_at, e.passed_at, r.deadline_at, r.status AS race_status, p.tickets_json, p.rationale,
+        `SELECT e.race_id, e.status, e.late, e.declared_at, e.passed_at, r.deadline_at, r.status AS race_status, p.tickets_json, p.rationale,
            EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS submitted,
            (SELECT amount FROM fines f WHERE f.agent_id = e.agent_id AND f.race_id = e.race_id) AS fine
          FROM entries e LEFT JOIN races r ON r.id = e.race_id LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
          WHERE e.agent_id = ? AND e.race_date = ? ORDER BY r.deadline_ms, e.race_id`,
-      ).bind(agent.id, date).all<{ race_id: string; status: string; declared_at: string; passed_at: string | null; deadline_at: string | null; race_status: string | null; submitted: number; fine: number | null; tickets_json: string | null; rationale: string | null }>()
+      ).bind(agent.id, date).all<{ race_id: string; status: string; late: number; declared_at: string; passed_at: string | null; deadline_at: string | null; race_status: string | null; submitted: number; fine: number | null; tickets_json: string | null; rationale: string | null }>()
     ).results;
     return c.json({
       race_date: date,
       deadline: realm === 'live' ? jstIso(entryDeadlineMs(date)) : null,
       rules_apply: entryRulesApply(date),
       entries: rows.map((r) => ({
-        race_id: r.race_id, status: r.status, submitted: r.submitted === 1, fine: r.fine, deadline: r.deadline_at, race_status: r.race_status,
+        race_id: r.race_id, status: r.status, late: r.late === 1, submitted: r.submitted === 1, fine: r.fine, deadline: r.deadline_at, race_status: r.race_status,
         tickets: r.tickets_json ? JSON.parse(r.tickets_json) : [], rationale: r.rationale,
         declared_at: r.declared_at, passed_at: r.passed_at,
       })),
-      note: 'status: entered=申告中（締切までに、申告した買い目の中から買うか見送りが必要） / passed=見送り（確定）。tickets=申告した買い目（8:30 に確定）。submitted=有効な舟券がある。fine=無断欠場の罰金（円）',
+      note: 'status: entered=申告中（締切までに、申告した買い目の中から買うか見送りが必要） / passed=見送り（確定）。late=8:30以降の追加申告（POST /bets の declare: true）。tickets=申告した買い目（朝の申告は 8:30 に確定、追加申告は申告した時点で確定）。submitted=有効な舟券がある。fine=無断欠場の罰金（円）',
     });
   });
 
@@ -432,18 +432,38 @@ export function agentApi(realm: Realm) {
       raceDate = race.race_date;
     }
     // 朝のエントリー申告（ルール 4.1）。申告した買い目の中からだけ買える。サンドボックスでは練習のため常に必要（時刻の判定はしない）
+    // 朝に申告していないレースは、8:30以降なら declare: true で「追加申告＋購入」を1回で行える（要件定義 v0.9 決定31〜33）。
+    // 申告と購入を同じ batch で書くので、購入のない追加申告は残らない
+    let lateDeclare = false;
     if (realm === 'sandbox' || entryRulesApply(raceDate)) {
+      const declare = b.declare === true;
+      const final = realm === 'sandbox' || now >= entryDeadlineMs(raceDate);
       const e = await db.prepare('SELECT status FROM entries WHERE agent_id = ? AND race_id = ?').bind(agent.id, raceIdIn).first<{ status: string }>();
-      if (!e) throw new ApiError(409, 'entry_required', `${raceIdIn} は申告されていないため買えません。出るレースと買い目は当日 ${ENTRY_DEADLINE_LABEL} までに PUT /entries で申告します（ルール 4.1）`);
-      if (e.status === 'passed') throw new ApiError(409, 'entry_passed', `${raceIdIn} は見送りを申告済みのため買えません（見送りは確定）`);
-      if (realm === 'live' && now < entryDeadlineMs(raceDate)) {
-        throw new ApiError(409, 'entry_not_final', `買い目が確定する ${ENTRY_DEADLINE_LABEL} までは買えません（${ENTRY_DEADLINE_LABEL} からレースの締切まで）`);
+      if (!e && !declare) {
+        throw new ApiError(
+          409,
+          'entry_required',
+          final
+            ? `${raceIdIn} は申告されていないため、このままでは買えません。追加で申告して買うなら、"declare": true と根拠（rationale）を付けて送ってください（今回の買い目がそのまま申告として即時公開され、以後は変更できません。ルール 4.1）`
+            : `${raceIdIn} は申告されていないため買えません。出るレースと買い目は当日 ${ENTRY_DEADLINE_LABEL} までに PUT /entries で申告します（ルール 4.1）`,
+        );
       }
-      const plan = await db.prepare('SELECT tickets_json, rationale FROM entry_plans WHERE agent_id = ? AND race_id = ?').bind(agent.id, raceIdIn).first<{ tickets_json: string; rationale: string }>();
-      if (!plan) throw new ApiError(409, 'entry_required', `${raceIdIn} の買い目が申告されていません。PUT /entries で買い目を申告してください`);
-      const missing = undeclaredTickets(JSON.parse(plan.tickets_json) as PlanTicket[], tickets);
-      if (missing.length) throw new ApiError(409, 'ticket_not_declared', '申告していない買い目は買えません（申告した買い目の中からだけ、一部でも全部でも買えます）', missing);
-      if (!rationale) rationale = plan.rationale;
+      if (e?.status === 'passed') throw new ApiError(409, 'entry_passed', `${raceIdIn} は見送りを申告済みのため買えません（見送りは確定）`);
+      if (!final) {
+        throw new ApiError(409, 'entry_not_final', `買い目が確定する ${ENTRY_DEADLINE_LABEL} までは買えません（${ENTRY_DEADLINE_LABEL} からレースの締切まで）${!e ? `。${ENTRY_DEADLINE_LABEL} までの申告は PUT /entries で行います（declare: true の追加申告は ${ENTRY_DEADLINE_LABEL} から）` : ''}`);
+      }
+      if (!e) {
+        // 追加申告: 今回の買い目がそのまま申告になる。根拠は必須（申告として公開する）
+        if (!rationale) throw new ApiError(400, 'validation_failed', '追加申告（declare: true）では rationale（1〜2000文字の判断根拠）が必要です。申告として即時公開されます');
+        lateDeclare = true;
+      } else {
+        // 申告済みのレース（朝の申告・追加申告とも）は、申告した買い目の中からだけ買える。declare は無視する
+        const plan = await db.prepare('SELECT tickets_json, rationale FROM entry_plans WHERE agent_id = ? AND race_id = ?').bind(agent.id, raceIdIn).first<{ tickets_json: string; rationale: string }>();
+        if (!plan) throw new ApiError(409, 'entry_required', `${raceIdIn} の買い目が申告されていません。PUT /entries で買い目を申告してください`);
+        const missing = undeclaredTickets(JSON.parse(plan.tickets_json) as PlanTicket[], tickets);
+        if (missing.length) throw new ApiError(409, 'ticket_not_declared', '申告していない買い目は買えません（申告した買い目の中からだけ、一部でも全部でも買えます。申告済みのレースの買い目は追加・変更できません）', missing);
+        if (!rationale) rationale = plan.rationale;
+      }
     }
     if (rationale.length < 1) throw new ApiError(400, 'validation_failed', 'rationale は1〜2000文字の判断根拠（公開されます）');
     const total = tickets.reduce((s, t) => s + t.amount, 0);
@@ -459,8 +479,19 @@ export function agentApi(realm: Realm) {
       id: newId('bet', now), submission_id: sid, agent_id: agent.id, realm, race_id: raceIdIn, race_date: raceDate,
       bet_type: t.bet_type, combo: t.combo, amount: t.amount, status: 'accepted', payout: 0, refund_reason: null, received_ms: now, updated_at: jstIso(now),
     }));
+    // 追加申告の分（申告・買い目・イベント）。同じレースへの追加申告が同時に来たら、先に書いた方だけが申告になる（OR IGNORE）
+    const declaredPlan: PlanTicket[] = tickets.map((t) => ({ bet_type: t.bet_type, combo: t.combo }));
+    const lateStmts = lateDeclare
+      ? [
+          db.prepare("INSERT OR IGNORE INTO entries (realm, agent_id, race_id, race_date, status, declared_at, late) VALUES (?, ?, ?, ?, 'entered', ?, 1)").bind(realm, agent.id, raceIdIn, raceDate, jstIso(now)),
+          db.prepare('INSERT OR IGNORE INTO entry_plans (agent_id, race_id, realm, race_date, tickets_json, rationale, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            .bind(agent.id, raceIdIn, realm, raceDate, JSON.stringify(declaredPlan), rationale, jstIso(now)),
+          eventStatement(db, agent.id, 'entry.added', { race_id: raceIdIn, race_date: raceDate, tickets: declaredPlan, submission_id: sid }, now),
+        ]
+      : [];
     // 残高の判定と書き込みの間に別の提出が割り込んでも超えないよう、書き込みの後に残高を確かめ、マイナスなら取り消す
-    await db.batch([
+    const written = await db.batch([
+      ...lateStmts,
       db.prepare('INSERT INTO submissions (id, agent_id, realm, race_id, race_date, rationale, idempotency_key, received_at, received_ms, ip_prefix_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .bind(sid, agent.id, realm, raceIdIn, raceDate, rationale, idem, jstIso(now), now, ip),
       ...rows.map((r) =>
@@ -469,13 +500,43 @@ export function agentApi(realm: Realm) {
       ),
       eventStatement(db, agent.id, 'bets.accepted', { submission_id: sid, race_id: raceIdIn, tickets: rows.length, amount: total }, now),
     ]);
+    const declaredHere = lateDeclare && written[0]!.meta.changes === 1;
+    /** この提出を取り消す。この提出で追加申告したレースなら、申告も消す（購入のない追加申告を残さない） */
+    const rollback = async () => {
+      await db.batch([
+        db.prepare("UPDATE bets SET status = 'cancelled', updated_at = ? WHERE submission_id = ?").bind(jstIso(now), sid),
+        ...(declaredHere
+          ? [
+              db.prepare("DELETE FROM entry_plans WHERE agent_id = ? AND race_id = ? AND NOT EXISTS (SELECT 1 FROM bets WHERE agent_id = ? AND race_id = ? AND status != 'cancelled')").bind(agent.id, raceIdIn, agent.id, raceIdIn),
+              db.prepare("DELETE FROM entries WHERE agent_id = ? AND race_id = ? AND late = 1 AND status = 'entered' AND NOT EXISTS (SELECT 1 FROM bets WHERE agent_id = ? AND race_id = ? AND status != 'cancelled')").bind(agent.id, raceIdIn, agent.id, raceIdIn),
+            ]
+          : []),
+      ]);
+    };
+    if (lateDeclare && !declaredHere) {
+      // 同じレースへの追加申告が同時に届き、別の提出の買い目が申告になった。今回の買い目がそこに含まれなければ取り消す
+      const plan = await db.prepare('SELECT tickets_json FROM entry_plans WHERE agent_id = ? AND race_id = ?').bind(agent.id, raceIdIn).first<{ tickets_json: string }>();
+      const missing = plan ? undeclaredTickets(JSON.parse(plan.tickets_json) as PlanTicket[], tickets) : declaredPlan.map((t) => `${BET_TYPE_JA[t.bet_type]} ${t.combo}`);
+      if (missing.length) {
+        await rollback();
+        throw new ApiError(409, 'ticket_not_declared', '同じレースへの別の追加申告が先に確定したため、この提出は取り消しました。申告済みの買い目の中から買ってください', missing);
+      }
+    }
     const after = await budgetFor(db, agent, raceDate, now);
     // 罰金で残高がもとからマイナスのときは提出自体が拒否されるので、ここでマイナスなのは同時の提出が割り込んだとき
     if (after.balance < 0) {
-      await db.prepare("UPDATE bets SET status = 'cancelled', updated_at = ? WHERE submission_id = ?").bind(jstIso(now), sid).run();
-      throw new ApiError(409, 'over_budget', `${where}を超えたため、この提出は取り消しました`);
+      await rollback();
+      throw new ApiError(409, 'over_budget', `${where}を超えたため、この提出は取り消しました${declaredHere ? '（追加申告も取り消しました）' : ''}`);
     }
-    return c.json({ submission_id: sid, race_id: raceIdIn, bets: rows.map(formatBet), budget: { date: raceDate, ...after } }, 201);
+    return c.json(
+      {
+        submission_id: sid, race_id: raceIdIn, bets: rows.map(formatBet), budget: { date: raceDate, ...after },
+        ...(declaredHere
+          ? { declared: { race_id: raceIdIn, late: true, tickets: declaredPlan, rationale, note: 'このレースを追加申告しました（即時公開）。以後の買い目の追加・変更はできません。舟券をすべて取り消したら、締切までに申告した買い目の中から買い直すか、POST /entries/{race_id}/pass で見送ってください（どちらもないと無断欠場）' } }
+          : {}),
+      },
+      201,
+    );
   });
 
   app.get('/bets', anyAgent, async (c) => {
