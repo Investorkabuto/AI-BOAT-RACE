@@ -592,7 +592,7 @@ const FACTOR_SECTIONS = [
   ['boat_2r', 'ボート2連率'], ['local_racer', '地元の選手'], ['last_place', '今節の前走の着順'], ['races_today', 'その日の出走回数'], ['age', '年齢'], ['weight', '体重'],
   ['series_day', '節の第何日'], ['race_type', 'レースの種類'], ['fixed_course', '進入固定'],
 ];
-const ANALYSIS_TABS = [['factors', '予想の要素'], ['venue', '場×コース'], ['racer', '選手'], ['races', 'レース検索'], ['payouts', '配当']];
+const ANALYSIS_TABS = [['factors', '予想の要素'], ['venue', '場×コース'], ['racer', '選手'], ['motor', 'モーター'], ['races', 'レース検索'], ['payouts', '配当']];
 const pctCell = (v) => `<td class="num" style="text-align:right">${v === null || v === undefined ? '—' : `${v}%`}</td>`;
 const statTable = (head, rows) => `<section class="card" style="margin:8px 16px 0;padding:6px 12px;overflow-x:auto"><table class="pay" style="width:100%"><thead><tr>${head.map((h, i) => `<th class="small muted" style="text-align:${i ? 'right' : 'left'};font-weight:500;padding:6px 4px">${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td class="small muted" colspan="${head.length}">データがありません</td></tr>`}</tbody></table></section>`;
 const rateRow = (label, x) => `<tr><td>${esc(label)}</td><td class="num" style="text-align:right">${Number(x.starts).toLocaleString('ja-JP')}</td>${pctCell(x.win_pct)}${'top2_pct' in x ? pctCell(x.top2_pct) : ''}${pctCell(x.top3_pct)}${'avg_st' in x ? `<td class="num" style="text-align:right">${x.avg_st === null ? '—' : x.avg_st.toFixed(2)}</td><td class="num" style="text-align:right">${x.flying}</td>` : ''}</tr>`;
@@ -638,6 +638,24 @@ async function viewAnalysis(_m, api) {
         + `<div class="sect"><h2>直近の出走</h2></div>`
         + statTable(['日付', '場', 'R', 'コース', '着', 'ST', '展示'], d.recent.map((x) => `<tr><td class="num">${esc(x.race_date.slice(5))}</td><td style="text-align:right">${esc(vName(x.jcd))}</td><td ${R}><a href="/race/${x.race_id}">${x.rno}R</a></td><td ${R}>${x.course ?? '—'}</td><td ${R}>${x.place ?? esc(x.place_mark || '')}</td><td ${R}>${x.st === null ? '—' : x.st.toFixed(2)}</td><td ${R}>${x.tenji === null ? '—' : x.tenji.toFixed(2)}</td></tr>`));
     } else body += '<div class="empty">登録番号を入れると、通算とコース別の成績が出ます</div>';
+  } else if (t === 'motor') {
+    const jcd = q.get('jcd') || '24';
+    const no = /^\d{1,3}$/.test(q.get('motor') || '') ? q.get('motor') : '';
+    const sinceForm = `<form class="card" data-af style="margin:12px 16px 0;display:flex;flex-wrap:wrap;gap:10px;align-items:center"><input type="hidden" name="t" value="motor"><select name="jcd">${vOpt(jcd, false)}</select><input name="motor" inputmode="numeric" maxlength="3" placeholder="モーター番号" value="${esc(no)}" style="width:120px"><label class="small muted">集計の開始 <input name="since" type="date" value="${val('since')}"></label><button type="submit" class="tk" style="color:var(--text)">検索</button></form>`;
+    const h = ['', '出走', '1着率', '2連率', '3連率', '展示順位', '平均ST'];
+    const mrow = (label, x, extra = '') => `<tr><td>${label}</td><td ${R}>${x.starts}</td>${pctCell(x.win_pct)}${pctCell(x.top2_pct)}${pctCell(x.top3_pct)}<td ${R}>${x.avg_tenji_rank ?? '—'}</td><td ${R}>${x.avg_st === null ? '—' : x.avg_st.toFixed(2)}</td>${extra}</tr>`;
+    if (no) {
+      const d = await api(`/analysis/motor/${jcd}/${no}?${pass(['since', 'to'])}`);
+      body = sinceForm + `<p class="small muted" style="margin:10px 20px 0;line-height:1.7">${esc(d.venue || '')} ${no}号機・${esc(d.from)} から（${d.detected ? `入れ替え日の推定 ${esc(d.detected)}` : '入れ替え日は推定できず'}）・公式2連率 ${d.official_2r_trend.length ? `${d.official_2r_trend[d.official_2r_trend.length - 1].motor_2r}%` : '—'}</p>`
+        + statTable(h, [mrow('通算', d.total)])
+        + `<div class="sect"><h2>乗った選手ごと</h2></div>${statTable(h, d.by_racer.map((x) => mrow(`<a href="/analysis?t=racer&toban=${x.toban}">${esc(x.name || x.toban)}</a> <span class="small muted">${esc(x.grade || '')}</span>`, x)))}`
+        + `<div class="sect"><h2>直近の出走</h2></div>${statTable(['日付', 'R', '選手', 'コース', '着', '展示', 'ST'], d.recent.map((x) => `<tr><td class="num">${esc(x.race_date.slice(5))}</td><td ${R}><a href="/race/${x.race_id}">${x.rno}R</a></td><td style="text-align:right">${esc(x.name || x.toban)}</td><td ${R}>${x.course ?? '—'}</td><td ${R}>${x.place ?? esc(x.place_mark || '')}</td><td ${R}>${x.tenji === null ? '—' : `${x.tenji.toFixed(2)}（${x.tenji_rank}位）`}</td><td ${R}>${x.st === null ? '—' : x.st.toFixed(2)}</td></tr>`))}`;
+    } else {
+      const d = await api(`/analysis/motors/${jcd}?${pass(['since', 'to'])}`);
+      const sorted = [...d.motors].sort((a, b) => (b.top2_pct ?? -1) - (a.top2_pct ?? -1));
+      body = sinceForm + `<p class="small muted" style="margin:10px 20px 0;line-height:1.7">${esc(d.venue || '')}・${esc(d.from)} から（${d.detected ? `入れ替え日の推定 ${esc(d.detected)}` : '入れ替え日は推定できず'}）・2連率の高い順。展示順位はレース内の展示タイムの順位の平均（小さいほど速い）</p>`
+        + statTable([...h, '公式2連率'], sorted.map((m) => mrow(`<a href="/analysis?t=motor&jcd=${jcd}&motor=${m.motor_no}">${m.motor_no}号機</a>`, m, `<td ${R}>${m.official_2r === null ? '—' : `${m.official_2r}%`}</td>`)));
+    }
   } else if (t === 'races') {
     const d = await api(`/analysis/races?${pass(['jcd', 'rno', 'race_type', 'day', 'wind_min', 'wind_max', 'wave_min', 'wave_max', 'weather', 'fixed_course', 'winner_course', 'kimarite', 'from', 'to', 'offset'])}`);
     const n = (name, max, unit) => `<input name="${name}" type="number" min="0" max="${max}" value="${val(name)}" style="width:56px">${unit}`;
