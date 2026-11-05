@@ -4,11 +4,12 @@ import type { Env } from '../env';
 import { BET_TYPES, normalizeCombo, SPECIAL_COMBO, type BetType, type Payout } from '../lib/bets';
 import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
 import { sha256Hex } from '../lib/crypto';
-import { isDate, jstIso, jstToMs, parseHm } from '../lib/time';
+import { addDays, isDate, jstDate, jstIso, jstToMs, parseHm } from '../lib/time';
 import { isJcd, raceId } from '../lib/venues';
 import { normalizeEntrants, normalizeStarts } from '../lib/entrants';
 import { normalizeCard, packRacers } from '../lib/cards';
 import { normalizeRecord, packPayouts, packRows, packUnsold } from '../lib/records';
+import { boatsFromCard, boatsFromRecord, payoutsFromRecord } from '../db/boats';
 import { fetchDispatchError, RESULT_WANTED_SQL, resultWantedArgs } from '../jobs/fetch-dispatch';
 import { waiveFinesForCancelled } from '../jobs/settlement';
 
@@ -132,20 +133,22 @@ internalApi.put('/cards', async (c) => {
          ON CONFLICT (race_id) DO UPDATE SET fixed_course = excluded.fixed_course, distance = excluded.distance, rows = excluded.rows, fetched_at = excluded.fetched_at
          WHERE race_cards.rows != excluded.rows OR race_cards.fixed_course != excluded.fixed_course OR IFNULL(race_cards.distance, 0) != IFNULL(excluded.distance, 0)`,
       ).bind(fixed, n.card.distance, rows, now, id, nowMs),
+      // 検索用の表（race_boats）にも同じ値を書く。今回この版を保存したときだけ
+      boatsFromCard(db, { id, date, jcd: r.jcd, rno: r.rno }, n.card.racers, { sql: 'EXISTS (SELECT 1 FROM race_cards WHERE race_id = ? AND fetched_at = ?)', args: [id, now] }),
     );
   }
-  // D1 の batch は100文までなので、レース3文ずつ（33レース）の区切りで流す
+  // D1 の batch は100文までなので、レース4文ずつ（24レース）の区切りで流す
   let created = 0;
   let saved = 0;
-  for (let i = 0; i < stmts.length; i += 99) {
-    const res = await db.batch(stmts.slice(i, i + 99));
+  for (let i = 0; i < stmts.length; i += 96) {
+    const res = await db.batch(stmts.slice(i, i + 96));
     res.forEach((x, k) => {
-      const kind = (i + k) % 3; // 0=レースの作成 1=履歴 2=基礎数値の保存
+      const kind = (i + k) % 4; // 0=レースの作成 1=履歴 2=基礎数値の保存 3=検索用の表
       if (kind === 0) created += x.meta.changes ?? 0;
       if (kind === 2) saved += x.meta.changes ?? 0;
     });
   }
-  return c.json({ created_races: created, saved, unchanged_or_closed: stmts.length / 3 - saved, skipped });
+  return c.json({ created_races: created, saved, unchanged_or_closed: stmts.length / 4 - saved, skipped });
 });
 
 /** 取り込み済みのBファイルのハッシュ（同じなら取り直さない。全レースの送信が済んだ後にだけ記録する） */
@@ -212,16 +215,19 @@ internalApi.put('/records', async (c) => {
          WHERE NOT (${same})`,
       ).bind(v.weather, v.wind_dir, v.wind_m, v.wave_cm, v.kimarite, rows, payouts, unsold, now, id, nowMs, ...sameArgs),
     );
+    // 検索用の表（race_boats の K の列、race_payouts）にも書く。今回この版を保存したときだけ
+    const written = { sql: 'EXISTS (SELECT 1 FROM race_records WHERE race_id = ? AND fetched_at = ?)', args: [id, now] };
+    stmts.push(boatsFromRecord(db, { id, date, jcd: r.jcd, rno: r.rno }, v.rows, written), ...payoutsFromRecord(db, { id, date, jcd: r.jcd }, v.payouts, written));
   }
-  // D1 の batch は100文までなので、レース2文ずつ（49レース）の区切りで流す
+  // D1 の batch は100文までなので、レース5文ずつ（19レース）の区切りで流す
   let saved = 0;
-  for (let i = 0; i < stmts.length; i += 98) {
-    const res = await db.batch(stmts.slice(i, i + 98));
+  for (let i = 0; i < stmts.length; i += 95) {
+    const res = await db.batch(stmts.slice(i, i + 95));
     res.forEach((x, k) => {
-      if ((i + k) % 2 === 1) saved += x.meta.changes ?? 0;
+      if ((i + k) % 5 === 1) saved += x.meta.changes ?? 0;
     });
   }
-  return c.json({ saved, unchanged_or_not_ready: stmts.length / 2 - saved, skipped });
+  return c.json({ saved, unchanged_or_not_ready: stmts.length / 5 - saved, skipped });
 });
 
 /** 取り込み済みのKファイルのハッシュ（同じなら取り直さない。全レースの送信が済んだ後にだけ記録する） */
@@ -238,6 +244,119 @@ internalApi.put('/record-state', async (c) => {
   if (typeof b.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(b.sha256)) throw new ApiError(400, 'bad_request', 'sha256 must be 64 hex chars');
   await c.env.DB.prepare('INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
     .bind(`records:${b.race_date}`, b.sha256, jstIso(Date.now())).run();
+  return c.json({ ok: true });
+});
+
+/** 過去分の取り込みは、この日数より前の日付だけ（前日分は当日の取得の流れ［HTMLの結果・夜のK］に任せる） */
+export const HISTORY_MIN_AGE_DAYS = 2;
+
+/**
+ * 過去分の取り込み（要件定義 v1.1・v1.2）: 番組表（B）と競走成績（K）から、過去のレースと、その基礎数値・成績・結果を作る。何度送ってもよい。
+ * body: { race_date, races: [{ jcd, rno, race_name?, deadline, card?: {fixed_course, distance, racers}, record?: {...}, result?: {status, finish, refunded_boats, payouts, start} }] }
+ *
+ * - すでにある行は変えない（どの表も「無ければ作る」だけ）。当日の取得で入った値（公式HTMLの結果など）を優先する
+ * - 結果とスタート情報は、精算済み（舟券なし）か中止のレースにだけ入れる。精算待ちのレースに K 由来の結果が入って精算が動くことはない
+ * - 日付は HISTORY_MIN_AGE_DAYS 日より前だけ受け付ける
+ */
+internalApi.put('/history', async (c) => {
+  const b = await readJson(c);
+  const date = b.race_date;
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'race_date must be YYYY-MM-DD');
+  const nowMs = Date.now();
+  if (date > addDays(jstDate(nowMs), -HISTORY_MIN_AGE_DAYS)) throw new ApiError(400, 'bad_request', `history accepts dates up to ${HISTORY_MIN_AGE_DAYS} days ago`);
+  if (!Array.isArray(b.races)) throw new ApiError(400, 'bad_request', 'races must be an array');
+  const now = jstIso(nowMs);
+  const db = c.env.DB;
+  const stmts: D1PreparedStatement[] = [];
+  const kinds: ('race' | 'card' | 'record' | 'result' | 'start' | 'boats' | 'payouts')[] = [];
+  const skipped: string[] = [];
+  const push = (kind: (typeof kinds)[number], s: D1PreparedStatement) => {
+    stmts.push(s);
+    kinds.push(kind);
+  };
+  for (const r of b.races as Record<string, unknown>[]) {
+    const hm = typeof r.deadline === 'string' ? parseHm(r.deadline) : null;
+    if (!isJcd(r.jcd) || typeof r.rno !== 'number' || !Number.isInteger(r.rno) || r.rno < 1 || r.rno > 12 || !hm) throw new ApiError(400, 'bad_request', `invalid race: ${JSON.stringify({ jcd: r.jcd, rno: r.rno, deadline: r.deadline })}`);
+    const id = raceId(date, r.jcd, r.rno);
+    const ms = jstToMs(date, hm.hour, hm.minute);
+    let result: { status: 'official' | 'cancelled'; v: { finish: number[][]; refunded: number[]; payouts: Payout[] }; start: unknown } | null = null;
+    if (r.result) {
+      const v = validateResult({ ...(r.result as ResultIn), race_id: id });
+      if (typeof v === 'string') skipped.push(`${id}: result ${v}`);
+      else result = { status: (r.result as ResultIn).status, v, start: (r.result as ResultIn).start };
+    }
+    push(
+      'race',
+      db.prepare(
+        `INSERT INTO races (id, race_date, jcd, rno, race_name, deadline_at, deadline_ms, status, settled_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO NOTHING`,
+      ).bind(id, date, r.jcd, r.rno, typeof r.race_name === 'string' ? r.race_name.slice(0, 80) : null, jstIso(ms), ms, result?.status === 'cancelled' ? 'cancelled' : 'settled', now, now),
+    );
+    if (r.card) {
+      const card = r.card as Record<string, unknown>;
+      const n = normalizeCard({ racers: card.racers, fixed_course: card.fixed_course, distance: card.distance });
+      if (!n.ok) skipped.push(`${id}: card ${n.reason}`);
+      else
+        push(
+          'card',
+          db.prepare('INSERT OR IGNORE INTO race_cards (race_id, fixed_course, distance, rows, fetched_at) SELECT id, ?, ?, ?, ? FROM races WHERE id = ?').bind(
+            n.card.fixed_course ? 1 : 0, n.card.distance, packRacers(n.card.racers), now, id,
+          ),
+        );
+      if (n.ok) push('boats', boatsFromCard(db, { id, date, jcd: r.jcd, rno: r.rno }, n.card.racers, { sql: 'EXISTS (SELECT 1 FROM races WHERE id = ?)', args: [id] }));
+    }
+    if (r.record) {
+      const n = normalizeRecord(r.record as Record<string, unknown>);
+      if (!n.ok) skipped.push(`${id}: record ${n.reason}`);
+      else {
+        const v = n.record;
+        push(
+          'record',
+          db.prepare(
+            `INSERT OR IGNORE INTO race_records (race_id, weather, wind_dir, wind_m, wave_cm, kimarite, rows, payouts, unsold, fetched_at)
+             SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM races WHERE id = ? AND deadline_ms <= ?`,
+          ).bind(v.weather, v.wind_dir, v.wind_m, v.wave_cm, v.kimarite, packRows(v.rows), packPayouts(v.payouts), packUnsold(v.unsold), now, id, nowMs),
+        );
+        const past = { sql: 'EXISTS (SELECT 1 FROM races WHERE id = ? AND deadline_ms <= ?)', args: [id, nowMs] };
+        push('boats', boatsFromRecord(db, { id, date, jcd: r.jcd, rno: r.rno }, v.rows, past));
+        for (const s of payoutsFromRecord(db, { id, date, jcd: r.jcd }, v.payouts, past)) push('payouts', s);
+      }
+    }
+    if (result) {
+      const done = "SELECT id FROM races WHERE id = ? AND status IN ('settled', 'cancelled')";
+      push(
+        'result',
+        db.prepare(`INSERT OR IGNORE INTO race_results (race_id, status, finish_json, refunded_boats_json, payouts_json, fetched_at) SELECT id, ?, ?, ?, ?, ? FROM (${done})`).bind(
+          result.status, JSON.stringify(result.v.finish), JSON.stringify(result.v.refunded), JSON.stringify(result.v.payouts), now, id,
+        ),
+      );
+      const starts = result.status === 'official' ? normalizeStarts(result.start) : null;
+      if (starts) push('start', db.prepare(`INSERT OR IGNORE INTO race_starts (race_id, starts_json, updated_at) SELECT id, ?, ? FROM (${done})`).bind(JSON.stringify(starts), now, id));
+    }
+  }
+  const count = { race: 0, card: 0, record: 0, result: 0, start: 0, boats: 0, payouts: 0 };
+  for (let i = 0; i < stmts.length; i += 99) {
+    const res = await db.batch(stmts.slice(i, i + 99));
+    res.forEach((x, k) => (count[kinds[i + k]!] += x.meta.changes ?? 0));
+  }
+  return c.json({ created: { races: count.race, cards: count.card, records: count.record, results: count.result, starts: count.start, boat_rows: count.boats }, skipped });
+});
+
+/** 過去分の取り込みの進み具合（取り込み済みの日付）。key = history:{date}、value = 取り込みの要約 */
+internalApi.get('/history-done', async (c) => {
+  const from = c.req.query('from');
+  const to = c.req.query('to');
+  if (!isDate(from) || !isDate(to)) throw new ApiError(400, 'bad_request', 'from/to must be YYYY-MM-DD');
+  const r = await c.env.DB.prepare("SELECT key, value, updated_at FROM app_state WHERE key >= ? AND key <= ? ORDER BY key DESC").bind(`history:${from}`, `history:${to}`).all<{ key: string; value: string; updated_at: string }>();
+  return c.json({ done: r.results.map((x) => ({ date: x.key.slice(8), note: x.value, updated_at: x.updated_at })) });
+});
+
+internalApi.put('/history-state', async (c) => {
+  const b = await readJson(c);
+  if (!isDate(b.race_date)) throw new ApiError(400, 'bad_request', 'race_date must be YYYY-MM-DD');
+  const note = typeof b.note === 'string' ? b.note.slice(0, 500) : '';
+  await c.env.DB.prepare('INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+    .bind(`history:${b.race_date}`, note, jstIso(Date.now())).run();
   return c.json({ ok: true });
 });
 

@@ -50,9 +50,9 @@ const text = (v: unknown, max: number): string | null => {
   return s ? s.slice(0, max) : null;
 };
 
-/** 今節成績を検証する。日ごとの配列（最大5日）で、各日は最大2走。着順は 1〜6、記号は英大文字1字 */
+/** 今節成績を検証する。日ごとの配列（最大6日）で、各日は最大2走。着順は 1〜6、記号は英大文字1字 */
 function normalizeSeries(v: unknown): SeriesMark[][] | undefined {
-  if (!Array.isArray(v) || v.length > 5) return undefined;
+  if (!Array.isArray(v) || v.length > 6) return undefined;
   const out: SeriesMark[][] = [];
   for (const day of v) {
     if (!Array.isArray(day) || day.length > 2) return undefined;
