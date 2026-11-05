@@ -7,6 +7,10 @@ GitHub Actions から定期的に実行する（.github/workflows/boatrace.yml�
                                  選手は、まだ取り込んでいないレースだけ取得する（2回目の実行は取りこぼしの分だけ）
   results                        GET /internal/result-requests の各レース（精算待ちと、当日の締切後の全レース）の結果を取得し、POST /internal/results に送る
   results-all --date YYYY-MM-DD  その日の全レースのうち結果が未保存のものを取得して保存する（毎朝、前日分。公開・振り返り用）
+  cards [--date YYYY-MM-DD]      番組表（公式テキストデータ B）を取得し、出走表（締切予定時刻つき）と基礎数値を PUT /internal/cards に送る。
+                                 前日の夕方から翌日分が出るので、前日の夕方と当日朝に実行する。ファイルのハッシュが前回と同じなら何もしない
+                                 （--force で送り直す）。解析できなかったレースは送らず、最後に失敗（終了コード1）で知らせる
+  probe-cards --date ...         接続確認: 取得・解析した番組表を表示するだけ（アプリには書き込まない）
   probe-schedule --date ...      接続確認: 取得・解析した出走表を表示するだけ（アプリには書き込まない）
   probe-entrants --race ID       接続確認: 取得・解析した選手の基本情報を表示するだけ（例 20261103-12-07）
   probe-result --race ID         接続確認: 取得・解析した結果を表示するだけ（例 20261103-12-07）
@@ -30,6 +34,8 @@ import urllib.error
 import urllib.request
 
 from bs4 import BeautifulSoup
+
+import boatrace_text as bt
 
 BASE = "https://www.boatrace.jp/owpc/pc/race"
 USER_AGENT = "ai-boat-race-ingest/1.0 (+https://github.com/Investorkabuto/AI-BOAT-RACE)"
@@ -208,6 +214,59 @@ def send_entrants(date: str, entrants: list[dict]) -> None:
         print(api("PUT", "/internal/entrants", {"race_date": date, "races": entrants[i:i + 50]}))
 
 
+# ------------------------------------------------------------------ 番組表（公式テキストデータ B）
+
+# 1回の送信に含めるレース数（アプリは D1 の batch を100文までに区切るので、1レース3文 × 33）
+CARDS_PER_REQUEST = 33
+
+
+def load_cards(date: str) -> dict | None:
+    """その日の番組表（B）を取得して解析する。まだ公開されていなければ None"""
+    lzh = bt.download(bt.b_url(date), timeout=TIMEOUT)
+    if lzh is None:
+        return None
+    return bt.parse_b(bt.unpack(lzh), date)
+
+
+def cards_payload(parsed: dict) -> list[dict]:
+    """解析結果を、アプリに送るレースの一覧にする（場ごとの入れ子を平らにする）"""
+    return [
+        {
+            "jcd": v["jcd"],
+            "rno": r["rno"],
+            "race_name": r["race_name"],
+            "deadline": r["deadline"],
+            "fixed_course": r["fixed_course"],
+            "distance": r["distance"],
+            "racers": r["racers"],
+        }
+        for v in parsed["venues"]
+        for r in v["races"]
+    ]
+
+
+def send_cards(date: str, parsed: dict, force: bool) -> bool:
+    """番組表をアプリに送る。すべて保存できたら True（ハッシュを記録する）"""
+    sha = parsed["sha256"]
+    if not force and api("GET", f"/internal/card-state?date={date}").get("sha256") == sha:
+        print(f"{date}: 番組表は前回と同じです（{sha[:12]}）。何もしません")
+        return True
+    races = cards_payload(parsed)
+    ok = not parsed["errors"]
+    created = saved = 0
+    for i in range(0, len(races), CARDS_PER_REQUEST):
+        res = api("PUT", "/internal/cards", {"race_date": date, "races": races[i : i + CARDS_PER_REQUEST]})
+        created += res["created_races"]
+        saved += res["saved"]
+        for s in res["skipped"]:
+            print(f"warn: サーバーが受け付けませんでした: {s}", file=sys.stderr)
+            ok = False
+    print(f"{date}: 番組表 {len(races)} レース（新しく作ったレース {created}、保存・更新 {saved}）")
+    if ok:  # 解析の失敗やサーバーの拒否があれば記録しない（次の実行で取り直す）
+        api("PUT", "/internal/card-state", {"race_date": date, "sha256": sha})
+    return ok
+
+
 # ------------------------------------------------------------------ 結果
 
 def parse_combo(cell) -> str | None:
@@ -350,13 +409,34 @@ def fetch_result(race_id: str) -> dict | None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["schedule", "results", "results-all", "probe-schedule", "probe-result", "probe-entrants"])
+    p.add_argument("command", choices=["schedule", "cards", "results", "results-all", "probe-cards", "probe-schedule", "probe-result", "probe-entrants"])
     p.add_argument("--date", help="YYYY-MM-DD（省略時は今日）")
     p.add_argument("--race", help="レースID（probe-result 用）")
+    p.add_argument("--force", action="store_true", help="cards: 前回と同じ内容でも送り直す")
     a = p.parse_args()
     date = a.date or dt.datetime.now(JST).date().isoformat()
 
-    if a.command == "probe-schedule":
+    if a.command in ("cards", "probe-cards"):
+        parsed = load_cards(date)
+        if parsed is None:
+            print(f"{date}: 番組表（B）はまだ公開されていません（{bt.b_url(date)}）")
+            return
+        races = cards_payload(parsed)
+        for e in parsed["errors"]:
+            print(f"warn: {e}", file=sys.stderr)
+        if a.command == "probe-cards":
+            print(f"{date}: 場 {len(parsed['venues'])}、レース {len(races)}、選手 {sum(len(r['racers']) for r in races)}、解析の失敗 {len(parsed['errors'])}、sha256 {parsed['sha256'][:16]}")
+            for v in parsed["venues"]:
+                print(f"  {v['jcd']} {v['name']} 第{v['day']}日 {v['series_title']} ({len(v['races'])}R)")
+            if races:
+                print(json.dumps(races[0], ensure_ascii=False, indent=1))
+            return
+        if not races:
+            raise SystemExit(f"{date}: 解析できたレースがありません。形式が変わった可能性があります")
+        # 解析できたレースは送る。失敗があれば最後に終了コード1で知らせる（Actions の失敗通知で気づけるように）
+        if not send_cards(date, parsed, a.force):
+            raise SystemExit(f"{date}: 番組表の一部を取り込めませんでした（上の warn を参照）")
+    elif a.command == "probe-schedule":
         races, entrants = schedule_of_day(date)
         print(json.dumps({"races": races, "entrants_1R": entrants}, ensure_ascii=False, indent=1))
     elif a.command == "probe-result":

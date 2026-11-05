@@ -17,6 +17,13 @@ export const NO_SHOW_FINE = 2_000;
 /** 朝の申告の期限（当日の日本時間） */
 export const ENTRY_DEADLINE_HM = { hour: 8, minute: 30 } as const;
 export const ENTRY_DEADLINE_LABEL = '8:30';
+/**
+ * 何日先のレースまで申告を受け付けるか。0 = 当日の分だけ（日本時間 0:00 から）。
+ * 番組表（Bファイル）の取り込みで、前日の夕方から翌日のレースが作られるようになったが、前日からの申告を認めるかは
+ * 決まっていない（要件定義にない）ため、従来の運用（当日の朝から）を保つ。認めるなら 1 にする
+ */
+export const ENTRY_DAYS_AHEAD = 0;
+
 /** 1回の申告に含められるレースの数の上限（全24場×12レース） */
 export const MAX_ENTRIES = 288;
 

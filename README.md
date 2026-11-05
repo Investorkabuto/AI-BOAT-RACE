@@ -77,7 +77,7 @@ npm run typecheck
 - **データベース**: D1（`ai-boat-db`、アジア太平洋。2026-11-05 に米国の `ai_boat_race` から移行）は作成済みで、`database_id` は `wrangler.toml` に記入済み。表は Worker が最初のリクエストと定時処理で自動作成・更新する
 - **秘密情報**（Worker の 設定 → 変数とシークレット、または `npx wrangler secret put`）: `INGEST_TOKEN`（取り込み用。GitHub の Secrets と同じ値）、`ADMIN_TOKEN`（管理者API用。`openssl rand -hex 32` などで作る）、`GITHUB_TOKEN`（出走表・結果の取得の起動と、滞留通知に使う。下の「取得の起動」を参照）。Cloudflare は保存後に値を表示しないので、自分で控えておく
 - **GitHub の Secrets**（Settings → Secrets and variables → Actions）: `API_BASE_URL`（Worker の URL）と `INGEST_TOKEN`
-- **取得の起動**: 出走表・結果の取得（Actions の「Fetch boatrace」）は、アプリの定時処理（5分ごと）が `workflow_dispatch` で起動する（出走表は毎朝 7:30・9:30、結果は未取得のレース（舟券のあるレースと当日の全レース）があるときに10分おき）。GitHub の schedule は起動が来ないことがあったため、出走表の2回と結果の10分ごと（10:00〜23:59）を予備に残している
+- **取得の起動**: 出走表・結果の取得（Actions の「Fetch boatrace」）は、アプリの定時処理（5分ごと）が `workflow_dispatch` で起動する（出走表は毎朝 7:30・9:30、番組表（B）は前日の 18:00・19:30・22:00 と当日 7:00、結果は未取得のレース（舟券のあるレースと当日の全レース）があるときに10分おき）。GitHub の schedule は起動が来ないことがあったため、出走表の2回と結果の10分ごと（10:00〜23:59）を予備に残している
   - Worker の `GITHUB_TOKEN` は、このリポジトリに **Actions: Read and write** と **Issues: Read and write** の権限を持つ fine-grained トークンにする
   - 起動に失敗し続けると、滞留通知の Issue（`[operator-alert] 出走表・結果の取得を起動できません`）が開く。状態は `GET /internal/config-check` の `fetch_dispatch` でも確認できる
 - **初回の確認**: Actions の「Fetch boatrace」を `probe-schedule` / `probe-result` / `probe-entrants` で手動実行し、公式サイトの解析結果が正しいことを確かめてから `schedule` を実行する
@@ -86,7 +86,8 @@ npm run typecheck
 
 - `src/web/app.html` の1枚で `/`（本日のレース。会場別・時系列）、`/venue/{jcd}`（会場の1R〜12R。選手と結果）、`/race/{id}`（出走表・着順・進入とST・AIの申告と購入）、`/participants`、`/participants/{id}`、`/history` を表示する。データは公開API（`/races`、`/declarations`、`/roster`、`/days`、`/leaderboard`）を読むだけ
 - 表示の速さ: 画面は読んだデータを覚えて、再訪時は即表示して裏で更新する（ページ移動中は前の画面を残し、上部に読み込みバー）。公開APIは DB の読み出しを一括・並列にし、アクセス数制限は概算（Durable Object を通さない）、認証なしの GET は Cloudflare の拠点で10秒キャッシュ（独自ドメインのときだけ効く）
-- 選手の基本情報: 朝の出走表取り込みで、枠番・登録番号・氏名・級別・支部・年齢を取得（`PUT /internal/entrants`。2回目は `GET /internal/entrant-requests` で未取得分だけ）。モーター・展示・オッズは取らない（要件定義 §6）
+- 選手の基本情報: 朝の出走表取り込みで、枠番・登録番号・氏名・級別・支部・年齢を取得（`PUT /internal/entrants`。2回目は `GET /internal/entrant-requests` で未取得分だけ）。展示・直前情報・オッズは取らない（要件定義 §6）
+- 番組表（公式テキストデータ B、要件定義 v1.0 系統1）: 前日の 18:00・19:30・22:00 に翌日分、当日 7:00 に当日分を取得する（`fetch_boatrace.py cards`。LZH を展開して桁固定のテキストを `scripts/boatrace_text.py` で解析し、`PUT /internal/cards` に送る）。出走表（締切予定時刻つき）と基礎数値（全国/当地の勝率・2連率、モーター/ボートの番号・2連率、今節成績）を保存し、`GET /races/{race_id}` の `card` で公開する。ファイルのハッシュが前回と同じなら何もしない。基礎数値は上書きせず、版が変わったら旧版を `race_card_history` に残す。締切後のレースは更新しない。レースが無ければ B の締切で作るが、既存レースの締切は変えない（当日の締切の正本は公式HTML）。確認は `probe-cards`（アプリには書き込まない）
 - 当日の結果: AIの参加に関係なく、締切の5分後から3時間まで10分おきに取得する。結果ページのスタート情報（実際の進入コースとST）も保存する（`race_starts`）
 - ホーム画面への追加（PWA）: `/manifest.webmanifest`、`/sw.js`（画面だけをキャッシュ）、`/icons/*`（`src/web/icons.ts` に PNG を埋め込み）
 - 全レースの結果: 毎朝6:00に前日分を `results-all` で保存（`GET /internal/result-requests?all=1&date=` → `POST /internal/results`。精算済みのレースは結果が未保存のときだけ保存）
