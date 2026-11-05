@@ -1,6 +1,8 @@
 // レースの締切での確定と、公式結果がそろったレースの精算。
 // 1レース分の書き込みは D1 の batch で一括実行する（途中で失敗すれば全体が取り消される）。
 import { balanceOfDay, eventStatement, type BetRow, type RaceRow } from '../db/repo';
+import { accountBalance } from '../db/account';
+import { accountRulesApply, isExhausted } from '../lib/account';
 import { judgeBet, type BetType, type Payout, type RaceResult } from '../lib/bets';
 import { jstIso } from '../lib/time';
 import { raceLabel } from '../lib/venues';
@@ -29,6 +31,17 @@ export async function lockRace(db: D1Database, race: RaceRow, nowMs: number): Pr
           .all<{ agent_id: string }>()
       ).results.map((r) => r.agent_id)
     : [];
+  // 口座残高制: 残高が尽きて1枚も買えないAIは、申告していても罰金を科さない（2026-11-05 管理者決定）
+  const exempt: string[] = [];
+  if (accountRulesApply(race.race_date)) {
+    for (const id of [...noShows]) {
+      const acc = await accountBalance(db, id, race.race_date.slice(0, 7));
+      if (!acc || isExhausted(acc.balance)) {
+        exempt.push(id);
+        noShows.splice(noShows.indexOf(id), 1);
+      }
+    }
+  }
   const byAgent = new Map<string, string[]>();
   for (const b of bets) byAgent.set(b.agent_id, [...(byAgent.get(b.agent_id) ?? []), b.id]);
   await db.batch([
@@ -41,9 +54,17 @@ export async function lockRace(db: D1Database, race: RaceRow, nowMs: number): Pr
       db.prepare('INSERT OR IGNORE INTO fines (agent_id, race_id, race_date, amount, created_at) VALUES (?, ?, ?, ?, ?)').bind(agentId, race.id, race.race_date, NO_SHOW_FINE, now),
       eventStatement(db, agentId, 'fine.imposed', {
         race_id: race.id, race: raceLabel(race.jcd, race.rno), amount: NO_SHOW_FINE, reason: 'no_show',
-        note: '申告したレースで、締切までに提出も見送りの申告もありませんでした（無断欠場）。罰金はその日の残高から差し引き、月間回収率の投票合計に加えます。申告したレースは、提出するか POST /entries/{race_id}/pass で見送ってください',
+        note: accountRulesApply(race.race_date)
+          ? '申告したレースで、締切までに提出も見送りの申告もありませんでした（無断欠場）。罰金はその月の残高から差し引き、月末残高（順位）に反映します。申告したレースは、提出するか POST /entries/{race_id}/pass で見送ってください'
+          : '申告したレースで、締切までに提出も見送りの申告もありませんでした（無断欠場）。罰金はその日の残高から差し引き、月間回収率の投票合計に加えます。申告したレースは、提出するか POST /entries/{race_id}/pass で見送ってください',
       }, nowMs),
     ]),
+    ...exempt.map((agentId) =>
+      eventStatement(db, agentId, 'fine.exempted', {
+        race_id: race.id, race: raceLabel(race.jcd, race.rno), reason: 'balance_exhausted',
+        note: 'その月の残高が尽きて買えなかったため、申告したレースで提出も見送りもありませんでしたが、罰金は科しません。残高は翌月1日に新しい月の分が付与されます',
+      }, nowMs),
+    ),
   ]);
   return bets.length;
 }
@@ -94,7 +115,9 @@ export async function settleRace(db: D1Database, race: RaceRow, nowMs: number): 
     const judged = list.filter((x) => x.status !== 'refunded');
     // 残高方式: 返還と的中払戻が、この精算でその日の残高に加わる（精算前の残高 + 今回の加算）
     const credit = list.reduce((sum, x) => sum + (x.status === 'refunded' ? x.amount : x.payout), 0);
-    const balanceAfter = (await balanceOfDay(db, agentId, race.race_date)).balance + credit;
+    const monthly = accountRulesApply(race.race_date);
+    const before = monthly ? (await accountBalance(db, agentId, race.race_date.slice(0, 7)))?.balance ?? 0 : (await balanceOfDay(db, agentId, race.race_date)).balance;
+    const balanceAfter = before + credit;
     stmts.push(
       eventStatement(
         db,
@@ -108,7 +131,10 @@ export async function settleRace(db: D1Database, race: RaceRow, nowMs: number): 
           payout: judged.reduce((s, x) => s + x.payout, 0),
           refunded: list.filter((x) => x.status === 'refunded').reduce((s, x) => s + x.amount, 0),
           balance_after: balanceAfter,
-          note: '返還と的中払戻は、その日の残高に加わり、同じ日の後のレースに使えます（翌日には繰り越しません）',
+          ...(monthly ? { month: race.race_date.slice(0, 7) } : {}),
+          note: monthly
+            ? '返還と的中払戻は、その月の残高に加わり、月末まで後のレースに使えます（口座残高制。翌月には繰り越しません）'
+            : '返還と的中払戻は、その日の残高に加わり、同じ日の後のレースに使えます（翌日には繰り越しません）',
           bets: list,
         },
         nowMs,

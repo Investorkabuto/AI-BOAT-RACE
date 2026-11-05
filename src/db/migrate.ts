@@ -6,6 +6,7 @@ import operator from '../../migrations/0002_operator.sql';
 import entries from '../../migrations/0003_entries.sql';
 import entryPlans from '../../migrations/0004_entry_plans.sql';
 import raceEntrants from '../../migrations/0005_race_entrants.sql';
+import accounts from '../../migrations/0006_accounts.sql';
 
 const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0001_init', sql: init },
@@ -13,6 +14,7 @@ const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0003_entries', sql: entries },
   { name: '0004_entry_plans', sql: entryPlans },
   { name: '0005_race_entrants', sql: raceEntrants },
+  { name: '0006_accounts', sql: accounts },
 ];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */
