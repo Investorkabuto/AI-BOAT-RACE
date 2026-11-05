@@ -45,7 +45,7 @@ COLS = {
     "boat_no": (49, 52),
     "boat_2r": (52, 58),
     "series": (59, 69),  # 今節成績: 1日2枠 × 最大5日（前日までの着順。当日の分は空白）
-    "hayami": (69, 73),  # 公式の項目「早見」
+    "next_rno": (69, 73),  # 公式の項目「早見」: 同じ日にもう1レース出走する場合のそのレース番号（空欄は1走だけ）
 }
 ROW_LEN = 73
 SERIES_SLOTS_PER_DAY = 2
@@ -178,7 +178,7 @@ def parse_racer(line: str, day: int | None) -> dict:
         "boat_no": _int(f["boat_no"], 1, 999, "ボート番号"),
         "boat_2r": _num(f["boat_2r"], 0, 100, "ボート2連率", 2),
         "series": parse_series(f["series"], day),
-        "hayami": _int(f["hayami"], 0, 99, "早見"),
+        "next_rno": _int(f["next_rno"], 1, 12, "早見（同日の次のレース番号）"),
     }
 
 
