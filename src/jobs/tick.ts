@@ -6,6 +6,7 @@
 //  4. その日の全レースが終わったら、日次の締め（参加AIへ日次と月間の成績・順位、運営AIに不正検知・日報・週報・月間総評のタスク）
 //  5. 出走表・結果の取得（GitHub Actions）の起動
 //  6. 運営タスクの失効、滞留通知、Webhook の配送、ルール改定の通知、月替わりの失格の復帰
+//  7. 口座残高制: 月初（と承認直後）の残高の付与、日ごとの確定残高の記録、過ぎた月の月次成績の確定
 import type { Env } from '../env';
 import { ensureSchema } from '../db/migrate';
 import { eventStatement, statsBetween, type RaceRow } from '../db/repo';
@@ -16,6 +17,8 @@ import { deliverWebhooks } from './webhooks';
 import { dispatchFetches } from './fetch-dispatch';
 import { notifyRulesChange } from './notify';
 import { restoreDisqualifiedForNewMonth } from '../operator/core';
+import { accountStandings, finalizeMonths, grantCurrentMonth, recordBalanceDays } from '../db/account';
+import { accountRange, accountRulesApply } from '../lib/account';
 import { checkAlerts, commentaryTasks, expireTasks, seasonReviewTask, tasksAfterDayClose } from '../operator/scheduler';
 
 /** 最後の締切からこれだけ経っても、その日を締めない（出走表の取り込み漏れや結果の遅れに備える） */
@@ -28,6 +31,7 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
   if (migrated.length) log.push(`schema migrated: ${migrated.join(', ')}`);
   log.push(...(await restoreDisqualifiedForNewMonth(db, nowMs)));
   log.push(...(await notifyRulesChange(db, nowMs)));
+  log.push(...(await grantCurrentMonth(db, nowMs)));
 
   const toLock = (await db.prepare("SELECT * FROM races WHERE status = 'scheduled' AND deadline_ms <= ? ORDER BY deadline_ms").bind(nowMs).all<RaceRow>()).results;
   for (const r of toLock) {
@@ -52,6 +56,7 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
 
   log.push(...(await commentaryTasks(db, nowMs, addDays(jstDate(nowMs), -1))));
   log.push(...(await closeDays(db, nowMs)));
+  log.push(...(await finalizeMonths(db, nowMs)));
   log.push(...(await expireTasks(db, nowMs)));
   log.push(...(await checkAlerts(env, nowMs)));
   log.push(...(await deliverWebhooks(env, nowMs)));
@@ -77,6 +82,11 @@ export async function closeDays(db: D1Database, nowMs: number): Promise<string[]
     const day = new Map((await statsBetween(db, date, date)).map((s) => [s.agent_id, s]));
     const month = rankByRecovery(await statsBetween(db, startsOn, date));
     const monthBy = new Map(month.map((m) => [m.agent_id, m]));
+    // 口座残高制の開催日は、月の残高で順位を付け、その日の確定残高を記録する
+    const monthly = accountRulesApply(date) && accountRange(date.slice(0, 7)) !== null;
+    const account = monthly ? await accountStandings(db, date.slice(0, 7), date) : [];
+    const accountBy = new Map(account.map((a) => [a.agent_id, a]));
+    const rankedAccounts = account.filter((a) => a.rank > 0).length;
     // 返還だけだったAI・罰金だけだったAIにも、日次の結果を送る
     const agents = (
       await db
@@ -84,10 +94,11 @@ export async function closeDays(db: D1Database, nowMs: number): Promise<string[]
         .bind(date, date)
         .all<{ agent_id: string }>()
     ).results.map((r) => r.agent_id);
-    const stmts: D1PreparedStatement[] = [db.prepare('INSERT OR IGNORE INTO day_closings (race_date, closed_at) VALUES (?, ?)').bind(date, jstIso(nowMs))];
+    const stmts: D1PreparedStatement[] = [db.prepare('INSERT OR IGNORE INTO day_closings (race_date, closed_at) VALUES (?, ?)').bind(date, jstIso(nowMs)), ...recordBalanceDays(db, date, account, nowMs)];
     for (const id of agents) {
       const d = day.get(id);
       const m = monthBy.get(id);
+      const acc = accountBy.get(id);
       stmts.push(
         eventStatement(
           db,
@@ -96,7 +107,13 @@ export async function closeDays(db: D1Database, nowMs: number): Promise<string[]
           {
             race_date: date,
             day: { stake: d?.stake ?? 0, payout: d?.payout ?? 0, recovery_pct: recoveryPct(d?.payout ?? 0, d?.stake ?? 0), hit_rate_pct: hitRatePct(d?.hits ?? 0, d?.bets ?? 0), bets: d?.bets ?? 0, races: d?.races ?? 0, no_shows: d?.fines ?? 0, fined: d?.fined ?? 0 },
-            month: { month: date.slice(0, 7), stake: m?.stake ?? 0, payout: m?.payout ?? 0, recovery_pct: recoveryPct(m?.payout ?? 0, m?.stake ?? 0), rank: m?.rank || null, ranked_agents: month.filter((x) => x.rank > 0).length },
+            month: monthly
+              ? {
+                  month: date.slice(0, 7), balance: acc?.balance ?? null, gain: acc?.gain ?? null, gain_pct: acc?.gain_pct ?? null, exhausted: acc?.exhausted ?? null,
+                  rank: acc?.rank || null, ranked_agents: rankedAccounts, rank_by: 'balance',
+                  stake: acc?.stake ?? 0, payout: acc?.payout ?? 0, recovery_pct: acc?.recovery_pct ?? null, fined: acc?.fined ?? 0,
+                }
+              : { month: date.slice(0, 7), stake: m?.stake ?? 0, payout: m?.payout ?? 0, recovery_pct: recoveryPct(m?.payout ?? 0, m?.stake ?? 0), rank: m?.rank || null, ranked_agents: month.filter((x) => x.rank > 0).length, rank_by: 'recovery' },
             note: '結果を振り返り、自分の予想の仕方と作戦の解釈を見直してください（再帰的自己改善。ルール 8章）',
           },
           nowMs,
