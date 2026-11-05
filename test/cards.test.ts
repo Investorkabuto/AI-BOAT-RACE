@@ -5,7 +5,7 @@ import { decodeSeries, encodeSeries, entrantsOf, normalizeCard, packRacers, unpa
 const racer = (boat: number, toban: string, over: Record<string, unknown> = {}) => ({
   boat, toban, name: '山本寛久', age: 50, branch: '岡山', weight: 52, grade: 'A2',
   nat_win: 6.68, nat_2r: 44.9, loc_win: 5.92, loc_2r: 45.83, motor_no: 59, motor_2r: 39.74, boat_no: 141, boat_2r: 35.51,
-  series: [[3, 2], [1], [2, 4], [1, 2]], hayami: 10, ...over,
+  series: [[3, 2], [1], [2, 4], [1, 2]], next_rno: 10, ...over,
 });
 const six = () => [1, 2, 3, 4, 5, 6].map((b) => racer(b, String(3000 + b)));
 

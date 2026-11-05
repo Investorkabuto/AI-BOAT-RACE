@@ -73,7 +73,7 @@ class RealFile(unittest.TestCase):
                 "boat": 1, "toban": "3874", "name": "山本寛久", "age": 50, "branch": "岡山", "weight": 52, "grade": "A2",
                 "nat_win": 6.68, "nat_2r": 44.9, "loc_win": 5.92, "loc_2r": 45.83,
                 "motor_no": 59, "motor_2r": 39.74, "boat_no": 141, "boat_2r": 35.51,
-                "series": [[3, 2], [1], [2, 4], [1, 2]], "hayami": 10,
+                "series": [[3, 2], [1], [2, 4], [1, 2]], "next_rno": 10,
             },
         )
 
