@@ -312,6 +312,8 @@ def send_records(date: str, parsed: dict, force: bool) -> bool:
 HISTORY_PER_REQUEST = 19
 # 過去分は、この日数より前だけ（前日分は当日の取得の流れに任せる。アプリの HISTORY_MIN_AGE_DAYS と同じ）
 HISTORY_MIN_AGE_DAYS = 2
+# さかのぼる日数の既定（2026-11-05 管理者決定: まず1年分。D1 の容量を見て延ばす。--floor で変えられる）
+HISTORY_DEFAULT_DAYS = 365
 # 公式サイトへの負荷を抑えるため、ファイルの取得の間に空ける秒数
 HISTORY_INTERVAL = 1.0
 
@@ -573,7 +575,7 @@ def main() -> None:
     p.add_argument("--date", help="YYYY-MM-DD（省略時は今日）")
     p.add_argument("--race", help="レースID（probe-result 用）")
     p.add_argument("--force", action="store_true", help="cards / records: 前回と同じ内容でも送り直す")
-    p.add_argument("--floor", help="history: どこまでさかのぼるか（YYYY-MM-DD。省略時は3年前）")
+    p.add_argument("--floor", help="history: どこまでさかのぼるか（YYYY-MM-DD。省略時は1年前）")
     p.add_argument("--max-days", type=int, default=60, help="history: 1回で取り込む日数の上限")
     p.add_argument("--budget-min", type=float, default=40, help="history: 1回の実行の時間の上限（分）")
     a = p.parse_args()
@@ -606,7 +608,7 @@ def main() -> None:
                 api("PUT", "/internal/history-state", {"race_date": a.date, "note": summary})
             return
         today = dt.datetime.now(JST).date()
-        floor = a.floor or (today - dt.timedelta(days=3 * 365 + 1)).isoformat()
+        floor = a.floor or (today - dt.timedelta(days=HISTORY_DEFAULT_DAYS)).isoformat()
         run_history(floor, a.max_days, a.budget_min * 60)
     elif a.command in ("records", "probe-records"):
         parsed = load_records(date)
