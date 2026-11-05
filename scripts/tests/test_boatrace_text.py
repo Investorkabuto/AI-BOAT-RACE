@@ -141,14 +141,21 @@ class EdgeCases(unittest.TestCase):
 
 class Series(unittest.TestCase):
     def test_days_and_marks(self) -> None:
-        self.assertEqual(bt.parse_series("321 24    ", 4), [[3, 2], [1], [2, 4]])  # 第4日: 前の3日分
-        self.assertEqual(bt.parse_series("321S      ", 3), [[3, 2], [1, "S"]])  # 第3日: 前の2日分。数字以外はそのまま
-        self.assertEqual(bt.parse_series("          ", 1), [])
-        self.assertEqual(bt.parse_series("  1       ", 3), [[], [1]])  # 出走のない日は空の並び
+        self.assertEqual(bt.parse_series("321 24      ", 4), [[3, 2], [1], [2, 4]])  # 第4日: 前の3日分
+        self.assertEqual(bt.parse_series("321S        ", 3), [[3, 2], [1, "S"]])  # 第3日: 前の2日分。数字以外はそのまま
+        self.assertEqual(bt.parse_series("            ", 1), [])
+        self.assertEqual(bt.parse_series("  1         ", 3), [[], [1]])  # 出走のない日は空の並び
+
+    def test_sixth_day_fills_twelve_columns(self) -> None:
+        # 2026-11-02 の江戸川（第7日）の実物: 前の6日分で12桁を使い切り、早見はその後ろの2桁
+        self.assertEqual(bt.parse_series("1 1 235 463 ", 7), [[1], [1], [2, 3], [5], [4, 6], [3]])
+        line = "1 3874山本寛久50岡山52A2 6.68 44.90 5.92 45.83 59 39.74141 35.51 1 1 235 463 10"
+        r = bt.parse_racer(line, 7)
+        self.assertEqual((r["series"][-1], r["next_rno"]), ([3], 10))
 
     def test_second_slot_only_is_rejected(self) -> None:
         with self.assertRaises(bt.ParseError):
-            bt.parse_series(" 3        ", 2)
+            bt.parse_series(" 3          ", 2)
 
 
 if __name__ == "__main__":

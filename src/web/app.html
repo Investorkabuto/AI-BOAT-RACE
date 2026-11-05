@@ -80,7 +80,7 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .muted{color:var(--muted)}.small{font-size:12px}
 .back{width:44px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--text)}
 nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;background:rgba(11,18,32,.94);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--line)}
-nav.tabs div{max-width:640px;margin:0 auto;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));padding:8px 24px calc(10px + env(safe-area-inset-bottom))}
+nav.tabs div{max-width:640px;margin:0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:8px 24px calc(10px + env(safe-area-inset-bottom))}
 nav.tabs a{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted);min-height:48px;justify-content:center}
 nav.tabs a[aria-current=page]{color:var(--accent)}
 .install{margin:12px 16px 0;padding:12px 14px;border-radius:18px;border:1px dashed #2E4466;display:flex;align-items:center;gap:12px;color:var(--text);background:transparent;width:calc(100% - 32px);text-align:left;cursor:pointer}
@@ -122,6 +122,7 @@ table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{paddin
   <a href="/" data-tab="home"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 15c2 1.5 4 1.5 6 0s4-1.5 6 0 4 1.5 6 0"/><path d="M3 19c2 1.5 4 1.5 6 0s4-1.5 6 0 4 1.5 6 0"/><circle cx="12" cy="8" r="3"/></svg>本日</a>
   <a href="/participants" data-tab="participants"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 3v4"/><circle cx="9" cy="13" r="1.2"/><circle cx="15" cy="13" r="1.2"/></svg>参加者</a>
   <a href="/history" data-tab="history"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3"/><path d="M4 10h16"/><path d="M9 3v4"/><path d="M15 3v4"/></svg>過去</a>
+  <a href="/analysis" data-tab="analysis"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg>分析</a>
 </div></nav>
 <div id="sheet"></div>
 <script>
@@ -584,6 +585,87 @@ function openSheet() {
   document.getElementById('close').focus();
 }
 
+// ---------- 分析（過去データの検索・集計。/analysis/... の API をそのまま表にする） ----------
+const ANALYSIS_TABS = [['factors', '予想の要素'], ['venue', '場×コース'], ['racer', '選手'], ['races', 'レース検索'], ['payouts', '配当']];
+const pctCell = (v) => `<td class="num" style="text-align:right">${v === null || v === undefined ? '—' : `${v}%`}</td>`;
+const statTable = (head, rows) => `<section class="card" style="margin:8px 16px 0;padding:6px 12px;overflow-x:auto"><table class="pay" style="width:100%"><thead><tr>${head.map((h, i) => `<th class="small muted" style="text-align:${i ? 'right' : 'left'};font-weight:500;padding:6px 4px">${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td class="small muted" colspan="${head.length}">データがありません</td></tr>`}</tbody></table></section>`;
+const rateRow = (label, x) => `<tr><td>${esc(label)}</td><td class="num" style="text-align:right">${Number(x.starts).toLocaleString('ja-JP')}</td>${pctCell(x.win_pct)}${'top2_pct' in x ? pctCell(x.top2_pct) : ''}${pctCell(x.top3_pct)}${'avg_st' in x ? `<td class="num" style="text-align:right">${x.avg_st === null ? '—' : x.avg_st.toFixed(2)}</td><td class="num" style="text-align:right">${x.flying}</td>` : ''}</tr>`;
+async function viewAnalysis(_m, api) {
+  const q = new URLSearchParams(location.search);
+  const t = ANALYSIS_TABS.some(([k]) => k === q.get('t')) ? q.get('t') : 'factors';
+  const venues = (await api('/venues')).venues;
+  const vName = (jcd) => (venues.find((v) => v.jcd === jcd) || {}).name || jcd;
+  const vOpt = (sel, any) => (any ? '<option value="">全場</option>' : '') + venues.map((v) => `<option value="${v.jcd}"${v.jcd === sel ? ' selected' : ''}>${esc(v.name)}</option>`).join('');
+  const val = (k) => esc(q.get(k) ?? '');
+  const period = `<label class="small muted">期間 <input name="from" type="date" value="${val('from')}"> 〜 <input name="to" type="date" value="${val('to')}"></label>`;
+  const form = (inner) => `<form class="card" data-af style="margin:12px 16px 0;display:flex;flex-wrap:wrap;gap:10px;align-items:center"><input type="hidden" name="t" value="${t}">${inner}${period}<button type="submit" class="tk" style="color:var(--text)">検索</button><span class="small muted">期間の既定は直近1年</span></form>`;
+  const pass = (keys) => { const s = new URLSearchParams(); for (const k of keys) if (q.get(k)) s.set(k, q.get(k)); return s.toString(); };
+  const sel = (name, opts) => `<select name="${name}">${opts.map(([v, l]) => `<option value="${v}"${(q.get(name) || '') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  const courseOpts = [1, 2, 3, 4, 5, 6].map((c) => [String(c), `${c}コース`]);
+  const R = 'class="num" style="text-align:right"';
+  let body = '';
+  if (t === 'factors') {
+    const d = await api(`/analysis/factors?${pass(['jcd', 'course', 'from', 'to'])}`);
+    const h = ['区分', '出走', '1着率', '3連率'];
+    body = form(`<select name="jcd">${vOpt(q.get('jcd'), true)}</select>${sel('course', [['', '全コース'], ...courseOpts])}`)
+      + `<div class="sect"><h2>展示タイムの順位</h2></div>${statTable(h, d.tenji_rank.map((x) => rateRow(x.group, x)))}`
+      + `<div class="sect"><h2>スタートタイミングの順位</h2></div>${statTable(h, d.st_rank.map((x) => rateRow(x.group, x)))}`
+      + `<div class="sect"><h2>モーター2連率（前日時点）</h2></div>${statTable(h, d.motor_2r.map((x) => rateRow(x.group, x)))}`
+      + `<div class="sect"><h2>級別</h2></div>${statTable(h, d.grade.map((x) => rateRow(x.group, x)))}`;
+  } else if (t === 'venue') {
+    const jcd = q.get('jcd') || '24';
+    const d = await api(`/analysis/venue/${jcd}?${pass(['from', 'to'])}`);
+    const h = ['', '出走', '1着率', '2連率', '3連率', '平均ST', 'F'];
+    const kimNames = Object.keys(d.kimarite_pct);
+    body = form(`<select name="jcd">${vOpt(jcd, false)}</select>`)
+      + `<p class="small muted" style="margin:10px 20px 0">${esc(d.venue || '')}：${Number(d.races).toLocaleString('ja-JP')}レース</p>`
+      + `<div class="sect"><h2>進入コース別</h2></div>${statTable(h, d.by_course.map((x) => rateRow(`${x.course}コース`, x)))}`
+      + `<div class="sect"><h2>枠番別（1号艇の勝率）</h2></div>${statTable(h, d.by_boat.map((x) => rateRow(`${x.boat}号艇`, x)))}`
+      + `<div class="sect"><h2>1着の決まり手（コース別）</h2></div>${statTable(['', ...kimNames], d.by_course.map((x) => `<tr><td>${x.course}コース</td>${kimNames.map((k) => pctCell(x.kimarite[k] ?? null)).join('')}</tr>`))}`;
+  } else if (t === 'racer') {
+    const toban = /^\d{4}$/.test(q.get('toban') || '') ? q.get('toban') : '';
+    body = form(`<input name="toban" inputmode="numeric" maxlength="4" placeholder="登録番号（4桁）" value="${esc(toban)}" style="width:150px">`);
+    if (toban) {
+      const d = await api(`/analysis/racer/${toban}?${pass(['from', 'to'])}`);
+      const h = ['', '出走', '1着率', '2連率', '3連率', '平均ST', 'F'];
+      body += `<p style="margin:10px 20px 0"><b>${esc(d.profile ? d.profile.name : toban)}</b> <span class="small muted">${d.profile ? esc([d.profile.grade, d.profile.branch].filter(Boolean).join('・')) : ''}</span></p>`
+        + statTable(h, [rateRow('通算', d.total), ...d.by_course.map((x) => rateRow(`${x.course}コース`, x))])
+        + `<div class="sect"><h2>直近の出走</h2></div>`
+        + statTable(['日付', '場', 'R', 'コース', '着', 'ST', '展示'], d.recent.map((x) => `<tr><td class="num">${esc(x.race_date.slice(5))}</td><td style="text-align:right">${esc(vName(x.jcd))}</td><td ${R}><a href="/race/${x.race_id}">${x.rno}R</a></td><td ${R}>${x.course ?? '—'}</td><td ${R}>${x.place ?? esc(x.place_mark || '')}</td><td ${R}>${x.st === null ? '—' : x.st.toFixed(2)}</td><td ${R}>${x.tenji === null ? '—' : x.tenji.toFixed(2)}</td></tr>`));
+    } else body += '<div class="empty">登録番号を入れると、通算とコース別の成績が出ます</div>';
+  } else if (t === 'races') {
+    const d = await api(`/analysis/races?${pass(['jcd', 'rno', 'wind_min', 'wind_max', 'wave_min', 'wave_max', 'weather', 'fixed_course', 'winner_course', 'kimarite', 'from', 'to', 'offset'])}`);
+    const n = (name, max, unit) => `<input name="${name}" type="number" min="0" max="${max}" value="${val(name)}" style="width:56px">${unit}`;
+    const next = new URLSearchParams(location.search);
+    next.set('offset', String(d.offset + d.limit));
+    body = form(`<select name="jcd">${vOpt(q.get('jcd'), true)}</select>`
+      + `<label class="small muted">風 ${n('wind_min', 20, '')}〜${n('wind_max', 20, 'm')}</label>`
+      + `<label class="small muted">波 ${n('wave_min', 99, '')}〜${n('wave_max', 99, 'cm')}</label>`
+      + sel('weather', [['', '天候'], ['晴', '晴'], ['曇り', '曇り'], ['雨', '雨'], ['雪', '雪'], ['霧', '霧']])
+      + sel('fixed_course', [['', '進入'], ['1', '進入固定'], ['0', '固定なし']])
+      + sel('winner_course', [['', '1着のコース'], ...courseOpts])
+      + sel('kimarite', [['', '決まり手'], ...['逃げ', '差し', 'まくり', 'まくり差し', '抜き', '恵まれ'].map((k) => [k, k])]))
+      + `<p class="small muted" style="margin:10px 20px 0;line-height:1.7">${Number(d.total).toLocaleString('ja-JP')}レース・1着のコース ${Object.entries(d.summary.winner_course_pct).map(([k, v]) => `${k}: ${v}%`).join('　')}<br>3連単の平均 ${d.summary.sanrentan_avg_payout === null ? '—' : yen(d.summary.sanrentan_avg_payout)}・1番人気の的中 ${d.summary.sanrentan_favorite_pct ?? '—'}%</p>`
+      + statTable(['日付', '場', 'R', '天候・風・波', '決まり手', '3連単', '配当', '人気'], d.races.map((x) => `<tr><td class="num">${esc(x.race_date.slice(2))}</td><td style="text-align:right">${esc(vName(x.jcd))}</td><td ${R}><a href="/race/${x.race_id}">${x.rno}R</a></td><td class="small" style="text-align:right">${esc([x.weather, x.wind_dir, x.wind_m === null ? '' : `${x.wind_m}m`, x.wave_cm === null ? '' : `${x.wave_cm}cm`].filter(Boolean).join(' '))}</td><td style="text-align:right">${esc(x.kimarite || '')}</td><td ${R}>${esc(x.sanrentan || '—')}</td><td ${R}>${x.sanrentan_payout ? yen(x.sanrentan_payout) : '—'}</td><td ${R}>${x.sanrentan_pop ?? '—'}</td></tr>`))
+      + (d.total > d.offset + d.limit ? `<div class="pad"><a class="tk" href="/analysis?${next}">次の${d.limit}件</a></div>` : '');
+  } else {
+    const d = await api(`/analysis/payouts?${pass(['bet_type', 'jcd', 'from', 'to'])}`);
+    body = form(`${sel('bet_type', Object.entries(BET_JA).map(([k, l]) => [k === 'sanrentan' ? '' : k, l]))}<select name="jcd">${vOpt(q.get('jcd'), true)}</select>`)
+      + `<p class="small muted" style="margin:10px 20px 0">${Number(d.count).toLocaleString('ja-JP')}件・平均 ${d.payout.avg === null ? '—' : yen(d.payout.avg)}・中央値 ${d.payout.median === null ? '—' : yen(d.payout.median)}・最高 ${d.payout.max === null ? '—' : yen(d.payout.max)}（100円あたり）</p>`
+      + `<div class="sect"><h2>配当の分布</h2></div>${statTable(['配当', '件数', '割合'], d.distribution.map((x) => `<tr><td class="num">${esc(x.range)}</td><td ${R}>${x.count}</td>${pctCell(x.pct)}</tr>`))}`
+      + `<div class="sect"><h2>的中した組番の人気</h2></div>${statTable(['人気', '件数', '割合'], d.winning_popularity.map((x) => `<tr><td>${esc(x.popularity)}</td><td ${R}>${x.count}</td>${pctCell(x.pct)}</tr>`))}`;
+  }
+  const tabs = `<div class="pad tix" style="margin-top:4px">${ANALYSIS_TABS.map(([k, l]) => `<a class="tk" href="/analysis?t=${k}" style="color:${k === t ? 'var(--accent)' : 'var(--text)'};font-size:13px;padding:8px 12px"${k === t ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</div>`;
+  return {
+    html: `<header class="top"><div><div class="small muted">過去のレースの検索と集計（公式の番組表・競走成績から）</div><h1 class="disp" style="margin:2px 0 0;font-size:26px">分析</h1></div></header>${tabs}${body}
+      <p class="small muted" style="margin:14px 20px 0;line-height:1.7">同じ集計は API でも取れます（AI向けの説明は <a href="/llms.txt">/llms.txt</a> の「分析」）。</p>`,
+    bind() {
+      const f = document.querySelector('form[data-af]');
+      if (f) f.addEventListener('submit', (e) => { e.preventDefault(); const s = new URLSearchParams(); for (const [k, v] of new FormData(f)) if (v !== '') s.set(k, v); navigate(`/analysis?${s}`); });
+    },
+  };
+}
+
 // ---------- ルーター ----------
 // 各画面は { html, bind } を返す。描くのは render だけ（古い読み込みが新しい画面を上書きしないように、番号で見分ける）
 const routes = [
@@ -593,6 +675,7 @@ const routes = [
   [/^\/participants\/?$/, (m, api) => viewParticipants(m, api), 'participants', '参加者'],
   [/^\/participants\/([A-Za-z0-9_]+)$/, (m, api) => viewParticipant(m[1], api), 'participants', '参加者'],
   [/^\/history\/?$/, (m, api) => viewHistory(m, api), 'history', '過去データ'],
+  [/^\/analysis\/?$/, (m, api) => viewAnalysis(m, api), 'analysis', '分析'],
 ];
 const $progress = document.getElementById('progress'), $app = document.getElementById('app');
 const loading = (on) => { $progress.classList.toggle('on', on); $app.classList.toggle('loading', on); };

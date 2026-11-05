@@ -306,6 +306,127 @@ def send_records(date: str, parsed: dict, force: bool) -> bool:
     return ok
 
 
+# ------------------------------------------------------------------ 過去分（B と K からレースを作る）
+
+# 1回の送信に含めるレース数（1レース最大5文。アプリは D1 の batch を99文ずつ流すので、19レースで1回に収まる）
+HISTORY_PER_REQUEST = 19
+# 過去分は、この日数より前だけ（前日分は当日の取得の流れに任せる。アプリの HISTORY_MIN_AGE_DAYS と同じ）
+HISTORY_MIN_AGE_DAYS = 2
+# 公式サイトへの負荷を抑えるため、ファイルの取得の間に空ける秒数
+HISTORY_INTERVAL = 1.0
+
+
+def result_from_k(race: dict) -> dict:
+    """K の1レースを、公式HTMLの結果と同じ形（POST /internal/results の1件）にする"""
+    finish: dict[int, list[int]] = {}
+    for r in race["rows"]:
+        if r["rank"].isdigit():
+            finish.setdefault(int(r["rank"]), []).append(r["boat"])
+    start = []
+    for r in sorted((r for r in race["rows"] if r["course"]), key=lambda r: r["course"]):
+        mark = r["rank"][0] if r["rank"][0] in "FL" else ""
+        st = f"{mark}{r['st']:.2f}" if r["st"] is not None else (mark or None)
+        start.append({"course": r["course"], "boat": r["boat"], "st": st})
+    return {
+        "status": "official",
+        "finish": [sorted(v) for _, v in sorted(finish.items())],
+        # 欠場・フライング・出遅れの艇を含む舟券は返還。失格（S）は返還しない（2026-11-05 運営AIの確認、公式の規定どおり）
+        "refunded_boats": sorted(r["boat"] for r in race["rows"] if r["rank"][0] in "FLK"),
+        "payouts": [{"bet_type": p["bet_type"], "combo": p["combo"], "payout": p["payout"]} for p in race["payouts"]],
+        "start": start,
+    }
+
+
+CANCELLED_RESULT = {"status": "cancelled", "finish": [], "refunded_boats": [], "payouts": []}
+
+
+def history_payload(b: dict, k: dict | None) -> tuple[list[dict], list[str]]:
+    """B（番組表）と K（競走成績）の解析結果から、過去分として送るレースの一覧を作る。戻り値は (レース, 注意)
+
+    レースの元は B（締切がある）。K の成績・結果をレースごとに添える。K に「中止」と出るレースは中止として送る。
+    B に無いレースは締切が分からないので送らない（注意に積む）。
+    """
+    notes: list[str] = []
+    kr = {(v["jcd"], r["rno"]): r for v in (k or {}).get("venues", []) for r in v["races"]}
+    kc = {(v["jcd"], n) for v in (k or {}).get("venues", []) for n in v.get("cancelled", [])}
+    out: list[dict] = []
+    seen = set()
+    for v in b["venues"]:
+        for r in v["races"]:
+            key = (v["jcd"], r["rno"])
+            seen.add(key)
+            item = {
+                "jcd": v["jcd"], "rno": r["rno"], "race_name": r["race_name"], "deadline": r["deadline"],
+                "card": {"fixed_course": r["fixed_course"], "distance": r["distance"], "racers": r["racers"]},
+            }
+            if key in kr:
+                item["record"] = kr[key]
+                item["result"] = result_from_k(kr[key])
+            elif key in kc:
+                item["result"] = CANCELLED_RESULT
+            elif k is not None and v["jcd"] not in k.get("missing", []):
+                notes.append(f"{v['jcd']} {r['rno']}R: K に成績がありません")
+            out.append(item)
+    for key in sorted(set(kr) - seen):
+        notes.append(f"{key[0]} {key[1]}R: B に無いので締切が分からず、取り込みません")
+    return out, notes
+
+
+def import_history_day(date: str) -> str | None:
+    """過去の1日分を取り込む。取り込めたら要約の文字列、ファイルがまだ無いなどで取り込めなければ None"""
+    lzh_b = bt.download(bt.b_url(date), timeout=TIMEOUT)
+    time.sleep(HISTORY_INTERVAL)
+    lzh_k = bt.download(bt.k_url(date), timeout=TIMEOUT)
+    time.sleep(HISTORY_INTERVAL)
+    if lzh_b is None:
+        print(f"warn: {date}: 番組表（B）がありません（{bt.b_url(date)}）", file=sys.stderr)
+        return None
+    b = bt.parse_b(bt.unpack(lzh_b), date)
+    k = bt.parse_k(bt.unpack(lzh_k), date) if lzh_k is not None else None
+    races, notes = history_payload(b, k)
+    errors = b["errors"] + (k["errors"] if k else ["K がありません"])
+    created: dict[str, int] = {}
+    skipped: list[str] = []
+    for i in range(0, len(races), HISTORY_PER_REQUEST):
+        res = api("PUT", "/internal/history", {"race_date": date, "races": races[i : i + HISTORY_PER_REQUEST]})
+        for key, n in res["created"].items():
+            created[key] = created.get(key, 0) + n
+        skipped += res["skipped"]
+    for m in errors + notes + skipped:
+        print(f"warn: {date}: {m}", file=sys.stderr)
+    missing = sorted(set(b.get("missing", [])) | set((k or {}).get("missing", [])))
+    summary = (
+        f"races={len(races)} " + " ".join(f"new_{k}={v}" for k, v in created.items())
+        + (f" errors={len(errors)}" if errors else "") + (f" notes={len(notes)}" if notes else "") + (f" skipped={len(skipped)}" if skipped else "")
+        + (f" missing_venues={','.join(missing)}" if missing else "")
+    )
+    print(f"{date}: {summary}")
+    if k is None:
+        return None  # K が無い日は、後でもう一度取りに行く（記録しない）
+    return summary
+
+
+def run_history(floor: str, max_days: int, budget_s: float) -> None:
+    """直近（今日の HISTORY_MIN_AGE_DAYS 日前）から floor まで、取り込み済みでない日を新しい順に取り込む"""
+    started = time.monotonic()
+    newest = (dt.datetime.now(JST).date() - dt.timedelta(days=HISTORY_MIN_AGE_DAYS)).isoformat()
+    done = {x["date"] for x in api("GET", f"/internal/history-done?from={floor}&to={newest}")["done"]}
+    day = dt.date.fromisoformat(newest)
+    stop = dt.date.fromisoformat(floor)
+    n = 0
+    while day >= stop and n < max_days and time.monotonic() - started < budget_s:
+        d = day.isoformat()
+        day -= dt.timedelta(days=1)
+        if d in done:
+            continue
+        summary = import_history_day(d)
+        n += 1
+        if summary is not None:
+            api("PUT", "/internal/history-state", {"race_date": d, "note": summary})
+    remaining = sum(1 for i in range((dt.date.fromisoformat(newest) - stop).days + 1) if (stop + dt.timedelta(days=i)).isoformat() not in done) - n
+    print(f"history: {n} 日分を処理しました（{floor} まで、残り約 {max(remaining, 0)} 日）")
+
+
 # ------------------------------------------------------------------ 結果
 
 def parse_combo(cell) -> str | None:
@@ -448,10 +569,13 @@ def fetch_result(race_id: str) -> dict | None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["schedule", "cards", "records", "results", "results-all", "probe-cards", "probe-records", "probe-schedule", "probe-result", "probe-entrants"])
+    p.add_argument("command", choices=["schedule", "cards", "records", "history", "results", "results-all", "probe-cards", "probe-records", "probe-schedule", "probe-result", "probe-entrants"])
     p.add_argument("--date", help="YYYY-MM-DD（省略時は今日）")
     p.add_argument("--race", help="レースID（probe-result 用）")
     p.add_argument("--force", action="store_true", help="cards / records: 前回と同じ内容でも送り直す")
+    p.add_argument("--floor", help="history: どこまでさかのぼるか（YYYY-MM-DD。省略時は3年前）")
+    p.add_argument("--max-days", type=int, default=60, help="history: 1回で取り込む日数の上限")
+    p.add_argument("--budget-min", type=float, default=40, help="history: 1回の実行の時間の上限（分）")
     a = p.parse_args()
     date = a.date or dt.datetime.now(JST).date().isoformat()
 
@@ -475,6 +599,15 @@ def main() -> None:
         # 解析できたレースは送る。失敗があれば最後に終了コード1で知らせる（Actions の失敗通知で気づけるように）
         if not send_cards(date, parsed, a.force):
             raise SystemExit(f"{date}: 番組表の一部を取り込めませんでした（上の warn を参照）")
+    elif a.command == "history":
+        if a.date:  # 1日分だけ（手動の確認用）
+            summary = import_history_day(a.date)
+            if summary is not None:
+                api("PUT", "/internal/history-state", {"race_date": a.date, "note": summary})
+            return
+        today = dt.datetime.now(JST).date()
+        floor = a.floor or (today - dt.timedelta(days=3 * 365 + 1)).isoformat()
+        run_history(floor, a.max_days, a.budget_min * 60)
     elif a.command in ("records", "probe-records"):
         parsed = load_records(date)
         if parsed is None:

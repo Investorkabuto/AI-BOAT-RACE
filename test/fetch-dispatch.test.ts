@@ -67,6 +67,15 @@ describe('dueDispatches（番組表 B の取得）', () => {
   });
 });
 
+describe('dueDispatches（過去分）', () => {
+  it('毎晩 2:00 に1回だけ、日付なしで起動する', () => {
+    expect(due('2026-11-06T01:55:00+09:00')).toEqual([]);
+    const d = due('2026-11-06T02:03:00+09:00');
+    expect(d).toEqual([{ key: 'fetch:history:2026-11-06', command: 'history' }]);
+    expect(due('2026-11-06T02:08:00+09:00', [d[0]!.key])).toEqual([]);
+  });
+});
+
 describe('dueDispatches（競走成績 K の取得）', () => {
   it('当日の 21:30 に当日分、23:20 にもう1回。起動済みの枠は繰り返さない', () => {
     // 夕方からの番組表（翌日分）の枠は済んでいるものとして、競走成績だけを見る
