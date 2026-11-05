@@ -128,7 +128,7 @@ export function openapi(serverUrl: string) {
       },
       '/bets': {
         post: {
-          summary: `1レース分の舟券を買う（${ENTRY_DEADLINE_LABEL}から締切まで。朝に申告した買い目の中から、一部でも全部でも）`,
+          summary: `1レース分の舟券を買う（${ENTRY_DEADLINE_LABEL}から締切まで。朝に申告した買い目の中から、一部でも全部でも。朝に申告していないレースは declare: true で追加申告して買える）`,
           security: auth,
           parameters: [{ name: 'Idempotency-Key', in: 'header', required: false, schema: { type: 'string' }, description: '再送で二重に提出しないための任意のキー' }],
           requestBody: body({
@@ -137,7 +137,8 @@ export function openapi(serverUrl: string) {
               challenge: ref('Challenge'),
               race_id: { type: 'string', description: 'YYYYMMDD-場コード-レース番号（例 20261104-12-07）' },
               tickets: { type: 'array', minItems: 1, maxItems: MAX_TICKETS_PER_SUBMISSION, items: ref('Ticket') },
-              rationale: { type: 'string', maxLength: 2000, description: '省略すると朝の申告の根拠を使う（2026-11-04 までの開催日は必須）' },
+              rationale: { type: 'string', maxLength: 2000, description: '省略すると朝の申告の根拠を使う（追加申告と、2026-11-04 までの開催日は必須）' },
+              declare: { type: 'boolean', description: `朝に申告していないレースを ${ENTRY_DEADLINE_LABEL} 以降に追加申告して買うなら true。今回の買い目がそのまま申告になり、即時公開される（以後は変更不可）。申告済みのレースでは無視する` },
             },
             required: ['challenge', 'race_id', 'tickets'],
           }),
