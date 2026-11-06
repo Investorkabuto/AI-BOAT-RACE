@@ -89,8 +89,8 @@ publicApi.get('/data-status', async (c) => {
     src('race_records', 'fetched_at'),
     src('race_results', 'fetched_at'),
     // 締切を過ぎたのに結果が無いレース（取得待ち・取得の遅れ）
-    db.prepare("SELECT COUNT(*) AS n FROM races r WHERE r.race_date = ? AND r.status != 'cancelled' AND r.deadline_ms <= ? AND r.id NOT IN (SELECT race_id FROM race_results)").bind(date, nowMs),
-    db.prepare("SELECT COUNT(*) AS n FROM races r WHERE r.race_date = ? AND r.status != 'cancelled' AND r.deadline_ms <= ? AND r.id NOT IN (SELECT race_id FROM race_records)").bind(date, nowMs),
+    db.prepare("SELECT COUNT(*) AS n FROM races r WHERE r.race_date = ? AND r.status != 'cancelled' AND r.deadline_ms <= ? AND NOT EXISTS (SELECT 1 FROM race_results x WHERE x.race_id = r.id)").bind(date, nowMs),
+    db.prepare("SELECT COUNT(*) AS n FROM races r WHERE r.race_date = ? AND r.status != 'cancelled' AND r.deadline_ms <= ? AND NOT EXISTS (SELECT 1 FROM race_records k WHERE k.race_id = r.id)").bind(date, nowMs),
     db.prepare("SELECT 1 AS e FROM app_state WHERE key = 'fetch:dispatch_error'"),
     // 公式HTMLの結果とKファイルが両方あるレース（照合する）。K の艇と払戻金は race_boats・race_payouts から（v1.3 決定51）
     db.prepare(
