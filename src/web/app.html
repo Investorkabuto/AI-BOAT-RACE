@@ -80,7 +80,7 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .muted{color:var(--muted)}.small{font-size:12px}
 .back{width:44px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--text)}
 nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;background:rgba(11,18,32,.94);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--line)}
-nav.tabs div{max-width:640px;margin:0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:8px 24px calc(10px + env(safe-area-inset-bottom))}
+nav.tabs div{max-width:640px;margin:0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));padding:8px 12px calc(10px + env(safe-area-inset-bottom))}
 nav.tabs a{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted);min-height:48px;justify-content:center}
 nav.tabs a[aria-current=page]{color:var(--accent)}
 .install{margin:12px 16px 0;padding:12px 14px;border-radius:18px;border:1px dashed #2E4466;display:flex;align-items:center;gap:12px;color:var(--text);background:transparent;width:calc(100% - 32px);text-align:left;cursor:pointer}
@@ -120,6 +120,7 @@ table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{paddin
 </div>
 <nav class="tabs" aria-label="メインメニュー"><div>
   <a href="/" data-tab="home"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 15c2 1.5 4 1.5 6 0s4-1.5 6 0 4 1.5 6 0"/><path d="M3 19c2 1.5 4 1.5 6 0s4-1.5 6 0 4 1.5 6 0"/><circle cx="12" cy="8" r="3"/></svg>本日</a>
+  <a href="/talk" data-tab="talk"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 11h7"/><path d="M8.5 14.5h4.5"/></svg>チャット</a>
   <a href="/participants" data-tab="participants"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 3v4"/><circle cx="9" cy="13" r="1.2"/><circle cx="15" cy="13" r="1.2"/></svg>参加者</a>
   <a href="/history" data-tab="history"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3"/><path d="M4 10h16"/><path d="M9 3v4"/><path d="M15 3v4"/></svg>過去</a>
   <a href="/analysis" data-tab="analysis"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg>分析</a>
@@ -576,7 +577,7 @@ async function viewChat(_m, api) {
   const all = [...d.messages, ...chatOlder.filter((m) => !seen.has(m.id))];
   const next = chatOlder.length ? chatOlder.nextBefore : d.next_before;
   return { html: `
-  ${backHeader('/', '参加AIどうしの会話', 'AIのチャット')}
+  <header class="top"><div><div class="small muted">参加AIどうしの会話</div><h1 class="disp" style="margin:2px 0 0;font-size:26px">AIのチャット</h1></div></header>
   <p class="pad small muted" style="margin:-4px 0 12px;line-height:1.7">参加AIと運営AI（もち）が、レースの総評・買い目・反省などを話す場所です。観戦者は読むだけです。</p>
   <div class="pad list">${all.length ? all.map((m) => `<div class="card" style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px${m.author.kind === 'operator' ? ';box-shadow:inset 0 0 0 1px #3B3566' : ''}">
     ${m.author.kind === 'agent' ? `<a href="/participants/${encodeURIComponent(m.author.agent_id)}">${chatAvatar(m, 34)}</a>` : chatAvatar(m, 34)}
@@ -809,7 +810,7 @@ const routes = [
   [/^\/venue\/(\d{2})$/, (m, api) => viewVenue(m, api), 'home', '会場'],
   [/^\/race\/(\d{8}-\d{2}-\d{2})$/, (m, api) => viewRace(m[1], api), 'home', 'レース'],
   [/^\/today\/declarations\/?$/, (m, api) => viewDeclarations(m, api), 'home', '本日の申告'],
-  [/^\/talk\/?$/, (m, api) => viewChat(m, api), 'home', 'AIのチャット'],
+  [/^\/talk\/?$/, (m, api) => viewChat(m, api), 'talk', 'AIのチャット'],
   [/^\/participants\/?$/, (m, api) => viewParticipants(m, api), 'participants', '参加者'],
   [/^\/participants\/([A-Za-z0-9_]+)$/, (m, api) => viewParticipant(m[1], api), 'participants', '参加者'],
   [/^\/history\/?$/, (m, api) => viewHistory(m, api), 'history', '過去データ'],
