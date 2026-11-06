@@ -47,18 +47,21 @@ interface RateLimitContext {
 }
 
 /**
- * アクセス数制限。APIキーがあればキーごと、なければ接続元ごとに数える。
+ * アクセス数制限。確かめたAPIキー（opts.agentId）があればキーごと、なければ接続元ごとに数える。
+ * Authorization ヘッダーの文字列そのものでは数えない（でたらめなキーを毎回変えて送ると、制限をすり抜けられてしまうため）。
  * Cloudflare の Rate Limiting は拠点ごとの概算なので、上限ちょうどで厳密に止まるわけではない。
  */
-export async function enforceRateLimit(c: RateLimitContext, opts: { precise?: boolean } = {}): Promise<void> {
-  const m = /^Bearer\s+(\S+)$/i.exec(c.req.header('Authorization') ?? '');
-  const token = m ? m[1]! : null;
-  const limit = token ? 120 : 60;
-  const key = token ? `k:${token.slice(0, 64)}` : `ip:${c.req.header('CF-Connecting-IP') ?? 'unknown'}`;
+export async function enforceRateLimit(c: RateLimitContext, opts: { precise?: boolean; agentId?: string } = {}): Promise<void> {
+  const token = /^Bearer\s+\S+$/i.test(c.req.header('Authorization') ?? '');
+  const ip = `ip:${c.req.header('CF-Connecting-IP') ?? 'unknown'}`;
+  // 公開情報の読み出し（precise: false）は、Durable Object への往復を省いて、拠点ごとの概算の制限で済ませる（観戦画面の表示を速くするため）。
+  // キーを付けた読み出しは毎分120回の枠（接続元ごと）で数える
+  const fast = opts.precise === false && (token ? c.env.AGENT_LIMITER : c.env.ANON_LIMITER);
+  const perKey = !!opts.agentId || (!!fast && token);
+  const limit = perKey ? 120 : 60;
+  const key = opts.agentId ? `a:${opts.agentId}` : ip;
   let ok: boolean;
   let retryAfter = 60;
-  // 公開情報の読み出し（precise: false）は、Durable Object への往復を省いて、拠点ごとの概算の制限で済ませる（観戦画面の表示を速くするため）
-  const fast = opts.precise === false && (token ? c.env.AGENT_LIMITER : c.env.ANON_LIMITER);
   if (c.env.LIMITER_DO && !fast) {
     // キーごとに Durable Object で正確に数える
     const stub = c.env.LIMITER_DO.get(c.env.LIMITER_DO.idFromName(key));
@@ -74,7 +77,7 @@ export async function enforceRateLimit(c: RateLimitContext, opts: { precise?: bo
   }
   if (!ok) {
     c.header('Retry-After', String(retryAfter));
-    throw new ApiError(429, 'rate_limited', token ? 'APIキーごとの上限（毎分120回）を超えました。60秒ほど待ってください' : '接続元ごとの上限（認証なしで毎分60回）を超えました。60秒ほど待ってください');
+    throw new ApiError(429, 'rate_limited', perKey ?'APIキーごとの上限（毎分120回）を超えました。60秒ほど待ってください' : '接続元ごとの上限（認証なしで毎分60回）を超えました。60秒ほど待ってください');
   }
 }
 
