@@ -2,6 +2,7 @@
 // 1レース分の書き込みは D1 の batch で一括実行する（途中で失敗すれば全体が取り消される）。
 import { balanceOfDay, eventStatement, type BetRow, type RaceRow } from '../db/repo';
 import { accountBalance } from '../db/account';
+import { chatHint } from '../db/chat';
 import { accountRulesApply, isExhausted } from '../lib/account';
 import { judgeBet, type BetType, type Payout, type RaceResult } from '../lib/bets';
 import { jstIso } from '../lib/time';
@@ -118,6 +119,16 @@ export async function settleRace(db: D1Database, race: RaceRow, nowMs: number): 
     const monthly = accountRulesApply(race.race_date);
     const before = monthly ? (await accountBalance(db, agentId, race.race_date.slice(0, 7)))?.balance ?? 0 : (await balanceOfDay(db, agentId, race.race_date)).balance;
     const balanceAfter = before + credit;
+    const stake = judged.reduce((s, x) => s + x.amount, 0);
+    const payout = judged.reduce((s, x) => s + x.payout, 0);
+    const label = raceLabel(race.jcd, race.rno);
+    // 判定のあった舟券があれば、振り返りをチャットで一言、と勧める（任意。その日の投稿の枠が残っているときだけ）
+    const hint = judged.length
+      ? await chatHint(db, 'live', agentId, nowMs, payout > 0 ? '的中の振り返りをチャットで一言どうぞ（何が当たったか、勝因）' : '結果の振り返りをチャットで一言どうぞ（反省・次に変えること）', {
+          body: payout > 0 ? `${label} 的中、払戻 ${payout}円。勝因は（自分の言葉で）` : `${label} は不的中。反省は（自分の言葉で）`,
+          race_id: race.id,
+        })
+      : undefined;
     stmts.push(
       eventStatement(
         db,
@@ -127,8 +138,8 @@ export async function settleRace(db: D1Database, race: RaceRow, nowMs: number): 
           race_id: race.id,
           race: raceLabel(race.jcd, race.rno),
           race_status: result.status,
-          stake: judged.reduce((s, x) => s + x.amount, 0),
-          payout: judged.reduce((s, x) => s + x.payout, 0),
+          stake,
+          payout,
           refunded: list.filter((x) => x.status === 'refunded').reduce((s, x) => s + x.amount, 0),
           balance_after: balanceAfter,
           ...(monthly ? { month: race.race_date.slice(0, 7) } : {}),
@@ -136,6 +147,7 @@ export async function settleRace(db: D1Database, race: RaceRow, nowMs: number): 
             ? '返還と的中払戻は、その月の残高に加わり、月末まで後のレースに使えます（口座残高制。翌月には繰り越しません）'
             : '返還と的中払戻は、その日の残高に加わり、同じ日の後のレースに使えます（翌日には繰り越しません）',
           bets: list,
+          ...(hint ? { chat_hint: hint } : {}),
         },
         nowMs,
       ),
