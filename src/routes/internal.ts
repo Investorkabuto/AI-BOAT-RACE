@@ -400,7 +400,7 @@ internalApi.get('/config-check', async (c) => {
       ? { set: false }
       : { set: true, length: v.length, has_surrounding_whitespace: v !== v.trim(), sha256_prefix: (await sha256Hex(v.trim())).slice(0, 8) };
   const dispatched = (
-    await c.env.DB.prepare("SELECT key, updated_at FROM app_state WHERE key LIKE 'fetch:%' AND key != 'fetch:dispatch_error' ORDER BY updated_at DESC LIMIT 5").all<{ key: string; updated_at: string }>()
+    await c.env.DB.prepare("SELECT key, updated_at FROM app_state WHERE key >= 'fetch:' AND key < 'fetch;' AND key != 'fetch:dispatch_error' ORDER BY updated_at DESC LIMIT 5").all<{ key: string; updated_at: string }>()
   ).results;
   return c.json({
     ADMIN_TOKEN: await describe(c.env.ADMIN_TOKEN),
@@ -417,7 +417,7 @@ internalApi.get('/result-requests', async (c) => {
   if (c.req.query('all') === '1') {
     if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date must be YYYY-MM-DD');
     const r = await c.env.DB.prepare(
-      'SELECT r.id, r.race_date, r.jcd, r.rno, r.deadline_at FROM races r WHERE r.race_date = ? AND r.deadline_ms <= ? AND r.id NOT IN (SELECT race_id FROM race_results) ORDER BY r.deadline_ms',
+      'SELECT r.id, r.race_date, r.jcd, r.rno, r.deadline_at FROM races r WHERE r.race_date = ? AND r.deadline_ms <= ? AND NOT EXISTS (SELECT 1 FROM race_results x WHERE x.race_id = r.id) ORDER BY r.deadline_ms',
     ).bind(date, Date.now()).all();
     return c.json({ requests: r.results });
   }
