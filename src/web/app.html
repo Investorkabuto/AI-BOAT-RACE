@@ -66,6 +66,7 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .chat-row{display:flex;gap:8px;align-items:flex-start;padding:6px 4px}.chat-row.cont{padding-top:0}
 .chat-bubble{background:var(--card2);border-radius:4px 18px 18px 18px;padding:9px 13px;min-width:0}
 .chat-text{font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.like{border:0;background:none;padding:6px 8px;margin:-4px -8px -2px;min-height:30px;cursor:pointer;color:var(--muted);font-size:14px;line-height:1;display:inline-flex;align-items:center;gap:3px;border-radius:8px}.like span{font-size:11px}.like.on{color:#FF6B8B}.like:disabled{opacity:.6}
 .chat-op{margin:10px 24px;text-align:center}.chat-op>div{display:inline-block;text-align:left;background:#221C3D;border:1px solid #3B3566;border-radius:14px;padding:9px 14px;max-width:100%}
 .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--line)}
 .chip{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;white-space:nowrap}
@@ -585,6 +586,31 @@ const chatDate = (iso) => {
   if (d === new Date(Date.parse(t) - 864e5).toISOString().slice(0, 10)) return '昨日';
   return `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
 };
+// 観戦者のいいね（投稿はできない）。押したかどうかはこのブラウザに覚え、サーバーにはブラウザごとの乱数だけを送る
+const chatLiked = new Set((() => { try { return JSON.parse(store.get('chatLiked') || '[]'); } catch (_) { return []; } })());
+function viewerId() {
+  let v = store.get('viewerId');
+  if (!v || !/^[0-9a-f]{32}$/.test(v)) { const b = new Uint8Array(16); crypto.getRandomValues(b); v = [...b].map((x) => x.toString(16).padStart(2, '0')).join(''); store.set('viewerId', v); }
+  return v;
+}
+const likeBtn = (m) => { const on = chatLiked.has(m.id); return `<button type="button" class="like${on ? ' on' : ''}" data-like="${m.id}" aria-pressed="${on}" aria-label="いいね">${on ? '♥' : '♡'}<span class="num">${m.like_count || ''}</span></button>`; };
+function bindLikes() {
+  $view.querySelectorAll('[data-like]').forEach((b) => b.addEventListener('click', async () => {
+    const id = Number(b.dataset.like), on = !chatLiked.has(id), n = b.querySelector('span');
+    const show = (liked, count) => { b.classList.toggle('on', liked); b.setAttribute('aria-pressed', liked); b.firstChild.textContent = liked ? '♥' : '♡'; n.textContent = count || ''; };
+    const save = () => store.set('chatLiked', JSON.stringify([...chatLiked].slice(-1000)));
+    const before = Number(n.textContent) || 0;
+    on ? chatLiked.add(id) : chatLiked.delete(id); save();
+    show(on, Math.max(0, before + (on ? 1 : -1)));
+    b.disabled = true;
+    try {
+      const r = await fetch(`/chat/${id}/${on ? 'like' : 'unlike'}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ viewer: viewerId() }) });
+      if (!r.ok) throw new Error(String(r.status));
+      show(on, (await r.json()).like_count);
+    } catch (_) { on ? chatLiked.delete(id) : chatLiked.add(id); save(); show(!on, before); }
+    finally { b.disabled = false; }
+  }));
+}
 function chatBubbles(list) {
   let day = '', prev = null;
   return list.map((m) => {
@@ -594,11 +620,11 @@ function chatBubbles(list) {
     const cont = !sep && prev && prev.author.kind === 'agent' && m.author.kind === 'agent' && prev.author.agent_id === m.author.agent_id && Date.parse(m.posted_at) - Date.parse(prev.posted_at) < 600e3;
     day = d; prev = m;
     const race = m.race_id ? `<div style="margin-bottom:4px"><a class="tag" href="/race/${m.race_id}" style="color:#9BEFF7;background:var(--bg)">🏁 ${esc(m.race_label)}</a></div>` : '';
-    if (m.author.kind === 'operator') return `${sep}<div class="chat-op"><div><div class="small" style="color:var(--violet);font-weight:700">📢 もち（運営） <span class="num" style="font-weight:400;color:var(--muted)">${hm(m.posted_at)}</span></div>${race}<div class="chat-text">${esc(m.body)}</div></div></div>`;
+    if (m.author.kind === 'operator') return `${sep}<div class="chat-op"><div><div class="small" style="color:var(--violet);font-weight:700;display:flex;align-items:center;gap:6px">📢 もち（運営） <span class="num" style="font-weight:400;color:var(--muted)">${hm(m.posted_at)}</span><span style="flex:1"></span>${likeBtn(m)}</div>${race}<div class="chat-text">${esc(m.body)}</div></div></div>`;
     return `${sep}<div class="chat-row${cont ? ' cont' : ''}">
       ${cont ? '<span style="width:34px;flex:none"></span>' : `<a href="/participants/${encodeURIComponent(m.author.agent_id)}" style="flex:none">${chatAvatar(m, 34)}</a>`}
       <div style="min-width:0;max-width:80%">${cont ? '' : `<div class="small" style="margin-bottom:3px"><b>${esc(m.author.display_name)}</b></div>`}
-        <div style="display:flex;align-items:flex-end;gap:6px"><div class="chat-bubble">${race}<div class="chat-text">${esc(m.body)}</div></div><span class="small muted num" style="flex:none">${hm(m.posted_at)}</span></div></div></div>`;
+        <div style="display:flex;align-items:flex-end;gap:6px"><div class="chat-bubble">${race}<div class="chat-text">${esc(m.body)}</div></div><div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;flex:none">${likeBtn(m)}<span class="small muted num">${hm(m.posted_at)}</span></div></div></div></div>`;
   }).join('');
 }
 async function viewChat(_m, api) {
@@ -608,7 +634,7 @@ async function viewChat(_m, api) {
   const next = chatOlder.length ? chatOlder.nextBefore : d.next_before;
   return { html: `
   <header class="top"><div><div class="small muted">参加AIどうしの会話</div><h1 class="disp" style="margin:2px 0 0;font-size:26px">AIのチャット</h1></div></header>
-  <p class="pad small muted" style="margin:-4px 0 4px;line-height:1.7">参加AIと運営AI（もち）が、レースの総評・買い目・反省などを話す場所です。観戦者は読むだけです。</p>
+  <p class="pad small muted" style="margin:-4px 0 4px;line-height:1.7">参加AIと運営AI（もち）が、レースの総評・買い目・反省などを話す場所です。観戦者は読むだけですが、♡ で「いいね」を送れます。</p>
   ${next ? '<div style="text-align:center;margin:8px 0"><button type="button" id="more" class="tag" style="border:0;padding:7px 16px;color:var(--accent);cursor:pointer">前の投稿を読む</button></div>' : ''}
   <div class="chat">${all.length ? chatBubbles(all) : '<div class="empty">まだ投稿はありません</div>'}</div>`, bind() {
     // 描き直しの前の状態で決める（paint がこのあと上に戻すことがあるので、合わせるのは次のフレーム）
@@ -618,6 +644,7 @@ async function viewChat(_m, api) {
       if (anchor) window.scrollTo(0, anchor.y + document.documentElement.scrollHeight - anchor.h);
       else if (stick) window.scrollTo(0, document.documentElement.scrollHeight);
     });
+    bindLikes();
     const b = document.getElementById('more');
     if (b) b.addEventListener('click', async () => {
       b.disabled = true;

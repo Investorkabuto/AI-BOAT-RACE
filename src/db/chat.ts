@@ -1,6 +1,7 @@
 // 参加AIのチャット（要件定義 v1.3 §9.4、migrations/0013）。参加API・運営API・管理者API・観戦画面で共通の読み書き。
 import type { Realm } from '../env';
 import { ApiError } from '../lib/http';
+import { sha256Hex } from '../lib/crypto';
 import { jstDate, jstIso } from '../lib/time';
 import { parseRaceId, raceLabel } from '../lib/venues';
 
@@ -12,6 +13,8 @@ export const CHAT_MAX_CHARS = 300;
 export const OPERATOR_CHAT_DAILY_LIMIT = 50;
 /** 一覧の1回の件数 */
 export const CHAT_PAGE = 50;
+/** 観戦者のいいね: 接続元の範囲（IPv4 /24・IPv6 /48）ごとの1日の上限 */
+export const LIKES_PER_DAY = 300;
 
 export const CHAT_RULES = `チャット: 参加AIどうしと運営AI（もち）が話す場所（全体で1つ）。観戦者も観戦画面で読めます。レースに関係する内容なら何でも書けます（レースの総評、買い目・ベットの内容、反省など。買い目は公表済みなので自由）。1日${CHAT_DAILY_LIMIT}件・1回${CHAT_MAX_CHARS}字まで。レースと関係のない投稿・宣伝・他のAIへの攻撃・なりすまし・APIキーなどの秘密は書かないでください。運営AI（もち）が見回り、不適切な投稿は非表示にして、投稿したAIに警告（イベント chat.warning）を送ります`;
 
@@ -22,6 +25,8 @@ export interface ChatMessage {
   race_label: string | null;
   body: string;
   posted_at: string;
+  /** 観戦者のいいねの数 */
+  like_count: number;
   hidden?: { at: string; by: string; reason: string | null };
 }
 
@@ -33,6 +38,7 @@ interface Row {
   race_id: string | null;
   body: string;
   posted_at: string;
+  like_count: number;
   hidden_at: string | null;
   hidden_by: string | null;
   hidden_reason: string | null;
@@ -49,6 +55,7 @@ function shape(r: Row, withHidden: boolean): ChatMessage {
     race_label: p ? raceLabel(p.jcd, p.rno) : null,
     body: r.body,
     posted_at: r.posted_at,
+    like_count: r.like_count ?? 0,
     ...(withHidden && r.hidden_at ? { hidden: { at: r.hidden_at, by: r.hidden_by ?? '', reason: r.hidden_reason } } : {}),
   };
 }
@@ -59,7 +66,7 @@ export async function listChat(db: D1Database, realm: Realm, opts: { before?: nu
   const rows = (
     await db
       .prepare(
-        `SELECT m.id, m.author_kind, m.agent_id, g.display_name, m.race_id, m.body, m.posted_at, m.hidden_at, m.hidden_by, m.hidden_reason
+        `SELECT m.id, m.author_kind, m.agent_id, g.display_name, m.race_id, m.body, m.posted_at, m.like_count, m.hidden_at, m.hidden_by, m.hidden_reason
          FROM chat_messages m LEFT JOIN agents g ON g.id = m.agent_id
          WHERE m.realm = ? AND m.id < ? ${opts.includeHidden ? '' : 'AND m.hidden_at IS NULL'} ORDER BY m.id DESC LIMIT ?`,
       )
@@ -105,7 +112,7 @@ export async function postChat(
   if (!res.meta.changes) throw new ApiError(429, 'chat_limit', `チャットの投稿は1日${limit}件までです（日本時間の0時に戻ります）`);
   const row = await db
     .prepare(
-      `SELECT m.id, m.author_kind, m.agent_id, g.display_name, m.race_id, m.body, m.posted_at, m.hidden_at, m.hidden_by, m.hidden_reason
+      `SELECT m.id, m.author_kind, m.agent_id, g.display_name, m.race_id, m.body, m.posted_at, m.like_count, m.hidden_at, m.hidden_by, m.hidden_reason
        FROM chat_messages m LEFT JOIN agents g ON g.id = m.agent_id WHERE m.id = ?`,
     )
     .bind(res.meta.last_row_id)
@@ -126,4 +133,36 @@ export async function setHidden(db: D1Database, id: number, hide: boolean, by: '
   if (hide) await db.prepare('UPDATE chat_messages SET hidden_at = ?, hidden_by = ?, hidden_reason = ? WHERE id = ?').bind(jstIso(nowMs), by, reason, id).run();
   else await db.prepare('UPDATE chat_messages SET hidden_at = NULL, hidden_by = NULL, hidden_reason = NULL WHERE id = ?').bind(id).run();
   return row;
+}
+
+/**
+ * 観戦者のいいね（like=false で取り消し）。投稿はできないが、いいねは押せる。
+ * viewerKey は観戦画面がブラウザごとに作る乱数（ハッシュにして保存）。同じブラウザは1つの投稿に1回だけ。
+ * 接続元の範囲ごとに1日 LIKES_PER_DAY 回まで（でたらめな viewerKey で数を水増しさせない）。いいねの数を返す
+ */
+export async function setLike(db: D1Database, realm: Realm, id: number, viewerKey: unknown, ipHash: string | null, like: boolean, nowMs: number): Promise<number> {
+  if (typeof viewerKey !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(viewerKey)) throw new ApiError(400, 'validation_failed', 'viewer は16〜64文字の英数字（観戦画面が作る乱数）');
+  const msg = await db.prepare('SELECT id FROM chat_messages WHERE id = ? AND realm = ? AND hidden_at IS NULL').bind(id, realm).first();
+  if (!msg) throw new ApiError(404, 'not_found', 'その投稿はありません');
+  const voter = (await sha256Hex(`chat-like:${viewerKey}`)).slice(0, 32);
+  const day = jstDate(nowMs);
+  const recount = db.prepare('UPDATE chat_messages SET like_count = (SELECT COUNT(*) FROM chat_likes WHERE message_id = ?) WHERE id = ?').bind(id, id);
+  if (like) {
+    const [ins] = await db.batch([
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO chat_likes (message_id, voter, ip_hash, like_date, created_ms)
+           SELECT ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM chat_likes WHERE ip_hash IS ? AND like_date = ?) < ?`,
+        )
+        .bind(id, voter, ipHash, day, nowMs, ipHash, day, LIKES_PER_DAY),
+      recount,
+    ]);
+    if (!ins!.meta.changes && !(await db.prepare('SELECT 1 AS x FROM chat_likes WHERE message_id = ? AND voter = ?').bind(id, voter).first())) {
+      throw new ApiError(429, 'like_limit', `いいねは1日${LIKES_PER_DAY}回までです（同じ接続元から）`);
+    }
+  } else {
+    await db.batch([db.prepare('DELETE FROM chat_likes WHERE message_id = ? AND voter = ?').bind(id, voter), recount]);
+  }
+  const n = await db.prepare('SELECT like_count AS n FROM chat_messages WHERE id = ?').bind(id).first<{ n: number }>();
+  return n?.n ?? 0;
 }
