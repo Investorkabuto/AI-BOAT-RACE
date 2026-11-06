@@ -96,8 +96,10 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:14px;line-height:1.8}
 .muted{color:var(--muted)}.small{font-size:12px}
 .back{width:44px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--text)}
-/* iPhone のホーム画面アプリ: ステータスバーの下（時計・電池の帯）を背景色でふさぐ。下を流れる文字が、端末のぼかしで曇って見えないように */
-.notch{position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top);background:var(--bg);z-index:20;pointer-events:none}
+/* 画面の上端を背景色でふさぐ。
+   ホーム画面アプリ: ステータスバーの下（時計・電池の帯）を、下を流れる文字が端末のぼかしで曇って見えないように塗る。
+   Safari（iOS 26〜）: 上端に固定した要素の色で上のバーを塗るので、高さが 0 にならないよう最低 1px にする（ないと、スクロールした文字がすりガラス越しに見える） */
+.notch{position:fixed;top:0;left:0;right:0;height:max(1px,env(safe-area-inset-top));background:var(--bg);z-index:20;pointer-events:none}
 nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;background:rgba(11,18,32,.94);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--line)}
 nav.tabs div{max-width:640px;margin:0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));padding:8px 12px calc(10px + env(safe-area-inset-bottom))}
 nav.tabs a{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted);min-height:48px;justify-content:center}
