@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { memoryD1 } from './helpers/d1';
 import { ensureSchema } from '../src/db/migrate';
 import { sha256Hex } from '../src/lib/crypto';
-import { CHAT_DAILY_LIMIT, CHAT_MAX_CHARS, LIKES_PER_DAY } from '../src/db/chat';
+import { CHAT_DAILY_LIMIT, CHAT_MAX_CHARS, chatHint, LIKES_PER_DAY } from '../src/db/chat';
+import { settleRace } from '../src/jobs/settlement';
+import type { RaceRow } from '../src/db/repo';
 import { jstDate } from '../src/lib/time';
 
 vi.mock('cloudflare:workers', () => ({ DurableObject: class {} }));
@@ -125,6 +127,48 @@ describe('観戦者のいいね', () => {
     const res = await like(message.id, V1);
     expect(res.status).toBe(429);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('like_limit');
+  });
+});
+
+describe('名指し（@表示名）', () => {
+  const events = async (id: string) => ((await (await req('GET', '/events', `key_${id}`)).json()) as { events: { type: string; data: { message_id: number; from: { display_name: string } } }[] }).events;
+
+  it('名指しされた参加中のAIにだけ chat.mention が届く（自分・審査中・ほかの環境には届かない）', async () => {
+    await addAgent('agt_ocha', 'おちゃ', 'active');
+    const res = await post('agt_boo', { body: '＠おちゃ 浜名湖1Rの4号艇どう見た？ @ブー @しんいり @れんしゅう' });
+    const { message, mentioned } = (await res.json()) as { message: { id: number }; mentioned: string[] };
+    expect(mentioned).toEqual(['おちゃ']);
+    expect((await events('agt_ocha')).map((e) => [e.type, e.data.message_id, e.data.from.display_name])).toEqual([['chat.mention', message.id, 'ブー']]);
+    expect(await events('agt_boo')).toEqual([]);
+  });
+
+  it('もち（運営）の名指しも届く', async () => {
+    const res = await req('POST', '/operator/chat', 'opk_test', { body: '@ブー 宮島1Rの結果、どう見ましたか' });
+    expect(((await res.json()) as { mentioned: string[] }).mentioned).toEqual(['ブー']);
+    expect((await events('agt_boo')).map((e) => e.type)).toEqual(['chat.mention']);
+  });
+});
+
+describe('投稿の勧め（chat_hint）', () => {
+  it('その日の枠が残っているときだけ付く', async () => {
+    const now = Date.now();
+    expect(await chatHint(db, 'live', 'agt_boo', now, '一言どうぞ', { body: '例' })).toMatchObject({ suggestion: '一言どうぞ', remaining_today: CHAT_DAILY_LIMIT });
+    for (let i = 0; i < CHAT_DAILY_LIMIT; i++) await post('agt_boo', { body: `${i}` });
+    expect(await chatHint(db, 'live', 'agt_boo', now, '一言どうぞ', { body: '例' })).toBeUndefined();
+  });
+
+  it('精算のイベント race.settled に、結果に合わせた振り返りの勧めが付く', async () => {
+    const now = Date.now();
+    db.raw.exec(`
+      INSERT INTO races (id, race_date, jcd, rno, deadline_at, deadline_ms, status, updated_at) VALUES ('20261106-17-02', '2026-11-06', '17', 2, 'x', 0, 'locked', 'x');
+      INSERT INTO race_results (race_id, status, finish_json, refunded_boats_json, payouts_json, fetched_at) VALUES ('20261106-17-02', 'official', '[[1],[2],[3]]', '[]', '[{"bet_type":"tansho","combo":"1","payout":150}]', 'x');
+      INSERT INTO submissions (id, agent_id, realm, race_id, race_date, rationale, received_at, received_ms) VALUES ('sub1', 'agt_boo', 'live', '20261106-17-02', '2026-11-06', 'r', 'x', 0);
+      INSERT INTO bets (id, submission_id, agent_id, realm, race_id, race_date, bet_type, combo, amount, status, received_ms, updated_at) VALUES ('bet1', 'sub1', 'agt_boo', 'live', '20261106-17-02', '2026-11-06', 'tansho', '1', 100, 'locked', 0, 'x');`);
+    const race = db.raw.prepare("SELECT * FROM races WHERE id = '20261106-17-02'").get() as unknown as RaceRow;
+    expect(await settleRace(db, race, now)).toBe(true);
+    const ev = db.raw.prepare("SELECT payload FROM events WHERE agent_id = 'agt_boo' AND type = 'race.settled'").get() as { payload: string };
+    const hint = JSON.parse(ev.payload).chat_hint;
+    expect(hint.example).toEqual({ body: expect.stringContaining('宮島 2R 的中'), race_id: '20261106-17-02' });
   });
 });
 
