@@ -295,12 +295,14 @@ async function viewHome(_m, api) {
     <div class="card"><div class="label">終了</div><div style="margin-top:6px"><span class="big num">${finished}</span><span class="small muted"> / ${list.length}</span></div><div class="bar"><i style="width:${list.length ? Math.round((finished / list.length) * 100) : 0}%"></i></div></div>
   </section>
   ${installBanner()}
+  <div id="pushbox"></div>
   <div class="sect"><h1 class="disp">本日のレース</h1>
     <div class="seg" role="group" aria-label="表示の切り替え"><button type="button" data-view="venue" aria-pressed="${view === 'venue'}">会場別</button><button type="button" data-view="time" aria-pressed="${view === 'time'}">時系列</button></div>
   </div>
   ${body}`, bind() {
     $view.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { store.set('homeView', b.dataset.view); render(false, true); }));
     bindInstall();
+    bindPush();
   } };
 }
 const top3 = (r) => (r.result && r.result.top3 && r.result.top3.length ? `<span style="display:flex;gap:3px">${r.result.top3.map((b) => boat(b, 22)).join('')}</span>` : '');
@@ -751,6 +753,55 @@ function openSheet() {
   document.getElementById('later').addEventListener('click', () => { store.set('installDismissed', '1'); close(); render(false, true); });
   document.getElementById('sheetbg').addEventListener('click', (e) => { if (e.target.id === 'sheetbg') close(); });
   document.getElementById('close').focus();
+}
+
+// ---------- 的中の通知（Web Push。src/routes/push.ts・src/jobs/push.ts） ----------
+// iPhone はホーム画面に追加したアプリからだけ使える（Safari のままでは PushManager がない）
+const pushOk = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+let pushKey;
+let pushSynced = false;
+const bell = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5BE1F0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>';
+async function pushSub() { const reg = await navigator.serviceWorker.ready; return reg.pushManager.getSubscription(); }
+const sendSub = (sub) => fetch('/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(sub) });
+async function bindPush() {
+  const box = document.getElementById('pushbox');
+  if (!box || !pushOk()) return;
+  if (pushKey === undefined) {
+    try { const r = await fetch('/push/key', { headers: { Accept: 'application/json' } }); pushKey = r.ok ? (await r.json()).key : null; } catch (_) { return; }
+  }
+  if (!pushKey) return;
+  let sub = null;
+  try { sub = await pushSub(); } catch (_) { return; }
+  if (!document.body.contains(box)) return;
+  const denied = Notification.permission === 'denied';
+  // 登録済みなら、サーバー側にも残っているように1回送り直す（通知の許可を出し直したときなど）
+  if (sub && !pushSynced) { pushSynced = true; sendSub(sub).catch(() => {}); }
+  const text = denied ? '通知がブロックされています。端末の設定で、このアプリの通知を許可してください' : sub ? '的中の通知：オン' : 'AIが的中したら通知を受け取る';
+  const act = denied ? '' : sub ? '<span style="font-size:13px;color:var(--muted)">オフにする</span>' : '<span style="font-size:13px;color:var(--accent);font-weight:700">オンにする</span>';
+  box.innerHTML = `<button type="button" class="install" id="pushbtn"${denied ? ' disabled' : ''} style="border-style:solid">${bell}<span style="flex:1;font-size:13px">${text}</span>${act}</button><div id="pushmsg" class="small muted" role="status" style="margin:6px 20px 0"></div>`;
+  const btn = document.getElementById('pushbtn');
+  const msg = (t) => { const m = document.getElementById('pushmsg'); if (m) m.textContent = t; };
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      if (sub) {
+        await fetch('/push/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+        await sub.unsubscribe();
+      } else {
+        if ((await Notification.requestPermission()) !== 'granted') { bindPush(); return; }
+        const raw = atob(pushKey.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (pushKey.length % 4)) % 4));
+        const reg = await navigator.serviceWorker.ready;
+        const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(raw, (ch) => ch.charCodeAt(0)) });
+        const r = await sendSub(s);
+        if (!r.ok) { await s.unsubscribe().catch(() => {}); throw new Error(`HTTP ${r.status}`); }
+        pushSynced = true;
+      }
+      await bindPush();
+    } catch (e) {
+      btn.disabled = false;
+      msg(`設定できませんでした（${e.message}）`);
+    }
+  });
 }
 
 // ---------- 分析（過去データの検索・集計。/analysis/... の API をそのまま表にする） ----------
