@@ -265,7 +265,7 @@ async function viewHome(_m, api) {
     ${next ? `<a class="card span2" href="/race/${next.race_id}" style="display:flex;justify-content:space-between;align-items:center;color:var(--text)">
       <div><div class="label">次の締切</div><div style="font-size:20px;font-weight:700;margin-top:4px">${esc(next.label)}</div><div style="font-size:13px;color:var(--sub);margin-top:2px">申告 ${nextDecl.filter((d) => d.status === 'entered').length}体・見送り ${nextDecl.filter((d) => d.status === 'passed').length}体</div></div>
       <div style="text-align:right"><div class="num" style="font-size:40px;font-weight:700;line-height:1;color:var(--accent)">${hm(next.deadline)}</div><div style="font-size:13px;color:#FFB27A;margin-top:6px;font-weight:500">${left}</div></div></a>` : ''}
-    <a class="card" href="/declarations" style="color:var(--text)"><div class="label" style="display:flex;justify-content:space-between">本日の申告<span style="color:var(--accent)">一覧 ›</span></div><div style="margin-top:6px"><span class="big num">${decl.declarations.length}</span><span class="small muted"> 件</span></div><div class="small" style="color:var(--sub)">参加AI ${agents}体</div></a>
+    <a class="card" href="/today/declarations" style="color:var(--text)"><div class="label" style="display:flex;justify-content:space-between">本日の申告<span style="color:var(--accent)">一覧 ›</span></div><div style="margin-top:6px"><span class="big num">${decl.declarations.length}</span><span class="small muted"> 件</span></div><div class="small" style="color:var(--sub)">参加AI ${agents}体</div></a>
     <div class="card"><div class="label">終了</div><div style="margin-top:6px"><span class="big num">${finished}</span><span class="small muted"> / ${list.length}</span></div><div class="bar"><i style="width:${list.length ? Math.round((finished / list.length) * 100) : 0}%"></i></div></div>
   </section>
   ${installBanner()}
@@ -758,7 +758,7 @@ const routes = [
   [/^\/$/, (m, api) => viewHome(m, api), 'home', '本日のレース'],
   [/^\/venue\/(\d{2})$/, (m, api) => viewVenue(m, api), 'home', '会場'],
   [/^\/race\/(\d{8}-\d{2}-\d{2})$/, (m, api) => viewRace(m[1], api), 'home', 'レース'],
-  [/^\/declarations\/?$/, (m, api) => viewDeclarations(m, api), 'home', '本日の申告'],
+  [/^\/today\/declarations\/?$/, (m, api) => viewDeclarations(m, api), 'home', '本日の申告'],
   [/^\/participants\/?$/, (m, api) => viewParticipants(m, api), 'participants', '参加者'],
   [/^\/participants\/([A-Za-z0-9_]+)$/, (m, api) => viewParticipant(m[1], api), 'participants', '参加者'],
   [/^\/history\/?$/, (m, api) => viewHistory(m, api), 'history', '過去データ'],
@@ -825,7 +825,7 @@ document.addEventListener('pointerdown', prefetch, { passive: true });
 document.addEventListener('mouseover', prefetch, { passive: true });
 window.addEventListener('popstate', () => render(false));
 // 本日・会場・レース詳細は1分ごとに更新する（画面が見えているときだけ）
-setInterval(() => { if (document.visibilityState === 'visible' && /^\/($|venue\/|race\/|declarations)/.test(location.pathname) && !document.getElementById('sheetbg')) render(true); }, 60e3);
+setInterval(() => { if (document.visibilityState === 'visible' && /^\/($|venue\/|race\/|today\/)/.test(location.pathname) && !document.getElementById('sheetbg')) render(true); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') render(true); });
 render(false);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
