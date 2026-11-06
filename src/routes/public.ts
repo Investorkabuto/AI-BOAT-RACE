@@ -7,8 +7,9 @@ import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } fr
 import { publicRead } from '../lib/http';
 import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
 import { raceLabel, VENUES } from '../lib/venues';
-import { entrantsOf, unpackRacers } from '../lib/cards';
-import { unpackPayouts, unpackRows, unpackUnsold } from '../lib/records';
+import { entrantsOf } from '../lib/cards';
+import { unpackUnsold } from '../lib/records';
+import { BOAT_COLS, dayIdRange, payoutsFromRows, racersFromBoats, recordRowsFromBoats, type BoatRow } from '../db/boats';
 import { checkStored } from '../lib/crosscheck';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
 import { accountStandings, careerTotals, monthClosed, monthResults } from '../db/account';
@@ -81,7 +82,7 @@ publicApi.get('/data-status', async (c) => {
   const db = c.env.DB;
   const src = (table: string, col: string) =>
     db.prepare(`SELECT COUNT(*) AS n, MAX(x.${col}) AS latest FROM ${table} x JOIN races r ON r.id = x.race_id WHERE r.race_date = ?`).bind(date);
-  const [total, card, entrants, record, result, due, recDue, err, pairs] = await db.batch([
+  const [total, card, entrants, record, result, due, recDue, err, pairs, boatsQ, payoutsQ] = await db.batch([
     db.prepare("SELECT COUNT(*) AS n FROM races WHERE race_date = ? AND status != 'cancelled'").bind(date),
     src('race_cards', 'fetched_at'),
     src('race_entrants', 'updated_at'),
@@ -91,16 +92,21 @@ publicApi.get('/data-status', async (c) => {
     db.prepare("SELECT COUNT(*) AS n FROM races r WHERE r.race_date = ? AND r.status != 'cancelled' AND r.deadline_ms <= ? AND r.id NOT IN (SELECT race_id FROM race_results)").bind(date, nowMs),
     db.prepare("SELECT COUNT(*) AS n FROM races r WHERE r.race_date = ? AND r.status != 'cancelled' AND r.deadline_ms <= ? AND r.id NOT IN (SELECT race_id FROM race_records)").bind(date, nowMs),
     db.prepare("SELECT 1 AS e FROM app_state WHERE key = 'fetch:dispatch_error'"),
-    // 公式HTMLの結果とKファイルが両方あるレース（照合する）
+    // 公式HTMLの結果とKファイルが両方あるレース（照合する）。K の艇と払戻金は race_boats・race_payouts から（v1.3 決定51）
     db.prepare(
-      `SELECT x.race_id, x.status, x.finish_json, x.refunded_boats_json, x.payouts_json, s.starts_json, k.rows, k.payouts
+      `SELECT x.race_id, x.status, x.finish_json, x.refunded_boats_json, x.payouts_json, s.starts_json
        FROM race_results x JOIN races r ON r.id = x.race_id JOIN race_records k ON k.race_id = x.race_id LEFT JOIN race_starts s ON s.race_id = x.race_id
        WHERE r.race_date = ?`,
     ).bind(date),
+    db.prepare(`SELECT race_id, ${BOAT_COLS} FROM race_boats WHERE race_id BETWEEN ? AND ?`).bind(...dayIdRange(date)),
+    db.prepare('SELECT race_id, bet_type, combo, payout, pop FROM race_payouts WHERE race_id BETWEEN ? AND ? ORDER BY rowid').bind(...dayIdRange(date)),
   ]);
+  const boatsBy = groupBy(boatsQ!.results as (BoatRow & { race_id: string })[]);
+  const payoutsBy = groupBy(payoutsQ!.results as { race_id: string; bet_type: string; combo: string; payout: number; pop: number | null }[]);
   const mismatches: { race_id: string; fields: string[] }[] = [];
-  for (const p of pairs!.results as { race_id: string; status: string; finish_json: string; refunded_boats_json: string; payouts_json: string; starts_json: string | null; rows: string; payouts: string }[]) {
-    const d = checkStored(p, p.starts_json ? { starts_json: p.starts_json } : undefined, p);
+  for (const p of pairs!.results as { race_id: string; status: string; finish_json: string; refunded_boats_json: string; payouts_json: string; starts_json: string | null }[]) {
+    const record = { rows: recordRowsFromBoats(boatsBy.get(p.race_id) ?? []), payouts: payoutsFromRows(payoutsBy.get(p.race_id) ?? []) };
+    const d = checkStored(p, p.starts_json ? { starts_json: p.starts_json } : undefined, record);
     if (d && d.length) mismatches.push({ race_id: p.race_id, fields: d.map((x) => x.field) });
   }
   const row = (q: typeof card) => (q!.results[0] ?? { n: 0, latest: null }) as { n: number; latest: string | null };
@@ -125,7 +131,7 @@ publicApi.get('/races/:id', async (c) => {
   const id = c.req.param('id') ?? '';
   const db = c.env.DB;
   // レース・結果・申告・購入・選手を1回の往復でまとめて読む。購入は公開前なら下で捨てる
-  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ] = await db.batch([
+  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ, boatsQ, payoutsQ] = await db.batch([
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
     db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json, fetched_at FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
@@ -142,13 +148,20 @@ publicApi.get('/races/:id', async (c) => {
     ).bind(id),
     db.prepare('SELECT entrants_json, updated_at FROM race_entrants WHERE race_id = ?').bind(id),
     db.prepare('SELECT starts_json FROM race_starts WHERE race_id = ?').bind(id),
-    db.prepare('SELECT fixed_course, distance, rows, fetched_at FROM race_cards WHERE race_id = ?').bind(id),
-    db.prepare('SELECT weather, wind_dir, wind_m, wave_cm, kimarite, rows, payouts, unsold, fetched_at FROM race_records WHERE race_id = ?').bind(id),
+    db.prepare('SELECT fixed_course, distance, fetched_at FROM race_cards WHERE race_id = ?').bind(id),
+    db.prepare('SELECT weather, wind_dir, wind_m, wave_cm, kimarite, unsold, fetched_at FROM race_records WHERE race_id = ?').bind(id),
+    // 基礎数値と競走成績の艇・払戻金の正本（v1.3 決定51）
+    db.prepare(`SELECT ${BOAT_COLS} FROM race_boats WHERE race_id = ? ORDER BY boat`).bind(id),
+    db.prepare('SELECT bet_type, combo, payout, pop FROM race_payouts WHERE race_id = ? ORDER BY rowid').bind(id),
   ]);
-  const recordRow = recordQ!.results[0] as { weather: string | null; wind_dir: string | null; wind_m: number | null; wave_cm: number | null; kimarite: string | null; rows: string; payouts: string; unsold: string; fetched_at: string } | undefined;
+  const recordMeta = recordQ!.results[0] as { weather: string | null; wind_dir: string | null; wind_m: number | null; wave_cm: number | null; kimarite: string | null; unsold: string; fetched_at: string } | undefined;
+  const boats = boatsQ!.results as BoatRow[];
+  const recordRow = recordMeta
+    ? { ...recordMeta, rows: recordRowsFromBoats(boats), payouts: payoutsFromRows(payoutsQ!.results as { bet_type: string; combo: string; payout: number; pop: number | null }[]) }
+    : undefined;
   const starts = startsQ!.results[0] as { starts_json: string } | undefined;
-  const cardRow = cardQ!.results[0] as { fixed_course: number; distance: number | null; rows: string; fetched_at: string } | undefined;
-  const cardRacers = cardRow ? unpackRacers(cardRow.rows) : null;
+  const cardRow = cardQ!.results[0] as { fixed_course: number; distance: number | null; fetched_at: string } | undefined;
+  const cardRacers = cardRow ? racersFromBoats(boats) : null;
   const race = raceQ!.results[0] as RaceRow | undefined;
   if (!race) return c.json({ error: { code: 'not_found', message: 'race not found' } }, 404);
   const result = resultQ!.results[0] as { status: string; finish_json: string; refunded_boats_json: string; payouts_json: string } | undefined;
@@ -190,7 +203,7 @@ publicApi.get('/races/:id', async (c) => {
     record: recordRow
       ? {
           source: 'k', fetched_at: recordRow.fetched_at, weather: recordRow.weather, wind: { dir: recordRow.wind_dir, m: recordRow.wind_m }, wave_cm: recordRow.wave_cm, kimarite: recordRow.kimarite,
-          rows: unpackRows(recordRow.rows), payouts: unpackPayouts(recordRow.payouts), unsold: unpackUnsold(recordRow.unsold),
+          rows: recordRow.rows, payouts: recordRow.payouts, unsold: unpackUnsold(recordRow.unsold),
         }
       : null,
     result: result
@@ -370,4 +383,15 @@ async function accountLeaderboard(db: D1Database, month: string) {
       }),
     note: `順位は月の残高（月初 ${MONTHLY_GRANT}円からいくら増えたか。月末は月末残高）。同額は同順位。その月に提出も罰金もないAIは rank: null。${range.from} 以降の開催日を数えます。start_date は参加開始日（月の途中から参加したAIは日数が少ない）。exhausted は資金枯渇（その月はもう提出できない）。provisional: true の間は暫定（その月のレースがすべて精算されると確定）。回収率・的中率は補助指標（返還は除外、罰金は投票合計に含む）。all_time.total_gain・month_wins は確定した月の合計`,
   };
+}
+
+/** race_id ごとに分ける（race_id の列は外す） */
+function groupBy<T extends { race_id: string }>(rows: readonly T[]): Map<string, Omit<T, 'race_id'>[]> {
+  const m = new Map<string, Omit<T, 'race_id'>[]>();
+  for (const { race_id, ...rest } of rows) {
+    const a = m.get(race_id);
+    if (a) a.push(rest);
+    else m.set(race_id, [rest]);
+  }
+  return m;
 }
