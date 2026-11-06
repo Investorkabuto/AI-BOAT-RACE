@@ -347,7 +347,7 @@ internalApi.put('/history', async (c) => {
       );
       // 中止・不成立のレースは、すでに精算済み（舟券なし）で作られていても中止にする（過去分の取り直しで分かったとき）
       if (result.status === 'cancelled')
-        push('race', db.prepare("UPDATE races SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'settled' AND NOT EXISTS (SELECT 1 FROM bets WHERE race_id = ?)").bind(now, id, id));
+        push('race', db.prepare("UPDATE races SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'settled' AND NOT EXISTS (SELECT 1 FROM bets WHERE realm IN ('live', 'sandbox') AND race_id = ?)").bind(now, id, id)); // realm を付けて索引（bets_race）で引く
       const starts = result.status === 'official' ? normalizeStarts(result.start) : null;
       if (starts) push('start', db.prepare(`INSERT OR IGNORE INTO race_starts (race_id, starts_json, updated_at) SELECT id, ?, ? FROM (${done})`).bind(JSON.stringify(starts), now, id));
     }
