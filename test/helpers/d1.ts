@@ -21,7 +21,7 @@ class Stmt {
     }
     const r = s.run(...this.args);
     const n = Number(r.changes);
-    return { success: true, results: [], meta: { rows_read: 0, rows_written: n, changes: n } } as unknown as D1Result;
+    return { success: true, results: [], meta: { rows_read: 0, rows_written: n, changes: n, last_row_id: Number(r.lastInsertRowid) } } as unknown as D1Result;
   }
   async all<T>() {
     return this.exec() as D1Result<T>;

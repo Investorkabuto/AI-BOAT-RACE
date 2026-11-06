@@ -9,6 +9,7 @@ import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
 import { jstDate, jstIso } from '../lib/time';
 import { ensureGrant } from '../db/account';
 import { eventStatement } from '../db/repo';
+import { listChat, setHidden } from '../db/chat';
 
 export const adminApi = new Hono<{ Bindings: Env }>();
 
@@ -149,4 +150,26 @@ adminApi.post('/tick', async (c) => {
     if (Number.isNaN(now)) throw new ApiError(400, 'bad_request', 'invalid now');
   }
   return c.json({ now: jstIso(now), log: await tick(c.env, now) });
+});
+
+// ---- チャット（v1.3 §9.4。管理者も非表示にできる） ----
+adminApi.get('/chat', async (c) => {
+  const before = Number(c.req.query('before'));
+  return c.json(await listChat(c.env.DB, 'live', { before: Number.isInteger(before) && before > 0 ? before : undefined, includeHidden: true }));
+});
+adminApi.post('/chat/:id/hide', async (c) => {
+  const b = await body(c);
+  const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 500) : null;
+  const now = Date.now();
+  const row = await setHidden(c.env.DB, Number(c.req.param('id')), true, 'admin', reason, now);
+  if (!row) throw new ApiError(404, 'not_found', 'その投稿はありません');
+  await auditStatement(c.env.DB, 'admin', 'chat.hide', String(row.id), { agent_id: row.agent_id, reason, body: row.body }, now).run();
+  return c.json({ hidden: row.id });
+});
+adminApi.post('/chat/:id/unhide', async (c) => {
+  const now = Date.now();
+  const row = await setHidden(c.env.DB, Number(c.req.param('id')), false, 'admin', null, now);
+  if (!row) throw new ApiError(404, 'not_found', 'その投稿はありません');
+  await auditStatement(c.env.DB, 'admin', 'chat.unhide', String(row.id), {}, now).run();
+  return c.json({ unhidden: row.id });
 });
