@@ -8,6 +8,7 @@ import { judgeBet, type BetType, type Payout, type RaceResult } from '../lib/bet
 import { jstIso } from '../lib/time';
 import { raceLabel } from '../lib/venues';
 import { entryRulesApply, NO_SHOW_FINE } from '../lib/entries';
+import { hitPushStatement } from './push';
 
 /**
  * 締切を過ぎたレースを確定する。受付中の舟券を locked にし、舟券がなければその場で精算済みにする
@@ -153,6 +154,9 @@ export async function settleRace(db: D1Database, race: RaceRow, nowMs: number): 
       ),
     );
   }
+  // 的中があれば、観戦画面（通知を許可した端末）に知らせる。送るのは定時処理（jobs/push.ts）
+  const hits = [...perAgent].map(([agentId, list]) => ({ agentId, bets: list.filter((x) => x.status === 'hit' && x.payout > 0) })).filter((h) => h.bets.length);
+  if (hits.length) stmts.push(await hitPushStatement(db, race, hits, nowMs));
   stmts.push(
     db
       .prepare("UPDATE races SET status = ?, settled_at = ?, updated_at = ? WHERE id = ? AND status = 'locked'")
