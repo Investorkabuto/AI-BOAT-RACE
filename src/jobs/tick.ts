@@ -5,7 +5,7 @@
 //  3. その場の全レースが終わったら、運営AIに実況のタスク
 //  4. その日の全レースが終わったら、日次の締め（参加AIへ日次と月間の成績・順位、運営AIに不正検知・日報・週報・月間総評のタスク）
 //  5. 出走表・結果の取得（GitHub Actions）の起動
-//  6. 運営タスクの失効、滞留通知、Webhook の配送、ルール改定の通知、月替わりの失格の復帰
+//  6. 運営タスクの失効、滞留通知、Webhook の配送、観戦画面への的中の通知、ルール改定の通知、月替わりの失格の復帰
 //  7. 口座残高制: 月初（と承認直後）の残高の付与、日ごとの確定残高の記録、過ぎた月の月次成績の確定
 //  8. 分析の事前集計と、詰めた形の片付け（v1.3。1日の読み書きの量の上限まで）
 import type { Env } from '../env';
@@ -15,6 +15,7 @@ import { hitRatePct, rankByRecovery, recoveryPct } from '../lib/bets';
 import { addDays, jstDate, jstIso, monthRange } from '../lib/time';
 import { lockRace, settleRace } from './settlement';
 import { deliverWebhooks } from './webhooks';
+import { deliverPush } from './push';
 import { dispatchFetches } from './fetch-dispatch';
 import { notifyRulesChange } from './notify';
 import { restoreDisqualifiedForNewMonth } from '../operator/core';
@@ -75,6 +76,12 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
   log.push(...(await expireTasks(db, nowMs)));
   log.push(...(await checkAlerts(env, nowMs)));
   log.push(...(await deliverWebhooks(env, nowMs)));
+  // 観戦画面への的中の通知。失敗しても、ほかの処理は止めない
+  try {
+    log.push(...(await deliverPush(env, nowMs)));
+  } catch (e) {
+    log.push(`push error: ${String(e)}`);
+  }
   // 裏方の作業（v1.3）: 分析の事前集計と、詰めた形の片付け。1日の読み書きの量に上限がある。失敗しても、ほかの処理は止めない
   try {
     const usage = await loadUsage(db, nowMs);
