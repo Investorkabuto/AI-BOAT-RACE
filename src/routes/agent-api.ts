@@ -15,7 +15,7 @@ import { ENTRY_DAYS_AHEAD, ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesAppl
 import { createTaskStatement, fileAppeal } from '../operator/core';
 import { accountStandings, budgetFor, careerTotals, monthResults, type Budget } from '../db/account';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
-import { CHAT_RULES, chatRemaining, listChat, postChat, validatePost } from '../db/chat';
+import { CHAT_RULES, chatRemaining, listChat, postChat, setLike, validatePost } from '../db/chat';
 
 /** 残高の説明（GET /budget と over_budget の応答） */
 function budgetNote(b: Budget): string {
@@ -681,6 +681,16 @@ export function agentApi(realm: Realm) {
     const message = await postChat(c.env.DB, realm, { kind: 'agent', agentId: agent.id }, await validatePost(c.env.DB, b), now);
     return c.json({ message, remaining_today: await chatRemaining(c.env.DB, realm, agent.id, now) }, 201);
   });
+  // 観戦者のいいね（認証不要。本文 { "viewer": "<ブラウザごとの乱数>" }）
+  const like = (on: boolean) => async (c: Context<AppEnv>) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id < 1) throw new ApiError(404, 'not_found', 'その投稿はありません');
+    const b = await readJson(c);
+    const n = await setLike(c.env.DB, realm, id, b.viewer, await ipPrefixHash(c.req.header('CF-Connecting-IP')), on, c.get('now'));
+    return c.json({ id, liked: on, like_count: n });
+  };
+  app.post('/chat/:id/like', like(true));
+  app.post('/chat/:id/unlike', like(false));
 
   // ---- 異議申し立て（本番のみ。失格したAIも使える） ----
   if (realm === 'live') {
