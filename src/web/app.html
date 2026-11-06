@@ -68,7 +68,7 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .rc.wait{background:#1A2A40;box-shadow:none}
 .rc.now{box-shadow:inset 0 0 0 2px var(--warn)}.rc.now span{color:#FFB27A}
 .rc.off{background:#2A1E26;box-shadow:none;color:#FFB3B3}
-.rc i{position:absolute;top:-5px;right:-4px;min-width:18px;height:18px;padding:0 4px;border-radius:99px;background:var(--accent);color:var(--bg);font-style:normal;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.rc i{position:absolute;top:-5px;right:-4px;min-width:18px;height:18px;padding:0 4px;border-radius:99px;background:var(--violet);color:var(--bg);font-style:normal;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
 .dots .done{background:var(--accent)}.dots .now{background:var(--warn)}.dots .wait{background:#2E8FA3}.dots .off{background:#3A2530}
 .chat{padding:0 12px 8px}
 .chat-sep{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:11px;margin:16px 4px 8px}.chat-sep:before,.chat-sep:after{content:"";flex:1;height:1px;background:var(--line)}
@@ -102,6 +102,9 @@ nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;background:rgba(11,18
 nav.tabs div{max-width:640px;margin:0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));padding:8px 12px calc(10px + env(safe-area-inset-bottom))}
 nav.tabs a{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted);min-height:48px;justify-content:center}
 nav.tabs a[aria-current=page]{color:var(--accent)}
+nav.tabs a{position:relative}
+nav.tabs .unread{position:absolute;top:2px;left:calc(50% + 6px);min-width:18px;height:18px;padding:0 5px;border-radius:99px;background:var(--warn);color:var(--bg);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+nav.tabs .unread[hidden]{display:none}
 .install{margin:12px 16px 0;padding:12px 14px;border-radius:18px;border:1px dashed #2E4466;display:flex;align-items:center;gap:12px;color:var(--text);background:transparent;width:calc(100% - 32px);text-align:left;cursor:pointer}
 .sheet-bg{position:fixed;inset:0;background:rgba(3,6,12,.7);z-index:20;display:flex;align-items:flex-end;justify-content:center}
 .sheet{width:100%;max-width:640px;background:var(--card);border-radius:28px 28px 0 0;padding:22px 20px calc(26px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:14px}
@@ -141,7 +144,7 @@ table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{paddin
 <nav class="tabs" aria-label="メインメニュー"><div>
   <a href="/" data-tab="home"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 15c2 1.5 4 1.5 6 0s4-1.5 6 0 4 1.5 6 0"/><path d="M3 19c2 1.5 4 1.5 6 0s4-1.5 6 0 4 1.5 6 0"/><circle cx="12" cy="8" r="3"/></svg>本日</a>
   <a href="/participants" data-tab="participants"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 3v4"/><circle cx="9" cy="13" r="1.2"/><circle cx="15" cy="13" r="1.2"/></svg>参加者</a>
-  <a href="/talk" data-tab="talk"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 11h7"/><path d="M8.5 14.5h4.5"/></svg>チャット</a>
+  <a href="/talk" data-tab="talk"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 11h7"/><path d="M8.5 14.5h4.5"/></svg>チャット<span class="unread num" id="unread" hidden></span></a>
   <a href="/history" data-tab="history"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3"/><path d="M4 10h16"/><path d="M9 3v4"/><path d="M15 3v4"/></svg>過去</a>
   <a href="/analysis" data-tab="analysis"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg>分析</a>
 </div></nav>
@@ -642,6 +645,27 @@ function chatBubbles(list) {
         <div style="display:flex;align-items:flex-end;gap:6px"><div class="chat-bubble">${race}<div class="chat-text">${chatText(m.body)}</div></div><div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;flex:none">${likeBtn(m)}<span class="small muted num">${hm(m.posted_at)}</span></div></div></div></div>`;
   }).join('');
 }
+// 未読バッジ: 最後に開いたときの最新の投稿番号を覚えておき、それより新しい投稿の数を出す（初めての端末は 0 から数えない）
+const $unread = document.getElementById('unread');
+function showUnread(n) {
+  $unread.hidden = !n;
+  $unread.textContent = n > 9 ? '9+' : String(n || '');
+  document.querySelector('nav.tabs a[data-tab="talk"]').setAttribute('aria-label', n ? `チャット（未読 ${n > 9 ? '10件以上' : `${n}件`}）` : 'チャット');
+}
+function markChatRead(list) {
+  const top = list.reduce((x, m) => Math.max(x, m.id), 0);
+  if (top > (Number(store.get('chatRead')) || 0)) store.set('chatRead', String(top));
+  showUnread(0);
+}
+async function checkUnread() {
+  if (location.pathname.startsWith('/talk')) return;
+  try {
+    const d = await fetchJson('/chat?limit=10');
+    const read = Number(store.get('chatRead'));
+    if (!read) { markChatRead(d.messages); return; }
+    showUnread(d.messages.filter((m) => m.id > read).length);
+  } catch (_) {}
+}
 async function viewChat(_m, api) {
   const d = await api('/chat');
   const seen = new Set(d.messages.map((m) => m.id));
@@ -660,6 +684,7 @@ async function viewChat(_m, api) {
       else if (stick) window.scrollTo(0, document.documentElement.scrollHeight);
     });
     bindLikes();
+    markChatRead(d.messages);
     const b = document.getElementById('more');
     if (b) b.addEventListener('click', async () => {
       b.disabled = true;
@@ -1040,8 +1065,11 @@ document.addEventListener('mouseover', prefetch, { passive: true });
 window.addEventListener('popstate', (e) => render(false, true, (e.state && e.state.y) || 0));
 // 本日・会場・レース詳細は1分ごとに更新する（画面が見えているときだけ）
 setInterval(() => { if (document.visibilityState === 'visible' && /^\/($|venue\/|race\/|today\/|talk)/.test(location.pathname) && !document.getElementById('sheetbg')) render(true); }, 60e3);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') render(true); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { render(true); checkUnread(); } });
+// チャットの未読は2分ごとに確かめる（画面が見えているときだけ）
+setInterval(() => { if (document.visibilityState === 'visible') checkUnread(); }, 120e3);
 render(false);
+checkUnread();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 </script>
 </body>
