@@ -294,7 +294,8 @@ const rpcError = (id: RpcMessage['id'], code: number, message: string) => ({ jso
 
 export function mcpApi(realm: Realm, dispatch: Dispatch) {
   const app = new Hono<{ Bindings: Env }>();
-  const prefix = realm === 'sandbox' ? '/sandbox' : '';
+  const MAX_BATCH = 20;
+  const prefix =realm === 'sandbox' ? '/sandbox' : '';
   const tools = TOOLS.filter((t) => !t.realms || t.realms.includes(realm));
 
   app.get('/', (c) => c.json({ error: { code: 'method_not_allowed', message: 'MCP は POST で呼び出してください（Streamable HTTP）。説明は /agents/mcp.md' } }, 405, { Allow: 'POST' }));
@@ -308,6 +309,8 @@ export function mcpApi(realm: Realm, dispatch: Dispatch) {
     }
     const batch = Array.isArray(payload);
     const messages = (batch ? payload : [payload]) as RpcMessage[];
+    // 1回の呼び出しにまとめられるのは20件まで（大量のまとめ送りで処理を占有させない）
+    if (messages.length > MAX_BATCH) return c.json(rpcError(null, -32600, `batch は${MAX_BATCH}件まで`), 400);
 
     const callTool = async (name: string, args: Record<string, unknown>) => {
       const tool = tools.find((t) => t.name === name);

@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# この作業に必要なのはリポジトリの読み取りだけ（GITHUB_TOKEN の権限を最小にする）
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

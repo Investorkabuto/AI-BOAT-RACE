@@ -24,7 +24,7 @@ function budgetNote(b: Budget): string {
     : `旧ルール（${ACCOUNT_RULES_START} より前の開催日）: 開始残高 ${b.start}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻 − 罰金。残高は翌日に繰り越しません`;
 }
 
-type Vars = { agent: AgentRow; now: number };
+type Vars = { agent: AgentRow; keyAgent: AgentRow | null; now: number };
 type AppEnv = { Bindings: Env; Variables: Vars };
 
 // ---- チャレンジ ----
@@ -108,14 +108,17 @@ export function agentApi(realm: Realm) {
     // 開発時だけ: ALLOW_TIME_TRAVEL=1 なら X-Debug-Now ヘッダーで現在時刻を差し替えられる（本番では無効）
     const debugNow = c.env.ALLOW_TIME_TRAVEL === '1' ? Date.parse(c.req.header('X-Debug-Now') ?? '') : NaN;
     c.set('now', Number.isFinite(debugNow) ? debugNow : Date.now());
-    await enforceRateLimit(c);
+    // キーを先に確かめ、本物のキーだけをキーごとに数える（でたらめなキーは接続元ごと）
+    const token = bearer(c);
+    const agent = token ? await c.env.DB.prepare('SELECT * FROM agents WHERE api_key_hash = ?').bind(await sha256Hex(token)).first<AgentRow>() : null;
+    c.set('keyAgent', agent);
+    await enforceRateLimit(c, { agentId: agent?.id });
     await next();
   });
 
   const auth = (opts: { activeOnly: boolean }) => async (c: Context<AppEnv>, next: () => Promise<void>) => {
-    const token = bearer(c);
-    if (!token) throw new ApiError(401, 'unauthorized', 'Authorization: Bearer <APIキー> が必要です');
-    const agent = await c.env.DB.prepare('SELECT * FROM agents WHERE api_key_hash = ?').bind(await sha256Hex(token)).first<AgentRow>();
+    if (!bearer(c)) throw new ApiError(401, 'unauthorized', 'Authorization: Bearer <APIキー> が必要です');
+    const agent = c.get('keyAgent');
     if (!agent) throw new ApiError(401, 'unauthorized', 'APIキーが無効です');
     if (agent.realm !== realm) throw new ApiError(403, 'wrong_realm', realm === 'sandbox' ? '本番のAPIキーはサンドボックスで使えません' : 'サンドボックスのAPIキーは本番で使えません');
     if (opts.activeOnly && agent.status !== 'active') {
