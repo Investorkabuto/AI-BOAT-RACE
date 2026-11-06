@@ -7,6 +7,7 @@
 //  5. 出走表・結果の取得（GitHub Actions）の起動
 //  6. 運営タスクの失効、滞留通知、Webhook の配送、ルール改定の通知、月替わりの失格の復帰
 //  7. 口座残高制: 月初（と承認直後）の残高の付与、日ごとの確定残高の記録、過ぎた月の月次成績の確定
+//  8. 分析の事前集計と、詰めた形の片付け（v1.3。1日の読み書きの量の上限まで）
 import type { Env } from '../env';
 import { ensureSchema } from '../db/migrate';
 import { eventStatement, statsBetween, type RaceRow } from '../db/repo';
@@ -19,6 +20,9 @@ import { notifyRulesChange } from './notify';
 import { restoreDisqualifiedForNewMonth } from '../operator/core';
 import { accountStandings, finalizeMonths, grantCurrentMonth, recordBalanceDays } from '../db/account';
 import { accountRange, accountRulesApply } from '../lib/account';
+import { aggregate } from './aggregate';
+import { compactPacked } from './compact';
+import { loadUsage, saveUsage } from './budget';
 import { checkAlerts, commentaryTasks, expireTasks, seasonReviewTask, tasksAfterDayClose } from '../operator/scheduler';
 
 /** 最後の締切からこれだけ経っても、その日を締めない（出走表の取り込み漏れや結果の遅れに備える） */
@@ -60,6 +64,15 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
   log.push(...(await expireTasks(db, nowMs)));
   log.push(...(await checkAlerts(env, nowMs)));
   log.push(...(await deliverWebhooks(env, nowMs)));
+  // 裏方の作業（v1.3）: 分析の事前集計と、詰めた形の片付け。1日の読み書きの量に上限がある。失敗しても、ほかの処理は止めない
+  try {
+    const usage = await loadUsage(db, nowMs);
+    log.push(...(await aggregate(db, nowMs, 1, usage)));
+    log.push(...(await compactPacked(db, nowMs, jstIso(nowMs), usage)));
+    await saveUsage(db, usage, nowMs);
+  } catch (e) {
+    log.push(`background error: ${String(e)}`);
+  }
   await db.prepare('DELETE FROM challenges WHERE issued_ms < ?').bind(nowMs - 60 * 60 * 1000).run();
   return log;
 }

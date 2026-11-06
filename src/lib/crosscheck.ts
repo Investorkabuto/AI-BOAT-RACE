@@ -2,7 +2,7 @@
 // 食い違いは「どちらかの解析の誤り」か「公式の訂正」のどちらかなので、精算に使う前に人が気づけるようにする（要件定義 v1.0）。
 // ここは判定だけ（DB には触らない）。
 
-import { unpackPayouts, unpackRows, type RecordPayout, type RecordRow } from './records';
+import type { RecordPayout, RecordRow } from './records';
 
 /** 照合に使う、公式HTMLの結果（race_results と race_starts の中身） */
 export interface HtmlResult {
@@ -85,11 +85,11 @@ export function crossCheck(html: HtmlResult, k: KRecord): Difference[] {
   return out;
 }
 
-/** DB の保存形（race_results / race_starts / race_records の列）から照合する。どちらかが無ければ null（照合できない） */
+/** DB の保存形（race_results / race_starts の列）と、競走成績（race_boats・race_payouts から作った K の艇と払戻金）から照合する。どちらかが無ければ null（照合できない） */
 export function checkStored(
   result: { status: string; finish_json: string; refunded_boats_json: string; payouts_json: string } | undefined,
   starts: { starts_json: string } | undefined,
-  record: { rows: string; payouts: string } | undefined,
+  record: { rows: RecordRow[]; payouts: RecordPayout[] } | undefined,
 ): Difference[] | null {
   if (!result || !record) return null;
   return crossCheck(
@@ -100,6 +100,6 @@ export function checkStored(
       payouts: JSON.parse(result.payouts_json),
       start: starts ? JSON.parse(starts.starts_json) : null,
     },
-    { rows: unpackRows(record.rows), payouts: unpackPayouts(record.payouts) },
+    record,
   );
 }

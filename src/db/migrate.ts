@@ -12,6 +12,7 @@ import raceCards from '../../migrations/0008_race_cards.sql';
 import raceRecords from '../../migrations/0009_race_records.sql';
 import raceBoats from '../../migrations/0010_race_boats.sql';
 import cardSeries from '../../migrations/0011_card_series.sql';
+import compactAgg from '../../migrations/0012_compact_agg.sql';
 
 const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0001_init', sql: init },
@@ -25,6 +26,7 @@ const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0009_race_records', sql: raceRecords },
   { name: '0010_race_boats', sql: raceBoats },
   { name: '0011_card_series', sql: cardSeries },
+  { name: '0012_compact_agg', sql: compactAgg },
 ];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */
