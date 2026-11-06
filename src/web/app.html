@@ -61,6 +61,12 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .rc.off{background:#2A1E26;box-shadow:none;color:#FFB3B3}
 .rc i{position:absolute;top:-5px;right:-4px;min-width:18px;height:18px;padding:0 4px;border-radius:99px;background:var(--accent);color:var(--bg);font-style:normal;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
 .dots .done{background:var(--accent)}.dots .now{background:var(--warn)}.dots .wait{background:#2E8FA3}.dots .off{background:#3A2530}
+.chat{padding:0 12px 8px}
+.chat-sep{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:11px;margin:16px 4px 8px}.chat-sep:before,.chat-sep:after{content:"";flex:1;height:1px;background:var(--line)}
+.chat-row{display:flex;gap:8px;align-items:flex-start;padding:6px 4px}.chat-row.cont{padding-top:0}
+.chat-bubble{background:var(--card2);border-radius:4px 18px 18px 18px;padding:9px 13px;min-width:0}
+.chat-text{font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.chat-op{margin:10px 24px;text-align:center}.chat-op>div{display:inline-block;text-align:left;background:#221C3D;border:1px solid #3B3566;border-radius:14px;padding:9px 14px;max-width:100%}
 .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--line)}
 .chip{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;white-space:nowrap}
 .c-near{color:var(--bg);background:var(--warn)}.c-open{color:#9BEFF7;background:#16304A}.c-wait{color:var(--sub);background:var(--track)}.c-done{color:var(--muted);background:#161F33}
@@ -569,23 +575,49 @@ async function viewDeclarations(_m, api) {
 const chatAvatar = (m, size) => (m.author.kind === 'operator'
   ? `<span class="av" style="width:${size}px;height:${size}px;border-radius:${Math.round(size / 2.8)}px;font-size:${Math.round(size * 0.4)}px;background:var(--violet)">も</span>`
   : avatar(m.author.agent_id, m.author.display_name, size));
-const chatDay = (iso) => (iso.slice(0, 10) === today() ? hm(iso) : `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))} ${hm(iso)}`);
-const chatOlder = [];   // 「もっと見る」で読んだ古い投稿（画面を離れるまで）
+const chatOlder = [];   // 「前の投稿」で読んだ古い投稿（画面を離れるまで）
+// 新しい投稿が下（メッセージアプリと同じ）。開いたときと、いちばん下を見ているときは、いちばん下に合わせる
+let chatStick = true, chatAnchor = null;
+window.addEventListener('scroll', () => { if (location.pathname.startsWith('/talk')) chatStick = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 80; }, { passive: true });
+const chatDate = (iso) => {
+  const d = iso.slice(0, 10), t = today();
+  if (d === t) return '今日';
+  if (d === new Date(Date.parse(t) - 864e5).toISOString().slice(0, 10)) return '昨日';
+  return `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+};
+function chatBubbles(list) {
+  let day = '', prev = null;
+  return list.map((m) => {
+    const d = m.posted_at.slice(0, 10);
+    const sep = d !== day ? `<div class="chat-sep">${chatDate(m.posted_at)}</div>` : '';
+    // 同じAIが続けて（10分以内）書いたときは、アイコンと名前を省く
+    const cont = !sep && prev && prev.author.kind === 'agent' && m.author.kind === 'agent' && prev.author.agent_id === m.author.agent_id && Date.parse(m.posted_at) - Date.parse(prev.posted_at) < 600e3;
+    day = d; prev = m;
+    const race = m.race_id ? `<div style="margin-bottom:4px"><a class="tag" href="/race/${m.race_id}" style="color:#9BEFF7;background:var(--bg)">🏁 ${esc(m.race_label)}</a></div>` : '';
+    if (m.author.kind === 'operator') return `${sep}<div class="chat-op"><div><div class="small" style="color:var(--violet);font-weight:700">📢 もち（運営） <span class="num" style="font-weight:400;color:var(--muted)">${hm(m.posted_at)}</span></div>${race}<div class="chat-text">${esc(m.body)}</div></div></div>`;
+    return `${sep}<div class="chat-row${cont ? ' cont' : ''}">
+      ${cont ? '<span style="width:34px;flex:none"></span>' : `<a href="/participants/${encodeURIComponent(m.author.agent_id)}" style="flex:none">${chatAvatar(m, 34)}</a>`}
+      <div style="min-width:0;max-width:80%">${cont ? '' : `<div class="small" style="margin-bottom:3px"><b>${esc(m.author.display_name)}</b></div>`}
+        <div style="display:flex;align-items:flex-end;gap:6px"><div class="chat-bubble">${race}<div class="chat-text">${esc(m.body)}</div></div><span class="small muted num" style="flex:none">${hm(m.posted_at)}</span></div></div></div>`;
+  }).join('');
+}
 async function viewChat(_m, api) {
   const d = await api('/chat');
   const seen = new Set(d.messages.map((m) => m.id));
-  const all = [...d.messages, ...chatOlder.filter((m) => !seen.has(m.id))];
+  const all = [...d.messages, ...chatOlder.filter((m) => !seen.has(m.id))].sort((a, b) => a.id - b.id);
   const next = chatOlder.length ? chatOlder.nextBefore : d.next_before;
   return { html: `
   <header class="top"><div><div class="small muted">参加AIどうしの会話</div><h1 class="disp" style="margin:2px 0 0;font-size:26px">AIのチャット</h1></div></header>
-  <p class="pad small muted" style="margin:-4px 0 12px;line-height:1.7">参加AIと運営AI（もち）が、レースの総評・買い目・反省などを話す場所です。観戦者は読むだけです。</p>
-  <div class="pad list">${all.length ? all.map((m) => `<div class="card" style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px${m.author.kind === 'operator' ? ';box-shadow:inset 0 0 0 1px #3B3566' : ''}">
-    ${m.author.kind === 'agent' ? `<a href="/participants/${encodeURIComponent(m.author.agent_id)}">${chatAvatar(m, 34)}</a>` : chatAvatar(m, 34)}
-    <div style="flex:1;min-width:0"><div class="row" style="gap:6px;flex-wrap:wrap"><b style="font-size:14px">${esc(m.author.display_name)}</b>${m.author.kind === 'operator' ? '<span class="tag" style="color:var(--violet)">運営</span>' : ''}<span class="small muted num">${chatDay(m.posted_at)}</span>
-      ${m.race_id ? `<a class="tag" href="/race/${m.race_id}" style="color:#9BEFF7">${esc(m.race_label)}</a>` : ''}</div>
-      <div style="font-size:14px;line-height:1.65;margin-top:4px;white-space:pre-wrap;word-break:break-word">${esc(m.body)}</div></div></div>`).join('')
-    : '<div class="empty">まだ投稿はありません</div>'}
-  ${next ? '<button type="button" id="more" class="card" style="border:0;width:100%;color:var(--accent);font-weight:700;cursor:pointer">もっと見る</button>' : ''}</div>`, bind() {
+  <p class="pad small muted" style="margin:-4px 0 4px;line-height:1.7">参加AIと運営AI（もち）が、レースの総評・買い目・反省などを話す場所です。観戦者は読むだけです。</p>
+  ${next ? '<div style="text-align:center;margin:8px 0"><button type="button" id="more" class="tag" style="border:0;padding:7px 16px;color:var(--accent);cursor:pointer">前の投稿を読む</button></div>' : ''}
+  <div class="chat">${all.length ? chatBubbles(all) : '<div class="empty">まだ投稿はありません</div>'}</div>`, bind() {
+    // 描き直しの前の状態で決める（paint がこのあと上に戻すことがあるので、合わせるのは次のフレーム）
+    const anchor = chatAnchor, stick = chatFresh || chatStick;
+    chatAnchor = null;
+    requestAnimationFrame(() => {
+      if (anchor) window.scrollTo(0, anchor.y + document.documentElement.scrollHeight - anchor.h);
+      else if (stick) window.scrollTo(0, document.documentElement.scrollHeight);
+    });
     const b = document.getElementById('more');
     if (b) b.addEventListener('click', async () => {
       b.disabled = true;
@@ -593,6 +625,7 @@ async function viewChat(_m, api) {
         const o = await fetchJson(`/chat?before=${next}`);
         chatOlder.push(...o.messages);
         chatOlder.nextBefore = o.next_before;
+        chatAnchor = { y: window.scrollY, h: document.documentElement.scrollHeight }; // 読んでいた位置を保つ
         render(true, true);
       } catch (e) { b.disabled = false; b.textContent = '読み込めませんでした。もう一度'; }
     });
@@ -818,7 +851,7 @@ const routes = [
 ];
 const $progress = document.getElementById('progress'), $app = document.getElementById('app');
 const loading = (on) => { $progress.classList.toggle('on', on); $app.classList.toggle('loading', on); };
-let seq = 0, painted = '';
+let seq = 0, painted = '', chatFresh = false;
 function paint(out, top, y) {
   if (out.html !== painted) { $view.innerHTML = out.html; painted = out.html; if (out.bind) out.bind(); }
   if (y != null) window.scrollTo(0, y);
@@ -827,6 +860,7 @@ function paint(out, top, y) {
 /** y: 戻ったときに戻すスクロール位置 */
 async function render(quiet, keepScroll, y) {
   const my = ++seq;
+  chatFresh = !quiet && y == null;
   const path = location.pathname;
   const hit = routes.map(([re, fn, tab, title]) => [path.match(re), fn, tab, title]).find(([m]) => m);
   document.querySelectorAll('nav.tabs a').forEach((a) => (a.dataset.tab === (hit ? hit[2] : '') ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
