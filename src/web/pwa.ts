@@ -24,7 +24,7 @@ export function serviceWorker(version: string): string {
   return `'use strict';
 const CACHE = 'shell-${version}';
 const SHELL = ['/', '/manifest.webmanifest', '/icons/icon-192.png'];
-const PAGES = /^\\/($|venue\\/|race\\/|participants|history)/;
+const PAGES = /^\\/($|venue\\/|race\\/|today\\/|participants|history)/;
 const DATA = /^\\/(races|declarations|roster|days|leaderboard|feed|commentary|reports|venues)(\\/|$|\\?)/;
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {
