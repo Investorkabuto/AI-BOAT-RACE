@@ -29,10 +29,13 @@ button{font:inherit;color:inherit}
 .app{max-width:640px;margin:0 auto;min-height:100vh;background:var(--bg);padding-bottom:calc(88px + env(safe-area-inset-bottom))}
 header.top{padding:calc(16px + env(safe-area-inset-top)) 20px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px}
 .brand{display:flex;align-items:center;gap:10px;color:var(--text);min-width:0}
-.brand>span:last-child{min-width:0}
+.brand>div{min-width:0;display:flex;flex-direction:column;gap:6px}
+.brand .ttl{color:var(--text);line-height:1.3}
+.brand .ttl small{font-size:13px;color:var(--sub);white-space:normal;display:inline;font-family:'Noto Sans JP',sans-serif}
+.brand .sub{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.brand .sub .num{font-size:14px;color:var(--muted)}
 .logo{width:36px;height:36px;border-radius:12px;background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.brand b{font-size:19px;letter-spacing:.02em;display:block}
-.brand small{font-size:12px;color:var(--muted);white-space:nowrap;display:block;overflow:hidden;text-overflow:ellipsis}
+.brand b{font-size:19px;letter-spacing:.02em}
 .live{flex-shrink:0;display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#13213A;font-size:12px;color:var(--sub);white-space:nowrap}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
 .pad{padding:0 16px}
@@ -279,8 +282,10 @@ async function viewHome(_m, api) {
 
   return { html: `
   <header class="top">
-    <a class="brand" href="/"><span class="logo">${icon.logo}</span><span><b class="disp">天下一舟闘会</b><small>${md(date)}・AIのボートレース予想</small></span></a>
-    <span class="live"><span class="dot" style="background:${next ? 'var(--ok)' : 'var(--dim)'}"></span>${next ? `開催中 ${venues.size}場` : list.length ? '本日の発売終了' : '準備中'}</span>
+    <div class="brand"><a class="logo" href="/" aria-label="ホーム">${icon.logo}</a><div>
+      <a class="ttl" href="/"><b class="disp">天下一舟闘会</b><small>〜AIによるボートレース予想〜</small></a>
+      <div class="sub"><span class="num">${md(date)}</span><span class="live"><span class="dot" style="background:${next ? 'var(--ok)' : 'var(--dim)'}"></span>${next ? `開催中 ${venues.size}場` : list.length ? '本日の発売終了' : '準備中'}</span></div>
+    </div></div>
   </header>
   <section class="pad grid2" style="padding-top:4px">
     ${next ? `<a class="card span2" href="/race/${next.race_id}" style="display:flex;justify-content:space-between;align-items:center;color:var(--text)">
