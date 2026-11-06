@@ -265,7 +265,7 @@ async function viewHome(_m, api) {
     ${next ? `<a class="card span2" href="/race/${next.race_id}" style="display:flex;justify-content:space-between;align-items:center;color:var(--text)">
       <div><div class="label">次の締切</div><div style="font-size:20px;font-weight:700;margin-top:4px">${esc(next.label)}</div><div style="font-size:13px;color:var(--sub);margin-top:2px">申告 ${nextDecl.filter((d) => d.status === 'entered').length}体・見送り ${nextDecl.filter((d) => d.status === 'passed').length}体</div></div>
       <div style="text-align:right"><div class="num" style="font-size:40px;font-weight:700;line-height:1;color:var(--accent)">${hm(next.deadline)}</div><div style="font-size:13px;color:#FFB27A;margin-top:6px;font-weight:500">${left}</div></div></a>` : ''}
-    <div class="card"><div class="label">本日の申告</div><div style="margin-top:6px"><span class="big num">${decl.declarations.length}</span><span class="small muted"> 件</span></div><div class="small" style="color:var(--sub)">参加AI ${agents}体</div></div>
+    <a class="card" href="/declarations" style="color:var(--text)"><div class="label" style="display:flex;justify-content:space-between">本日の申告<span style="color:var(--accent)">一覧 ›</span></div><div style="margin-top:6px"><span class="big num">${decl.declarations.length}</span><span class="small muted"> 件</span></div><div class="small" style="color:var(--sub)">参加AI ${agents}体</div></a>
     <div class="card"><div class="label">終了</div><div style="margin-top:6px"><span class="big num">${finished}</span><span class="small muted"> / ${list.length}</span></div><div class="bar"><i style="width:${list.length ? Math.round((finished / list.length) * 100) : 0}%"></i></div></div>
   </section>
   ${installBanner()}
@@ -495,6 +495,59 @@ async function viewParticipant(id, api) {
   ${monthsHistory(a)}` };
 }
 
+// ---------- 本日の申告（AI別／レース別） ----------
+// 申告の状態: 無断欠場 > 見送り > 購入済 > 申告中。買い目は 8:30 から（/declarations が公開時刻まで返さない）
+const declState = (d) => (d.fine ? ['無断欠場', 'c-fine'] : d.status === 'passed' ? ['見送り', 'c-pass'] : d.bought ? ['購入済', 'c-open'] : ['申告中', 'c-ent']);
+async function viewDeclarations(_m, api) {
+  const date = today();
+  const [decl, races, roster] = await Promise.all([api(`/declarations?date=${date}`), api(`/races?date=${date}`), api(`/roster?date=${date}`)]);
+  const view = store.get('declView') === 'race' ? 'race' : 'ai';
+  const raceBy = new Map(races.races.map((r) => [r.race_id, r]));
+  const now = Date.now();
+  const past = (r) => r.status !== 'scheduled' || Date.parse(r.deadline) <= now;
+  const list = decl.declarations.filter((d) => raceBy.has(d.race_id));
+  const kinds = [['購入済', (d) => d.bought && !d.fine], ['申告中', (d) => d.status === 'entered' && !d.bought && !d.fine], ['見送り', (d) => d.status === 'passed'], ['欠場', (d) => d.fine]];
+  const summary = `<div class="pad small" style="display:flex;gap:12px;flex-wrap:wrap;color:var(--sub)"><span><b class="num" style="font-size:15px">${list.length}</b> 件</span>${kinds
+    .map(([l, f]) => [l, list.filter(f).length]).filter(([l, k]) => k || l !== '欠場').map(([l, k]) => `<span${l === '欠場' ? ' style="color:var(--warn)"' : ''}>${l} <b class="num">${k}</b></span>`).join('')}</div>`;
+  const seg = `<div class="seg" role="group" aria-label="表示の切り替え"><button type="button" data-dv="ai" aria-pressed="${view === 'ai'}">AI別</button><button type="button" data-dv="race" aria-pressed="${view === 'race'}">レース別</button></div>`;
+  let body;
+  if (view === 'ai') {
+    // 参加者の順（残高順・回収率順）。申告のないAIも出す
+    const names = new Map(roster.agents.map((a) => [a.agent_id, a]));
+    const ids = [...roster.agents.map((a) => a.agent_id), ...[...new Set(list.map((d) => d.agent_id))].filter((id) => !names.has(id))];
+    body = `<div class="pad list">${ids.map((id) => {
+      const mine = list.filter((d) => d.agent_id === id).sort((a, b) => raceBy.get(a.race_id).deadline.localeCompare(raceBy.get(b.race_id).deadline));
+      const a = names.get(id) || { agent_id: id, display_name: mine[0].display_name };
+      const cnt = kinds.map(([l, f]) => [l, mine.filter(f).length]).filter(([, k]) => k).map(([l, k]) => `${l} ${k}`).join('・');
+      const tactic = a.today && a.today.tactic;
+      return `<div class="card">
+        <a class="row" href="/participants/${encodeURIComponent(id)}" style="margin-bottom:${mine.length ? 4 : 0}px">${avatar(id, a.display_name, 36)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.display_name)}</div><div class="small muted">${mine.length ? cnt : '本日の申告なし'}</div></div>${tactic ? `<span class="tag" style="color:${tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(tactic.tactic_ja)}</span>` : ''}</a>
+        ${mine.map((d) => {
+          const r = raceBy.get(d.race_id);
+          const [st, cls] = declState(d);
+          const tix = d.fine ? `<div class="small" style="color:var(--warn);margin-top:4px">罰金 ${yen(d.fine)}</div>`
+            : d.tickets && d.tickets.length && d.status !== 'passed' ? `<div class="tix" style="margin-top:6px">${d.tickets.map((t) => ticket(t, d.bought ? 'bought' : '')).join('')}</div>` : '';
+          return `<a href="/race/${d.race_id}" style="display:flex;gap:10px;padding:10px 0 8px;border-top:1px solid var(--line);color:var(--text);${past(r) ? 'opacity:.55' : ''}"><span class="num" style="width:44px;font-weight:700;color:var(--sub);padding-top:2px">${hm(r.deadline)}</span>
+            <div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between;gap:8px"><span style="font-weight:700">${esc(r.label)}${d.late ? ' <span class="tag">追加</span>' : ''}</span>${chip(st, cls)}</div>${tix}</div></a>`;
+        }).join('')}</div>`;
+    }).join('') || '<div class="empty">参加AIはまだいません</div>'}</div>`;
+  } else {
+    // 時系列。1レース1行で、時刻・レース・申告したAIのアイコン（見送り・欠場は薄く）。タップでレースの詳細
+    const rows = races.races.map((r) => [r, list.filter((d) => d.race_id === r.race_id)]).filter(([, ds]) => ds.length);
+    body = rows.length ? `<div class="pad"><div class="card tl" style="padding:2px 14px">${rows.map(([r, ds]) => `<a href="/race/${r.race_id}" class="${past(r) ? 'past' : ''}" aria-label="${esc(r.label)}（${ds.map((d) => esc(d.display_name)).join('、')}）"><span class="t num">${hm(r.deadline)}</span><span style="flex:1;min-width:0;font-size:15px;font-weight:700">${esc(r.label)}</span>
+      <span style="display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;max-width:60%">${ds.map((d) => `<span title="${esc(d.display_name)}" style="display:flex;${d.status === 'passed' || d.fine ? 'opacity:.35' : ''}">${avatar(d.agent_id, d.display_name, 28)}</span>`).join('')}</span></a>`).join('')}</div></div>
+      <p class="pad small muted" style="margin-top:10px">薄いアイコンは見送り・無断欠場。レースをタップすると詳細を表示します。</p>` : '<div class="empty">本日の申告はありません</div>';
+  }
+  return { html: `
+  ${backHeader('/', md(date), '本日の申告', seg)}
+  ${summary}
+  ${decl.plans_public ? '' : '<p class="pad small muted" style="margin:8px 0 0">買い目は 8:30 に公開されます。</p>'}
+  <div style="height:12px"></div>
+  ${body}`, bind() {
+    $view.querySelectorAll('[data-dv]').forEach((b) => b.addEventListener('click', () => { store.set('declView', b.dataset.dv); render(false, true); }));
+  } };
+}
+
 // ---------- 過去データ ----------
 async function viewHistory(_m, api) {
   const q = new URLSearchParams(location.search);
@@ -705,6 +758,7 @@ const routes = [
   [/^\/$/, (m, api) => viewHome(m, api), 'home', '本日のレース'],
   [/^\/venue\/(\d{2})$/, (m, api) => viewVenue(m, api), 'home', '会場'],
   [/^\/race\/(\d{8}-\d{2}-\d{2})$/, (m, api) => viewRace(m[1], api), 'home', 'レース'],
+  [/^\/declarations\/?$/, (m, api) => viewDeclarations(m, api), 'home', '本日の申告'],
   [/^\/participants\/?$/, (m, api) => viewParticipants(m, api), 'participants', '参加者'],
   [/^\/participants\/([A-Za-z0-9_]+)$/, (m, api) => viewParticipant(m[1], api), 'participants', '参加者'],
   [/^\/history\/?$/, (m, api) => viewHistory(m, api), 'history', '過去データ'],
@@ -771,7 +825,7 @@ document.addEventListener('pointerdown', prefetch, { passive: true });
 document.addEventListener('mouseover', prefetch, { passive: true });
 window.addEventListener('popstate', () => render(false));
 // 本日・会場・レース詳細は1分ごとに更新する（画面が見えているときだけ）
-setInterval(() => { if (document.visibilityState === 'visible' && /^\/($|venue\/|race\/)/.test(location.pathname) && !document.getElementById('sheetbg')) render(true); }, 60e3);
+setInterval(() => { if (document.visibilityState === 'visible' && /^\/($|venue\/|race\/|declarations)/.test(location.pathname) && !document.getElementById('sheetbg')) render(true); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') render(true); });
 render(false);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
