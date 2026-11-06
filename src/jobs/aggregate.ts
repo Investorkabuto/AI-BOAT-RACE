@@ -141,7 +141,9 @@ export async function markAggDirty(db: D1Database, dates: readonly string[], now
 
 /** 初回: 取り込み済みの全ての月に印を付ける */
 async function seed(db: D1Database, nowMs: number): Promise<number> {
-  const r = await db.prepare('SELECT MIN(race_date) AS lo, MAX(race_date) AS hi FROM race_boats').first<{ lo: string | null; hi: string | null }>();
+  // MIN と MAX を1つの文で取ると表の全体を読むので、別々に索引の端だけを読む
+  const [lo, hi] = await db.batch([db.prepare('SELECT MIN(race_date) AS d FROM race_boats'), db.prepare('SELECT MAX(race_date) AS d FROM race_boats')]);
+  const r = { lo: (lo!.results[0] as { d: string | null } | undefined)?.d ?? null, hi: (hi!.results[0] as { d: string | null } | undefined)?.d ?? null };
   if (!r?.lo || !r.hi) return 0;
   const dates: string[] = [];
   for (let d = `${r.lo.slice(0, 7)}-01`; d.slice(0, 7) <= r.hi.slice(0, 7); d = addDays(monthRange(d.slice(0, 7)).endsOn, 1)) dates.push(d);

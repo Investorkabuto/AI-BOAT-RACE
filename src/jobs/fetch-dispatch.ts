@@ -52,13 +52,18 @@ export const RESULT_WAIT_MS = 5 * 60 * 1000;
 /** 舟券のないレースは、締切からこの時間を過ぎたら当日の取得をあきらめる（残りは翌朝 6:00 の全レースの取得で拾う） */
 export const RESULT_GIVEUP_MS = 3 * 60 * 60 * 1000;
 
+/** 結果を取りに行くレースを探す範囲（日数）。これより前の精算待ちは、結果が出ないまま残ったもので、取りに行っても無駄 */
+export const RESULT_LOOKBACK_DAYS = 7;
+
 /**
  * 結果を取りに行くレース（締切後で結果が未取得）。舟券のあるレース（locked、精算待ち）はすぐ、
- * それ以外は締切の RESULT_WAIT_MS 後から RESULT_GIVEUP_MS まで。bind には resultWantedArgs(nowMs) を渡す
+ * それ以外は締切の RESULT_WAIT_MS 後から RESULT_GIVEUP_MS まで。bind には resultWantedArgs(nowMs) を渡す。
+ * 定時処理が5分ごとに流すので、races・race_results の全体を読まないこと（過去分の取り込みで数万行あり、D1 の1日の読み取り上限を使い切る。
+ * 2026-11-06 の停止）。日付の索引で直近だけを読み、結果の有無はレースごとに主キーで引く
  */
 export const RESULT_WANTED_SQL =
-  "(status = 'locked' OR (deadline_ms <= ? AND deadline_ms > ? AND status != 'cancelled')) AND id NOT IN (SELECT race_id FROM race_results)";
-export const resultWantedArgs = (nowMs: number) => [nowMs - RESULT_WAIT_MS, nowMs - RESULT_GIVEUP_MS];
+  "race_date >= ? AND (status = 'locked' OR (deadline_ms <= ? AND deadline_ms > ? AND status != 'cancelled')) AND NOT EXISTS (SELECT 1 FROM race_results x WHERE x.race_id = races.id)";
+export const resultWantedArgs = (nowMs: number) => [addDays(jstDate(nowMs), -RESULT_LOOKBACK_DAYS), nowMs - RESULT_WAIT_MS, nowMs - RESULT_GIVEUP_MS];
 
 export interface Dispatch {
   /** 起動済みの記録に使うキー（app_state.key） */
@@ -133,7 +138,8 @@ export async function dispatchFetches(env: Env, nowMs: number): Promise<string[]
   const log: string[] = [];
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) return log;
   const state = new Map(
-    (await db.prepare("SELECT key, value FROM app_state WHERE key LIKE 'fetch:%'").all<{ key: string; value: string }>()).results.map((r) => [r.key, r.value]),
+    // key LIKE 'fetch:%' は表の全体を読むので、主キーの範囲で引く（';' は ':' の次の文字）
+    (await db.prepare("SELECT key, value FROM app_state WHERE key >= 'fetch:' AND key < 'fetch;'").all<{ key: string; value: string }>()).results.map((r) => [r.key, r.value]),
   );
   // 結果が必要なのは、締切後で結果が未取得のレース（舟券の有無を問わない。RESULT_WANTED_SQL）
   const pending = await db
@@ -156,7 +162,7 @@ export async function dispatchFetches(env: Env, nowMs: number): Promise<string[]
     log.push(`fetch dispatched: ${d.command}${d.date ? ` ${d.date}` : ''}`);
   }
   // 古い出走表・番組表の起動記録を消す（3日より前）
-  await db.prepare("DELETE FROM app_state WHERE (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:cards:%' OR key LIKE 'fetch:records:%' OR key LIKE 'fetch:history:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
+  await db.prepare("DELETE FROM app_state WHERE key >= 'fetch:' AND key < 'fetch;' AND (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:cards:%' OR key LIKE 'fetch:records:%' OR key LIKE 'fetch:history:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
   return log;
 }
 

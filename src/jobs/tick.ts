@@ -25,6 +25,17 @@ import { compactPacked } from './compact';
 import { loadUsage, saveUsage } from './budget';
 import { checkAlerts, commentaryTasks, expireTasks, seasonReviewTask, tasksAfterDayClose } from '../operator/scheduler';
 
+/** 締めていない日を探す範囲（日数）。過去分の取り込みで作った古い日付は締めない（締める対象は開催中の日だけ） */
+export const CLOSE_LOOKBACK_DAYS = 14;
+
+/**
+ * 締める日の候補。定時処理が5分ごとに流すので、races の全体を読まないこと（過去分の取り込みで数万行あり、
+ * D1 の1日の読み取り上限を使い切る。2026-11-06 の停止）。日付の索引で直近 CLOSE_LOOKBACK_DAYS 日だけを読む
+ */
+export const CLOSE_DAYS_SQL = `SELECT race_date FROM races WHERE race_date BETWEEN ? AND ? AND race_date NOT IN (SELECT race_date FROM day_closings)
+         GROUP BY race_date HAVING SUM(CASE WHEN status IN ('settled', 'cancelled') THEN 0 ELSE 1 END) = 0 AND MAX(deadline_ms) <= ?
+         ORDER BY race_date`;
+
 /** 最後の締切からこれだけ経っても、その日を締めない（出走表の取り込み漏れや結果の遅れに備える） */
 const DAY_CLOSE_GRACE_MS = 30 * 60 * 1000;
 
@@ -81,12 +92,8 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
 export async function closeDays(db: D1Database, nowMs: number): Promise<string[]> {
   const days = (
     await db
-      .prepare(
-        `SELECT race_date FROM races WHERE race_date NOT IN (SELECT race_date FROM day_closings)
-         GROUP BY race_date HAVING SUM(CASE WHEN status IN ('settled', 'cancelled') THEN 0 ELSE 1 END) = 0 AND MAX(deadline_ms) <= ?
-         ORDER BY race_date`,
-      )
-      .bind(nowMs - DAY_CLOSE_GRACE_MS)
+      .prepare(CLOSE_DAYS_SQL)
+      .bind(addDays(jstDate(nowMs), -CLOSE_LOOKBACK_DAYS), jstDate(nowMs), nowMs - DAY_CLOSE_GRACE_MS)
       .all<{ race_date: string }>()
   ).results;
   const log: string[] = [];
