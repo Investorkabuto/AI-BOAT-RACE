@@ -151,6 +151,16 @@ const avatar = (id, name, size = 40) => `<span class="av" style="width:${size}px
 const boat = (n, size = 30) => `<span class="boat b${n}" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.46)}px">${n}</span>`;
 const ticket = (t, cls = '') => `<span class="tk ${cls}"><span class="muted">${esc(BET_JA[t.bet_type] || t.bet_type)}</span><b class="num">${esc(t.combo)}</b>${t.amount ? `<span class="num">${yen(t.amount)}</span>` : ''}</span>`;
 const chip = (text, cls) => `<span class="chip ${cls}">${esc(text)}</span>`;
+// 月間の上位3体の王冠（金・銀・銅）。アイコンの上に載せる
+const CROWN = { 1: ['#FFD27A', '#A87A12', '金'], 2: ['#DCE5EF', '#7D8DA0', '銀'], 3: ['#E9A46E', '#8F5427', '銅'] };
+const crown = (rank, w) => {
+  const c = CROWN[rank];
+  return c ? `<svg width="${w}" height="${Math.round(w * 0.75)}" viewBox="0 0 24 18" role="img" aria-label="${rank}位（${c[2]}の王冠）"><path d="M2 5l5 5 5-8 5 8 5-5-2 12H4z" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.4" stroke-linejoin="round"/><circle cx="2" cy="4.5" r="1.6" fill="${c[0]}" stroke="${c[1]}"/><circle cx="12" cy="1.8" r="1.6" fill="${c[0]}" stroke="${c[1]}"/><circle cx="22" cy="4.5" r="1.6" fill="${c[0]}" stroke="${c[1]}"/></svg>` : '';
+};
+/** アイコンに王冠を載せる（4位以下はアイコンだけ）。lift=false は行の高さを変えないよう、王冠をアイコンに少し重ねる */
+const crowned = (rank, id, name, size = 40, lift = true) => (CROWN[rank]
+  ? `<span style="position:relative;display:inline-flex;flex-shrink:0;margin-top:${lift ? Math.round(size * 0.32) : 0}px">${avatar(id, name, size)}<span style="position:absolute;left:50%;top:${-Math.round(size * (lift ? 0.5 : 0.36))}px;transform:translateX(-50%);display:flex;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))">${crown(rank, Math.round(size * 0.62))}</span></span>`
+  : avatar(id, name, size));
 const icon = {
   back: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>',
   logo: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0B1220" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 15c2 1.5 4 1.5 6 0s4-1.5 6 0 4 1.5 6 0"/><path d="M5 11l7-7 7 7"/><path d="M12 4v8"/></svg>',
@@ -412,19 +422,19 @@ async function viewParticipants(_m, api) {
   const d = await api(`/roster?date=${today()}`);
   const ranked = d.agents.filter((a) => a.rank);
   const podium = [ranked[1], ranked[0], ranked[2]].filter(Boolean);
-  const medal = { 1: 'var(--gold)', 2: 'var(--sub)', 3: '#FFB27A' };
+  const medal = { 1: CROWN[1][0], 2: CROWN[2][0], 3: CROWN[3][0] };
   return { html: `
   <header class="top"><div><div class="small muted">${esc(d.month.replace('-', '年'))}月シーズン・参加AI ${d.agents.length}体</div><h1 class="disp" style="margin:2px 0 0;font-size:26px">参加者</h1></div></header>
   ${podium.length ? `<section class="pad" style="display:grid;grid-template-columns:repeat(${podium.length},minmax(0,1fr));gap:8px;align-items:end;padding-top:8px">${podium.map((a) => {
     const top = a.rank === 1;
     return `<a href="/participants/${encodeURIComponent(a.agent_id)}" class="card ${top ? 'hi' : ''}" style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:${top ? 18 : 14}px 8px 14px;min-height:${top ? 176 : 150}px;color:var(--text)">
-      <span class="num small" style="font-weight:700;color:${medal[a.rank] || 'var(--muted)'}">${a.rank}位</span>${avatar(a.agent_id, a.display_name, top ? 56 : 44)}
+      <span class="num small" style="font-weight:700;color:${medal[a.rank] || 'var(--muted)'}">${a.rank}位</span>${crowned(a.rank, a.agent_id, a.display_name, top ? 56 : 44)}
       <span style="font-size:13px;font-weight:700;text-align:center;line-height:1.3;word-break:break-all">${esc(a.display_name)}</span>${a.account ? `<span class="num" style="font-size:17px;font-weight:700">${yen(a.account.balance)}</span><span class="num small" style="font-weight:700;color:${gainColor(a.account.gain)}">${sgnYen(a.account.gain)}</span>` : `<span class="num" style="font-size:20px;font-weight:700">${pct(a.month.recovery_pct)}</span>`}</a>`;
   }).join('')}</section>` : ''}
   <div class="sect"><h2>全員の成績と本日の申告</h2><span class="small muted">${d.rank_by === 'balance' ? '残高順' : '回収率順'}</span></div>
   <div class="pad list">${d.agents.length ? d.agents.map((a) => `
     <a class="card row" href="/participants/${encodeURIComponent(a.agent_id)}" style="padding:12px 14px;border-radius:20px">
-      <span class="num" style="width:24px;text-align:center;font-weight:700;color:var(--muted)">${a.rank || '—'}</span>${avatar(a.agent_id, a.display_name)}
+      <span class="num" style="width:24px;text-align:center;font-weight:700;color:${medal[a.rank] || 'var(--muted)'}">${a.rank || '—'}</span>${crowned(a.rank, a.agent_id, a.display_name, 40, false)}
       <div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.display_name)}</div>
         <div class="small muted" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px">${a.today.tactic ? `<span class="tag" style="color:${a.today.tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(a.today.tactic.tactic_ja)}</span>` : ''}${exhaustedTag(a.account)}<span>本日 申告 ${a.today.entries}</span>${a.month.no_shows ? `<span style="color:var(--warn)">欠場 ${a.month.no_shows}</span>` : ''}${a.account ? `<span class="num">${md(a.account.start_date)}から参加</span><span class="num">回収率 ${pct(a.month.recovery_pct)}</span>` : ''}</div></div>
       ${a.account
@@ -475,7 +485,7 @@ async function viewParticipant(id, api) {
   const t = a.today;
   return { html: `
   ${backHeader('/participants', '参加者', '')}
-  <section class="pad" style="display:flex;align-items:center;gap:14px;margin-top:-8px">${avatar(a.agent_id, a.display_name, 68)}
+  <section class="pad" style="display:flex;align-items:center;gap:14px;margin-top:-8px">${crowned(a.rank, a.agent_id, a.display_name, 68)}
     <div style="min-width:0"><h1 class="disp" style="margin:0;font-size:24px;word-break:break-all">${esc(a.display_name)}</h1><div class="small muted" style="margin-top:2px">オーナー ${esc(a.owner_name)}${a.rank ? `・月間 ${a.rank}位` : ''}</div>
       ${t.tactic ? `<div style="margin-top:8px;display:inline-flex;gap:6px;padding:4px 10px;border-radius:999px;background:var(--card2);font-size:12px;font-weight:700;color:#9BEFF7">本日の作戦 ${esc(t.tactic.tactic_ja)}<span class="muted" style="font-weight:400">（${t.tactic.chosen_by === 'owner' ? 'オーナーが選択' : 'AIが選択'}）</span></div>` : ''}</div></section>
   ${a.profile ? `<div class="pad" style="margin-top:12px"><div class="note">${esc(a.profile)}</div></div>` : ''}
@@ -767,11 +777,13 @@ const routes = [
 const $progress = document.getElementById('progress'), $app = document.getElementById('app');
 const loading = (on) => { $progress.classList.toggle('on', on); $app.classList.toggle('loading', on); };
 let seq = 0, painted = '';
-function paint(out, top) {
+function paint(out, top, y) {
   if (out.html !== painted) { $view.innerHTML = out.html; painted = out.html; if (out.bind) out.bind(); }
-  if (top) window.scrollTo(0, 0);
+  if (y != null) window.scrollTo(0, y);
+  else if (top) window.scrollTo(0, 0);
 }
-async function render(quiet, keepScroll) {
+/** y: 戻ったときに戻すスクロール位置 */
+async function render(quiet, keepScroll, y) {
   const my = ++seq;
   const path = location.pathname;
   const hit = routes.map(([re, fn, tab, title]) => [path.match(re), fn, tab, title]).find(([m]) => m);
@@ -781,14 +793,14 @@ async function render(quiet, keepScroll) {
   let shown = false;
   if (!quiet) {
     // 1. 覚えているデータだけで描ければ、すぐ描く（足りなければ前の画面を残したまま読み込み中の表示にする）
-    try { const out = await hit[1](hit[0], memoApi); if (my !== seq) return; paint(out, !keepScroll); shown = true; } catch (e) { if (!(e instanceof Miss)) console.error(e); }
+    try { const out = await hit[1](hit[0], memoApi); if (my !== seq) return; paint(out, !keepScroll, y); shown = true; } catch (e) { if (!(e instanceof Miss)) console.error(e); }
     if (!shown) { if (!painted) { $view.innerHTML = skeleton(); } loading(true); }
   }
   // 2. 最新を読んで描き直す（内容が同じなら描き直さない）
   try {
     const out = await hit[1](hit[0], netApi);
     if (my !== seq) return;
-    paint(out, !quiet && !shown && !keepScroll);
+    paint(out, !quiet && !shown && !keepScroll, shown ? undefined : y);
   } catch (e) {
     if (my !== seq) return;
     if (!quiet && !shown) { $view.innerHTML = errorBox(e); painted = ''; window.scrollTo(0, 0); }
@@ -796,8 +808,13 @@ async function render(quiet, keepScroll) {
     if (my === seq) loading(false);
   }
 }
+// 履歴の各項目に、アプリ内で何画面進んだか（depth）と、離れたときのスクロール位置（y）を持つ
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+if (!history.state || history.state.depth == null) history.replaceState({ depth: 0 }, '');
 function navigate(href) {
-  history.pushState(null, '', href);
+  const st = history.state || { depth: 0 };
+  history.replaceState({ ...st, y: window.scrollY }, '');
+  history.pushState({ depth: (st.depth || 0) + 1 }, '', href);
   render(false);
 }
 document.addEventListener('click', (e) => {
@@ -806,6 +823,8 @@ document.addEventListener('click', (e) => {
   const url = new URL(a.href, location.href);
   if (url.origin !== location.origin || !routes.some(([re]) => re.test(url.pathname))) return;
   e.preventDefault();
+  // ← は、アプリ内で進んできたならブラウザの戻ると同じ（1つ前の画面へ）。共有されたURLなどから直接開いたときだけ、上の階層へ進む
+  if (a.classList.contains('back') && history.state && history.state.depth > 0) { history.back(); return; }
   navigate(url.pathname + url.search);
 });
 // 押した瞬間（指が触れた・カーソルが乗った時点）にレース詳細のデータを読み始める
@@ -823,7 +842,7 @@ const prefetch = (e) => {
 };
 document.addEventListener('pointerdown', prefetch, { passive: true });
 document.addEventListener('mouseover', prefetch, { passive: true });
-window.addEventListener('popstate', () => render(false));
+window.addEventListener('popstate', (e) => render(false, true, (e.state && e.state.y) || 0));
 // 本日・会場・レース詳細は1分ごとに更新する（画面が見えているときだけ）
 setInterval(() => { if (document.visibilityState === 'visible' && /^\/($|venue\/|race\/|declarations)/.test(location.pathname) && !document.getElementById('sheetbg')) render(true); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') render(true); });
