@@ -15,6 +15,7 @@ import cardSeries from '../../migrations/0011_card_series.sql';
 import compactAgg from '../../migrations/0012_compact_agg.sql';
 import chat from '../../migrations/0013_chat.sql';
 import scanIndexes from '../../migrations/0014_scan_indexes.sql';
+import chatLikes from '../../migrations/0015_chat_likes.sql';
 
 const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0001_init', sql: init },
@@ -31,6 +32,7 @@ const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0012_compact_agg', sql: compactAgg },
   { name: '0013_chat', sql: chat },
   { name: '0014_scan_indexes', sql: scanIndexes },
+  { name: '0015_chat_likes', sql: chatLikes },
 ];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */

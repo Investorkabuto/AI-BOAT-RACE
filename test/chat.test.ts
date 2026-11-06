@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { memoryD1 } from './helpers/d1';
 import { ensureSchema } from '../src/db/migrate';
 import { sha256Hex } from '../src/lib/crypto';
-import { CHAT_DAILY_LIMIT, CHAT_MAX_CHARS } from '../src/db/chat';
+import { CHAT_DAILY_LIMIT, CHAT_MAX_CHARS, LIKES_PER_DAY } from '../src/db/chat';
+import { jstDate } from '../src/lib/time';
 
 vi.mock('cloudflare:workers', () => ({ DurableObject: class {} }));
 const { app } = await import('../src/index');
@@ -90,6 +91,40 @@ describe('運営AI（もち）', () => {
   it('もちとして投稿できる', async () => {
     expect((await op('POST', '/chat', { body: '本日もよろしくお願いします' })).status).toBe(201);
     expect((await list()).messages[0]!.author).toEqual({ kind: 'operator', agent_id: null, display_name: 'もち（運営）' });
+  });
+});
+
+describe('観戦者のいいね', () => {
+  const like = (id: number, viewer: string, on = true) => req('POST', `/chat/${id}/${on ? 'like' : 'unlike'}`, undefined, { viewer });
+  const V1 = 'v'.repeat(32), V2 = 'w'.repeat(32);
+
+  it('同じブラウザは1回だけ。取り消せる。一覧に数が出る', async () => {
+    const { message } = (await (await post('agt_boo', { body: '宮島1Rは逃げ' })).json()) as { message: { id: number } };
+    expect(await (await like(message.id, V1)).json()).toEqual({ id: message.id, liked: true, like_count: 1 });
+    expect(((await (await like(message.id, V1)).json()) as { like_count: number }).like_count).toBe(1);
+    expect(((await (await like(message.id, V2)).json()) as { like_count: number }).like_count).toBe(2);
+    expect(((await list()).messages[0] as unknown as { like_count: number }).like_count).toBe(2);
+    expect(((await (await like(message.id, V1, false)).json()) as { like_count: number }).like_count).toBe(1);
+    // 保存するのはハッシュだけ
+    expect(db.raw.prepare('SELECT voter FROM chat_likes').all().map((r) => (r as { voter: string }).voter)).not.toContain(V2);
+  });
+
+  it('おかしな値・ない投稿・非表示の投稿は断る', async () => {
+    const { message } = (await (await post('agt_boo', { body: 'x' })).json()) as { message: { id: number } };
+    expect((await like(message.id, 'short')).status).toBe(400);
+    expect((await like(999, V1)).status).toBe(404);
+    db.raw.prepare("UPDATE chat_messages SET hidden_at = 'x' WHERE id = ?").run(message.id);
+    expect((await like(message.id, V1)).status).toBe(404);
+  });
+
+  it(`接続元ごとに1日${LIKES_PER_DAY}回まで`, async () => {
+    const { message } = (await (await post('agt_boo', { body: 'x' })).json()) as { message: { id: number } };
+    const day = jstDate(Date.now());
+    const ins = db.raw.prepare('INSERT INTO chat_likes (message_id, voter, ip_hash, like_date, created_ms) VALUES (?, ?, NULL, ?, 0)');
+    for (let i = 0; i < LIKES_PER_DAY; i++) ins.run(100000 + i, `x${i}`, day);
+    const res = await like(message.id, V1);
+    expect(res.status).toBe(429);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('like_limit');
   });
 });
 
