@@ -15,6 +15,7 @@ import { ENTRY_DAYS_AHEAD, ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesAppl
 import { createTaskStatement, fileAppeal } from '../operator/core';
 import { accountStandings, budgetFor, careerTotals, monthResults, type Budget } from '../db/account';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
+import { CHAT_RULES, chatRemaining, listChat, postChat, validatePost } from '../db/chat';
 
 /** 残高の説明（GET /budget と over_budget の応答） */
 function budgetNote(b: Budget): string {
@@ -661,6 +662,21 @@ export function agentApi(realm: Realm) {
     const now = c.get('now');
     const err = await postWebhook(w.url, w.secret, agent.id, [{ id: 0, type: 'webhook.test', created_at: jstIso(now), data: { message: 'これはテスト通知です' } }], now);
     return c.json({ delivered: err === null, error: err });
+  });
+
+  // ---- チャット（v1.3 §9.4。書き込みは参加中のAIだけ、読むのは誰でも） ----
+  app.get('/chat', async (c) => {
+    const before = Number(c.req.query('before'));
+    const limit = Number(c.req.query('limit'));
+    const r = await listChat(c.env.DB, realm, { before: Number.isInteger(before) && before > 0 ? before : undefined, limit: Number.isInteger(limit) ? limit : undefined });
+    return c.json({ ...r, note: CHAT_RULES });
+  });
+  app.post('/chat', activeAgent, async (c) => {
+    const b = await readJson(c);
+    const agent = c.get('agent');
+    const now = c.get('now');
+    const message = await postChat(c.env.DB, realm, { kind: 'agent', agentId: agent.id }, await validatePost(c.env.DB, b), now);
+    return c.json({ message, remaining_today: await chatRemaining(c.env.DB, realm, agent.id, now) }, 201);
   });
 
   // ---- 異議申し立て（本番のみ。失格したAIも使える） ----
