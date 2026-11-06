@@ -12,6 +12,7 @@ import { normalizeRecord, packPayouts, packRows, packUnsold } from '../lib/recor
 import { boatsFromCard, boatsFromRecord, payoutsFromRecord } from '../db/boats';
 import { fetchDispatchError, RESULT_WANTED_SQL, resultWantedArgs } from '../jobs/fetch-dispatch';
 import { waiveFinesForCancelled } from '../jobs/settlement';
+import { markAggDirty } from '../jobs/aggregate';
 
 export const internalApi = new Hono<{ Bindings: Env }>();
 
@@ -237,6 +238,7 @@ internalApi.put('/records', async (c) => {
       if ((i + k) % 5 === 1) saved += x.meta.changes ?? 0;
     });
   }
+  if (saved) await markAggDirty(db, [date], nowMs); // 事前集計のその月を作り直す（v1.3 決定50）
   return c.json({ saved, unchanged_or_not_ready: stmts.length / 5 - saved, skipped });
 });
 
@@ -265,6 +267,7 @@ export const HISTORY_MIN_AGE_DAYS = 2;
  * body: { race_date, races: [{ jcd, rno, race_name?, deadline, card?: {fixed_course, distance, racers}, record?: {...}, result?: {status, finish, refunded_boats, payouts, start} }] }
  *
  * - すでにある行は変えない（どの表も「無ければ作る」だけ）。当日の取得で入った値（公式HTMLの結果など）を優先する
+ * - 基礎数値と競走成績は race_boats・race_payouts にだけ書く。race_cards・race_records はレース単位の値だけで、詰めた形（rows・payouts）は空（v1.3 決定51）
  * - 結果とスタート情報は、精算済み（舟券なし）か中止のレースにだけ入れる。精算待ちのレースに K 由来の結果が入って精算が動くことはない
  * - 日付は HISTORY_MIN_AGE_DAYS 日より前だけ受け付ける
  */
@@ -312,7 +315,7 @@ internalApi.put('/history', async (c) => {
           db.prepare(`INSERT INTO race_cards (race_id, fixed_course, distance, rows, fetched_at, day, series_title) SELECT id, ?, ?, ?, ?, ?, ? FROM races WHERE id = ?
              ON CONFLICT (race_id) DO UPDATE SET day = IFNULL(race_cards.day, excluded.day), series_title = IFNULL(race_cards.series_title, excluded.series_title)
              WHERE race_cards.day IS NULL OR race_cards.series_title IS NULL`).bind(
-            n.card.fixed_course ? 1 : 0, n.card.distance, packRacers(n.card.racers), now, seriesOf(card).day, seriesOf(card).title, id,
+            n.card.fixed_course ? 1 : 0, n.card.distance, '', now, seriesOf(card).day, seriesOf(card).title, id,
           ),
         );
       if (n.ok) push('boats', boatsFromCard(db, { id, date, jcd: r.jcd, rno: r.rno }, n.card.racers, { sql: 'EXISTS (SELECT 1 FROM races WHERE id = ?)', args: [id] }));
@@ -327,7 +330,7 @@ internalApi.put('/history', async (c) => {
           db.prepare(
             `INSERT OR IGNORE INTO race_records (race_id, weather, wind_dir, wind_m, wave_cm, kimarite, rows, payouts, unsold, fetched_at)
              SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM races WHERE id = ? AND deadline_ms <= ?`,
-          ).bind(v.weather, v.wind_dir, v.wind_m, v.wave_cm, v.kimarite, packRows(v.rows), packPayouts(v.payouts), packUnsold(v.unsold), now, id, nowMs),
+          ).bind(v.weather, v.wind_dir, v.wind_m, v.wave_cm, v.kimarite, '', '', packUnsold(v.unsold), now, id, nowMs),
         );
         const past = { sql: 'EXISTS (SELECT 1 FROM races WHERE id = ? AND deadline_ms <= ?)', args: [id, nowMs] };
         push('boats', boatsFromRecord(db, { id, date, jcd: r.jcd, rno: r.rno }, v.rows, past));
@@ -354,6 +357,7 @@ internalApi.put('/history', async (c) => {
     const res = await db.batch(stmts.slice(i, i + 99));
     res.forEach((x, k) => (count[kinds[i + k]!] += x.meta.changes ?? 0));
   }
+  if (count.boats || count.payouts) await markAggDirty(db, [date], nowMs); // 事前集計のその月を作り直す（v1.3 決定50）
   return c.json({ created: { races: count.race, cards: count.card, records: count.record, results: count.result, starts: count.start, boat_rows: count.boats }, skipped });
 });
 

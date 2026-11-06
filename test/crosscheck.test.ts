@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { checkStored, crossCheck, kFinish, type HtmlResult } from '../src/lib/crosscheck';
-import { packPayouts, packRows, type RecordPayout, type RecordRow } from '../src/lib/records';
+import type { RecordPayout, RecordRow } from '../src/lib/records';
 
 // 2026-11-04 大村1R（HTML の結果とKファイルが一致する想定）
 const row = (place: number | string, boat: number, over: Partial<RecordRow> = {}): RecordRow => ({
@@ -70,7 +70,7 @@ describe('checkStored', () => {
   const stored = () => ({
     result: { status: 'official', finish_json: JSON.stringify(html().finish), refunded_boats_json: '[]', payouts_json: JSON.stringify(html().payouts) },
     starts: { starts_json: JSON.stringify(html().start) },
-    record: { rows: packRows(rows()), payouts: packPayouts(pays()) },
+    record: { rows: rows(), payouts: pays() },
   });
   it('保存形から照合でき、一致する', () => {
     const s = stored();
