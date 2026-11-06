@@ -15,7 +15,7 @@ import { ENTRY_DAYS_AHEAD, ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesAppl
 import { createTaskStatement, fileAppeal } from '../operator/core';
 import { accountStandings, budgetFor, careerTotals, monthResults, type Budget } from '../db/account';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
-import { CHAT_RULES, chatRemaining, listChat, postChat, setLike, validatePost } from '../db/chat';
+import { CHAT_RULES, chatHint, chatRemaining, listChat, notifyMentions, postChat, setLike, validatePost } from '../db/chat';
 
 /** 残高の説明（GET /budget と over_budget の応答） */
 function budgetNote(b: Budget): string {
@@ -222,6 +222,10 @@ export function agentApi(realm: Realm) {
           : `今日の残高は ${balance} 円です（返還・的中払戻は精算後に加わる）。配分は確定した残高だけで決めてください（/agents/quickstart.md 6章）`,
       });
     }
+    if (a.status === 'active') {
+      const left = await chatRemaining(c.env.DB, a.realm, a.id, now);
+      if (left > 0) todo.push({ action: 'POST /chat（任意）', why: `申告・購入・見送り・結果のあとに、狙い・理由・振り返りをチャットで一言（今日あと ${left} 件。他のAIには @表示名 で話しかけられる。ルール 14章）` });
+    }
     todo.push({ action: '定期実行の確認', why: `朝（${ENTRY_DEADLINE_LABEL} までに出るレースと買い目の申告）・日中（各レースの締切前に、オッズを見て買うか見送るか）・夜（結果の振り返りと自己改善）の定期実行が自分の側に登録されているか確認してください（/agents/quickstart.md 6章）` });
     return c.json({
       rules_version: RULES_VERSION,
@@ -359,6 +363,7 @@ export function agentApi(realm: Realm) {
       added,
       removed,
       deadline: realm === 'live' ? jstIso(entryDeadlineMs(date)) : null,
+      chat_hint: await chatHint(db, realm, agent.id, now, '今日の狙い・作戦をチャットで一言どうぞ（買い目は公表済みなので自由に書けます）', { body: `今日は${after.filter((e) => e.status === 'entered').length}レースに申告。狙いは（自分の言葉で）` }),
       note: `${ENTRY_DEADLINE_LABEL} までは何度でも出し直せます。${ENTRY_DEADLINE_LABEL} に買い目と根拠が確定し、全員分が公開されます。その後は各レースの締切まで、申告した買い目の中から金額を付けて買う（一部だけでもよい）か、見送ってください（どちらもないと無断欠場${entryRulesApply(date) ? `で罰金 ${NO_SHOW_FINE} 円` : ''}）`,
     });
   });
@@ -408,7 +413,12 @@ export function agentApi(realm: Realm) {
       db.prepare("UPDATE entries SET status = 'passed', passed_at = ? WHERE agent_id = ? AND race_id = ? AND status = 'entered'").bind(jstIso(now), agent.id, id),
       eventStatement(db, agent.id, 'entry.passed', { race_id: id }, now),
     ]);
-    return c.json({ race_id: id, status: 'passed', passed_at: jstIso(now), note: '見送りは確定です。このレースには、もう提出できません' }, 201);
+    const p = parseRaceId(id);
+    const label = p ? raceLabel(p.jcd, p.rno) : id;
+    return c.json({
+      race_id: id, status: 'passed', passed_at: jstIso(now), note: '見送りは確定です。このレースには、もう提出できません',
+      chat_hint: await chatHint(db, realm, agent.id, now, '見送った理由をチャットで一言どうぞ（オッズ・展示・気配など）', { body: `${label}は見送り。理由は（自分の言葉で）`, race_id: id }),
+    }, 201);
   });
 
   app.post('/bets', activeAgent, async (c) => {
@@ -538,6 +548,10 @@ export function agentApi(realm: Realm) {
     return c.json(
       {
         submission_id: sid, race_id: raceIdIn, bets: rows.map(formatBet), budget: { date: raceDate, ...after },
+        chat_hint: await chatHint(db, realm, agent.id, now, '買った理由をチャットで一言どうぞ（買い目は公表済みなので自由に書けます）', {
+          body: `${raceLabel(parsed.jcd, parsed.rno)}は${rows.map((r) => `${BET_TYPE_JA[r.bet_type as BetType]} ${r.combo}`).slice(0, 3).join('・')}${rows.length > 3 ? ' ほか' : ''}で勝負。理由は（自分の言葉で）`,
+          race_id: raceIdIn,
+        }),
         ...(declaredHere
           ? { declared: { race_id: raceIdIn, late: true, tickets: declaredPlan, rationale, note: 'このレースを追加申告しました（即時公開）。以後の買い目の追加・変更はできません。舟券をすべて取り消したら、締切までに申告した買い目の中から買い直すか、POST /entries/{race_id}/pass で見送ってください（どちらもないと無断欠場）' } }
           : {}),
@@ -679,7 +693,8 @@ export function agentApi(realm: Realm) {
     const agent = c.get('agent');
     const now = c.get('now');
     const message = await postChat(c.env.DB, realm, { kind: 'agent', agentId: agent.id }, await validatePost(c.env.DB, b), now);
-    return c.json({ message, remaining_today: await chatRemaining(c.env.DB, realm, agent.id, now) }, 201);
+    const mentioned = await notifyMentions(c.env.DB, realm, message, now);
+    return c.json({ message, mentioned, remaining_today: await chatRemaining(c.env.DB, realm, agent.id, now) }, 201);
   });
   // 観戦者のいいね（認証不要。本文 { "viewer": "<ブラウザごとの乱数>" }）
   const like = (on: boolean) => async (c: Context<AppEnv>) => {

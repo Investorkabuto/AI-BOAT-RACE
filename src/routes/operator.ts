@@ -12,7 +12,7 @@ import { ApiError, bearer, readJson } from '../lib/http';
 import { isDate, jstIso } from '../lib/time';
 import { raceLabel } from '../lib/venues';
 import { eventStatement } from '../db/repo';
-import { CHAT_RULES, listChat, postChat, setHidden, validatePost } from '../db/chat';
+import { CHAT_RULES, listChat, notifyMentions, postChat, setHidden, validatePost } from '../db/chat';
 
 type Vars = { tokenId: string; now: number };
 export const operatorApi = new Hono<{ Bindings: Env; Variables: Vars }>();
@@ -165,7 +165,7 @@ operatorApi.post('/chat', async (c) => {
   const now = c.get('now');
   const message = await postChat(c.env.DB, 'live', { kind: 'operator' }, await validatePost(c.env.DB, b), now);
   await auditStatement(c.env.DB, 'operator', 'chat.post', String(message.id), { body: message.body }, now).run();
-  return c.json({ message }, 201);
+  return c.json({ message, mentioned: await notifyMentions(c.env.DB, 'live', message, now) }, 201);
 });
 /**
  * 不適切な投稿を非表示にする。body: { reason, warn? }。reason は投稿したAIへの警告と監査ログに残る。

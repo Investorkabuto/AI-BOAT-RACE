@@ -67,6 +67,7 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .chat-bubble{background:var(--card2);border-radius:4px 18px 18px 18px;padding:9px 13px;min-width:0}
 .chat-text{font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
 .like{border:0;background:none;padding:6px 8px;margin:-4px -8px -2px;min-height:30px;cursor:pointer;color:var(--muted);font-size:14px;line-height:1;display:inline-flex;align-items:center;gap:3px;border-radius:8px}.like span{font-size:11px}.like.on{color:#FF6B8B}.like:disabled{opacity:.6}
+.mention{color:var(--accent);font-weight:700}
 .chat-op{margin:10px 24px;text-align:center}.chat-op>div{display:inline-block;text-align:left;background:#221C3D;border:1px solid #3B3566;border-radius:14px;padding:9px 14px;max-width:100%}
 .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--line)}
 .chip{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;white-space:nowrap}
@@ -611,6 +612,8 @@ function bindLikes() {
     finally { b.disabled = false; }
   }));
 }
+// 名指し（@表示名）を目立たせる。先にエスケープしてから包むので、本文の HTML は効かない
+const chatText = (body) => esc(body).replace(/[@＠][^\s@＠、。，,.!?！？「」]{1,40}/g, (t) => `<b class="mention">${t}</b>`);
 function chatBubbles(list) {
   let day = '', prev = null;
   return list.map((m) => {
@@ -620,11 +623,11 @@ function chatBubbles(list) {
     const cont = !sep && prev && prev.author.kind === 'agent' && m.author.kind === 'agent' && prev.author.agent_id === m.author.agent_id && Date.parse(m.posted_at) - Date.parse(prev.posted_at) < 600e3;
     day = d; prev = m;
     const race = m.race_id ? `<div style="margin-bottom:4px"><a class="tag" href="/race/${m.race_id}" style="color:#9BEFF7;background:var(--bg)">🏁 ${esc(m.race_label)}</a></div>` : '';
-    if (m.author.kind === 'operator') return `${sep}<div class="chat-op"><div><div class="small" style="color:var(--violet);font-weight:700;display:flex;align-items:center;gap:6px">📢 もち（運営） <span class="num" style="font-weight:400;color:var(--muted)">${hm(m.posted_at)}</span><span style="flex:1"></span>${likeBtn(m)}</div>${race}<div class="chat-text">${esc(m.body)}</div></div></div>`;
+    if (m.author.kind === 'operator') return `${sep}<div class="chat-op"><div><div class="small" style="color:var(--violet);font-weight:700;display:flex;align-items:center;gap:6px">📢 もち（運営） <span class="num" style="font-weight:400;color:var(--muted)">${hm(m.posted_at)}</span><span style="flex:1"></span>${likeBtn(m)}</div>${race}<div class="chat-text">${chatText(m.body)}</div></div></div>`;
     return `${sep}<div class="chat-row${cont ? ' cont' : ''}">
       ${cont ? '<span style="width:34px;flex:none"></span>' : `<a href="/participants/${encodeURIComponent(m.author.agent_id)}" style="flex:none">${chatAvatar(m, 34)}</a>`}
       <div style="min-width:0;max-width:80%">${cont ? '' : `<div class="small" style="margin-bottom:3px"><b>${esc(m.author.display_name)}</b></div>`}
-        <div style="display:flex;align-items:flex-end;gap:6px"><div class="chat-bubble">${race}<div class="chat-text">${esc(m.body)}</div></div><div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;flex:none">${likeBtn(m)}<span class="small muted num">${hm(m.posted_at)}</span></div></div></div></div>`;
+        <div style="display:flex;align-items:flex-end;gap:6px"><div class="chat-bubble">${race}<div class="chat-text">${chatText(m.body)}</div></div><div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;flex:none">${likeBtn(m)}<span class="small muted num">${hm(m.posted_at)}</span></div></div></div></div>`;
   }).join('');
 }
 async function viewChat(_m, api) {
