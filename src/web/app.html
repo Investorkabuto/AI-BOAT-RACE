@@ -37,6 +37,11 @@ header.top{padding:calc(16px + env(safe-area-inset-top)) 20px 10px;display:flex;
 .logo{width:36px;height:36px;border-radius:12px;background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .brand b{font-size:19px;letter-spacing:.02em}
 .live{flex-shrink:0;display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#13213A;font-size:12px;color:var(--sub);white-space:nowrap}
+.bellbtn{flex-shrink:0;align-self:flex-start;width:40px;height:40px;border-radius:50%;border:0;background:#13213A;color:var(--muted);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.bellbtn[hidden]{display:none}
+.bellbtn[data-state="on"]{color:var(--accent)}
+.pushmsg{margin:8px 16px 0;padding:10px 14px;border-radius:14px;background:#13213A;font-size:13px;color:var(--sub)}
+.pushmsg[hidden]{display:none}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
 .pad{padding:0 16px}
 .grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
@@ -286,6 +291,7 @@ async function viewHome(_m, api) {
       <a class="ttl" href="/"><b class="disp">天下一舟闘会</b><small>〜AIによるボートレース予想〜</small></a>
       <div class="sub"><span class="num">${md(date)}</span><span class="live"><span class="dot" style="background:${next ? 'var(--ok)' : 'var(--dim)'}"></span>${next ? `開催中 ${venues.size}場` : list.length ? '本日の発売終了' : '準備中'}</span></div>
     </div></div>
+    <button type="button" class="bellbtn" id="bellbtn" hidden></button>
   </header>
   <section class="pad grid2" style="padding-top:4px">
     ${next ? `<a class="card span2" href="/race/${next.race_id}" style="display:flex;justify-content:space-between;align-items:center;color:var(--text)">
@@ -760,48 +766,76 @@ function openSheet() {
 const pushOk = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 let pushKey;
 let pushSynced = false;
-const bell = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5BE1F0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>';
+const bellSvg = (on, off) => `<svg width="20" height="20" viewBox="0 0 24 24" fill="${on ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" fill="none"/>${off ? '<path d="M3 3l18 18"/>' : ''}</svg>`;
 async function pushSub() { const reg = await navigator.serviceWorker.ready; return reg.pushManager.getSubscription(); }
 const sendSub = (sub) => fetch('/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(sub) });
+let pushToastTimer;
+function pushToast(t) {
+  const m = document.getElementById('pushmsg');
+  if (!m) return;
+  m.textContent = t;
+  m.hidden = !t;
+  clearTimeout(pushToastTimer);
+  if (t) pushToastTimer = setTimeout(() => { m.hidden = true; }, 5000);
+}
+async function pushToggle(sub) {
+  if (sub) {
+    if (!confirm('的中の通知をオフにしますか？')) return;
+    await fetch('/push/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+    await sub.unsubscribe();
+    pushToast('的中の通知をオフにしました');
+    return;
+  }
+  if ((await Notification.requestPermission()) !== 'granted') return;
+  const raw = atob(pushKey.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (pushKey.length % 4)) % 4));
+  const reg = await navigator.serviceWorker.ready;
+  const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(raw, (ch) => ch.charCodeAt(0)) });
+  const r = await sendSub(s);
+  if (!r.ok) { await s.unsubscribe().catch(() => {}); throw new Error(`HTTP ${r.status}`); }
+  pushSynced = true;
+  pushToast('的中の通知をオンにしました。AIが的中するとお知らせします');
+}
+// ヘッダー右上のベル（オン・オフの切り替え）と、まだオンにしていないときだけ出す案内
 async function bindPush() {
+  const bellBtn = document.getElementById('bellbtn');
   const box = document.getElementById('pushbox');
-  if (!box || !pushOk()) return;
+  if (!bellBtn || !box || !pushOk()) return;
   if (pushKey === undefined) {
     try { const r = await fetch('/push/key', { headers: { Accept: 'application/json' } }); pushKey = r.ok ? (await r.json()).key : null; } catch (_) { return; }
   }
   if (!pushKey) return;
   let sub = null;
   try { sub = await pushSub(); } catch (_) { return; }
-  if (!document.body.contains(box)) return;
+  if (!document.body.contains(bellBtn)) return;
   const denied = Notification.permission === 'denied';
   // 登録済みなら、サーバー側にも残っているように1回送り直す（通知の許可を出し直したときなど）
   if (sub && !pushSynced) { pushSynced = true; sendSub(sub).catch(() => {}); }
-  const text = denied ? '通知がブロックされています。端末の設定で、このアプリの通知を許可してください' : sub ? '的中の通知：オン' : 'AIが的中したら通知を受け取る';
-  const act = denied ? '' : sub ? '<span style="font-size:13px;color:var(--muted)">オフにする</span>' : '<span style="font-size:13px;color:var(--accent);font-weight:700">オンにする</span>';
-  box.innerHTML = `<button type="button" class="install" id="pushbtn"${denied ? ' disabled' : ''} style="border-style:solid">${bell}<span style="flex:1;font-size:13px">${text}</span>${act}</button><div id="pushmsg" class="small muted" role="status" style="margin:6px 20px 0"></div>`;
-  const btn = document.getElementById('pushbtn');
-  const msg = (t) => { const m = document.getElementById('pushmsg'); if (m) m.textContent = t; };
-  btn.addEventListener('click', async () => {
-    btn.disabled = true;
+  const state = denied ? 'denied' : sub ? 'on' : 'off';
+  bellBtn.hidden = false;
+  bellBtn.dataset.state = state;
+  bellBtn.innerHTML = bellSvg(state === 'on', state === 'denied');
+  bellBtn.setAttribute('aria-label', state === 'on' ? '的中の通知：オン（押すとオフ）' : state === 'denied' ? '的中の通知：ブロック中' : '的中の通知：オフ（押すとオン）');
+  bellBtn.setAttribute('aria-pressed', String(state === 'on'));
+  const msgBox = '<div id="pushmsg" class="pushmsg" role="status" hidden></div>';
+  box.innerHTML = state === 'off'
+    ? `<button type="button" class="install" id="pushbtn" style="border-style:solid"><span style="color:var(--accent);display:flex">${bellSvg(false, false)}</span><span style="flex:1;font-size:13px">AIが的中したら通知を受け取る</span><span style="font-size:13px;color:var(--accent);font-weight:700">オンにする</span></button>${msgBox}`
+    : msgBox;
+  const run = async (b) => {
+    if (state === 'denied') { pushToast('通知がブロックされています。端末の設定で、このアプリの通知を許可してください'); return; }
+    b.disabled = true;
     try {
-      if (sub) {
-        await fetch('/push/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
-        await sub.unsubscribe();
-      } else {
-        if ((await Notification.requestPermission()) !== 'granted') { bindPush(); return; }
-        const raw = atob(pushKey.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (pushKey.length % 4)) % 4));
-        const reg = await navigator.serviceWorker.ready;
-        const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(raw, (ch) => ch.charCodeAt(0)) });
-        const r = await sendSub(s);
-        if (!r.ok) { await s.unsubscribe().catch(() => {}); throw new Error(`HTTP ${r.status}`); }
-        pushSynced = true;
-      }
+      await pushToggle(sub);
+      const t = document.getElementById('pushmsg')?.textContent;
       await bindPush();
+      if (t) pushToast(t);
     } catch (e) {
-      btn.disabled = false;
-      msg(`設定できませんでした（${e.message}）`);
+      pushToast(`設定できませんでした（${e.message}）`);
+    } finally {
+      b.disabled = false;
     }
-  });
+  };
+  bellBtn.onclick = () => run(bellBtn);
+  document.getElementById('pushbtn')?.addEventListener('click', (e) => run(e.currentTarget));
 }
 
 // ---------- 分析（過去データの検索・集計。/analysis/... の API をそのまま表にする） ----------
