@@ -66,10 +66,10 @@ app.get('/agents/mcp.md', text(mcpMd, 'text/markdown'));
 app.get('/agents/policy.md', text(policyMd, 'text/markdown'));
 app.get('/openapi.json', (c) => c.json(openapi(new URL(c.req.url).origin)));
 
-// ---- 人間向けの観戦画面（1つの HTML が /、/venue/{jcd}、/race/{id}、/participants、/history を表示する）とホーム画面への追加 ----
+// ---- 人間向けの観戦画面（1つの HTML が /、/venue/{jcd}、/race/{id}、/declarations、/participants、/history を表示する）とホーム画面への追加 ----
 // AI向けの案内は /llms.txt。画面は公開APIを読むだけなので、人間とAIが見るデータは同じ
 const page = () => new Response(appHtml, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' } });
-for (const path of ['/', '/venue/:jcd', '/race/:id', '/participants', '/participants/:id', '/history', '/analysis']) app.get(path, page);
+for (const path of ['/', '/venue/:jcd', '/race/:id', '/declarations', '/participants', '/participants/:id', '/history', '/analysis']) app.get(path, page);
 app.get('/manifest.webmanifest', () => new Response(MANIFEST, { headers: { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'public, max-age=3600' } }));
 let swVersion: Promise<string> | undefined;
 app.get('/sw.js', async () => {
