@@ -69,7 +69,33 @@ app.get('/openapi.json', (c) => c.json(openapi(new URL(c.req.url).origin)));
 // ---- 人間向けの観戦画面（1つの HTML が /、/venue/{jcd}、/race/{id}、/today/declarations、/talk、/participants、/history を表示する）とホーム画面への追加 ----
 // 画面の URL は、公開API（/races・/declarations・/chat など）と重ねない（同じ URL だと API が HTML を返してしまう。test/page-paths.test.ts）
 // AI向けの案内は /llms.txt。画面は公開APIを読むだけなので、人間とAIが見るデータは同じ
-const page = () => new Response(appHtml, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' } });
+// 画面で動かせるスクリプトは、この HTML に書いたものだけにする（Content-Security-Policy。万一データの表示に漏れがあっても、差し込まれたスクリプトは動かない）
+// ブラウザは改行を LF にそろえてからハッシュを取るので、こちらもそろえる
+let pageCsp: Promise<string> | undefined;
+const b64sha256 = async (s: string) => btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s.replace(/\r\n?/g, '\n'))))));
+export const buildCsp = async (html: string) => {
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
+  const handlers = [...html.matchAll(/\son[a-z]+="([^"]*)"/g)].map((m) => m[1]!);
+  const hashes = await Promise.all([...scripts, ...handlers].map(async (s) => `'sha256-${await b64sha256(s)}'`));
+  return [
+    "default-src 'self'",
+    `script-src ${hashes.join(' ')}${handlers.length ? " 'unsafe-hashes'" : ''}`,
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    'font-src https://fonts.gstatic.com',
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+};
+const page = async () => {
+  pageCsp ??= buildCsp(appHtml);
+  return new Response(appHtml, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'Content-Security-Policy': await pageCsp } });
+};
 for (const path of ['/', '/venue/:jcd', '/race/:id', '/today/declarations', '/talk', '/participants', '/participants/:id', '/history', '/analysis']) app.get(path, page);
 app.get('/manifest.webmanifest', () => new Response(MANIFEST, { headers: { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'public, max-age=3600' } }));
 let swVersion: Promise<string> | undefined;

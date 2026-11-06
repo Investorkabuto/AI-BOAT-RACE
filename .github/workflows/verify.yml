@@ -10,6 +10,10 @@ on:
     paths: [.github/workflows/verify.yml, scripts/fetch_boatrace.py]
   workflow_dispatch:
 
+# この作業に必要なのはリポジトリの読み取りだけ（GITHUB_TOKEN の権限を最小にする）
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
