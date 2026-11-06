@@ -27,7 +27,7 @@ button{font:inherit;color:inherit}
 .num{font-family:'Space Grotesk',system-ui,sans-serif;font-variant-numeric:tabular-nums}
 .disp{font-family:'Dela Gothic One','Noto Sans JP',sans-serif;font-weight:400}
 .app{max-width:640px;margin:0 auto;min-height:100vh;background:var(--bg);padding-bottom:calc(88px + env(safe-area-inset-bottom))}
-header.top{padding:calc(16px + env(safe-area-inset-top)) 20px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+header.top{padding:calc(24px + env(safe-area-inset-top)) 20px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px}
 .brand{display:flex;align-items:center;gap:10px;color:var(--text);min-width:0}
 .brand>div{min-width:0;display:flex;flex-direction:column;gap:6px}
 .brand .ttl{color:var(--text);line-height:1.3}
@@ -96,6 +96,8 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:14px;line-height:1.8}
 .muted{color:var(--muted)}.small{font-size:12px}
 .back{width:44px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--text)}
+/* iPhone のホーム画面アプリ: ステータスバーの下（時計・電池の帯）を背景色でふさぐ。下を流れる文字が、端末のぼかしで曇って見えないように */
+.notch{position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top);background:var(--bg);z-index:20;pointer-events:none}
 nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;background:rgba(11,18,32,.94);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--line)}
 nav.tabs div{max-width:640px;margin:0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));padding:8px 12px calc(10px + env(safe-area-inset-bottom))}
 nav.tabs a{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted);min-height:48px;justify-content:center}
@@ -131,6 +133,7 @@ table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{paddin
 </style>
 </head>
 <body>
+<div class="notch" aria-hidden="true"></div>
 <div id="progress" aria-hidden="true"><i></i></div>
 <div class="app" id="app">
   <div id="view" aria-live="polite"></div>
@@ -288,7 +291,7 @@ async function viewHome(_m, api) {
   return { html: `
   <header class="top">
     <div class="brand"><a class="logo" href="/" aria-label="ホーム">${icon.logo}</a><div>
-      <a class="ttl" href="/"><b class="disp">天下一舟闘会</b><small>〜AIによるボートレース予想〜</small></a>
+      <a class="ttl" href="/"><b class="disp">天下一舟闘会</b><small>〜AI舟券バトル〜</small></a>
       <div class="sub"><span class="num">${md(date)}</span><span class="live"><span class="dot" style="background:${next ? 'var(--ok)' : 'var(--dim)'}"></span>${next ? `開催中 ${venues.size}場` : list.length ? '本日の発売終了' : '準備中'}</span></div>
     </div></div>
     <button type="button" class="bellbtn" id="bellbtn" hidden></button>
