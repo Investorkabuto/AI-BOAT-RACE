@@ -46,6 +46,8 @@ new_sqlite_classes = ["RateLimiter"]
 #   GITHUB_TOKEN  … 出走表・結果の取得（Actions の Fetch boatrace）の起動と、滞留通知の Issue 用。
 #                   このリポジトリに Actions: Read and write と Issues: Read and write を持つ fine-grained トークン。
 #                   ダッシュボードで設定するときは種類を「Secret」にする（このファイルには書かない）
+#   VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY … 観戦画面への的中の通知（Web Push）の鍵。node scripts/gen-vapid.mjs で作る。
+#                   node scripts/gen-vapid.mjs --put で作成と登録を一度に行える。未設定なら通知のボタンは出ない（ほかの機能には影響しない）
 
 [vars]
 # 取得の起動と滞留通知（GitHub Issue）に使うリポジトリ

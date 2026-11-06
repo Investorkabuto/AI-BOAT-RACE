@@ -24,6 +24,11 @@ export interface Env {
   GITHUB_REPO?: string;
   /** 取得ワークフロー（Fetch boatrace）を起動するブランチ。既定 main。GITHUB_TOKEN に Actions の書き込み権限が必要 */
   FETCH_WORKFLOW_REF?: string;
+  /** 観戦画面への通知（Web Push）の鍵。scripts/gen-vapid.mjs で作る（base64url）。未設定なら通知の機能は出さない */
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  /** 通知サービスに伝える連絡先（mailto: か https: の URL） */
+  VAPID_SUBJECT?: string;
 }
 
 export const SITE_NAME = '天下一舟闘会';

@@ -1,4 +1,4 @@
-// ホーム画面への追加（PWA）のための manifest と service worker。
+// ホーム画面への追加（PWA）のための manifest と service worker（的中の通知の表示も）。
 // service worker は画面（アプリの殻）だけをキャッシュし、データ（API）は常にネットワークから取る（オフライン時だけ最後の応答を使う）
 import { SITE_NAME } from '../env';
 
@@ -42,6 +42,21 @@ self.addEventListener('fetch', (e) => {
   if (DATA.test(url.pathname)) {
     e.respondWith(fetch(req).then((r) => { if (r.ok) { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); } return r; }).catch(() => caches.match(req)));
   }
+});
+// 的中の通知（jobs/push.ts）。タップするとそのレースの画面を開く
+self.addEventListener('push', (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (_) {}
+  e.waitUntil(self.registration.showNotification(d.title || '天下一舟闘会', { body: d.body || '', tag: d.tag, data: { url: d.url || '/' }, icon: '/icons/icon-192.png', badge: '/icons/icon-192.png' }));
+});
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = new URL((e.notification.data && e.notification.data.url) || '/', location.origin).href;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((ws) => {
+    const w = ws.find((x) => x.url.startsWith(location.origin));
+    if (w) return w.focus().then(() => w.navigate(url)).catch(() => self.clients.openWindow(url));
+    return self.clients.openWindow(url);
+  }));
 });
 `;
 }
