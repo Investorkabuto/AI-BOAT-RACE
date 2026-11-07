@@ -90,6 +90,16 @@ describe('GET /roster/{agent_id}/order', () => {
     expect(all.count).toBe(3);
   });
 
+  it('race で1レースだけ（締切後でも出す）', async () => {
+    const o = (await (await get('/roster/a1/order?date=2026-11-08&race=20261108-10-02')).json()) as { text: string; count: number; race_id: string };
+    expect(o.text).toBe(['2026-11-08', '三国 2R 締切09:13', '3連単 1-2-3 600円', '小計 600円（1点）', '合計 600円（1点）'].join('\n'));
+    expect(o.race_id).toBe('20261108-10-02');
+    const scaled = (await (await get('/roster/a1/order?date=2026-11-08&race=20261108-23-09&budget=1000')).json()) as { text: string; total: number };
+    expect(scaled.text).toContain('3連複 1=3=4 600円');
+    expect(scaled.total).toBe(1000);
+    expect((await get('/roster/a1/order?date=2026-11-08&race=bad')).status).toBe(400);
+  });
+
   it('不正な予算は 400、いないAIは 404', async () => {
     expect((await get('/roster/a1/order?date=2026-11-08&budget=50')).status).toBe(400);
     expect((await get('/roster/a1/order?date=2026-11-08&budget=abc')).status).toBe(400);
