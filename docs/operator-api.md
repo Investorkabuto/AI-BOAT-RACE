@@ -191,6 +191,7 @@
 | GET | /feed/card-supplements?date= | 受け取りの記録（保存したレース数・受け取り時刻）。省略時は翌日 |
 | GET/POST/DELETE | /admin/feed-tokens | 送信専用トークンの一覧・発行・失効（管理者） |
 
+- **User-Agent を必ず付ける**: Python の urllib の既定（`Python-urllib/3.x`）のままだと、Cloudflare がアプリに届く前に本文なしの 403（error 1010）で止める。`mochi-feed/1.0` のように送信元の名前を明示する（2026-11-07 の疎通確認で判明）
 - **認証**: 送信専用トークン `fdk_...`（運営トークン `opk_...` とは別。§6-a）。`Authorization: Bearer fdk_...`。管理者が `POST /admin/feed-tokens`（本文 `{"label": "mochi-feed"}`）で発行し、実値は応答で1回だけ表示する。mason からもちの Secure Vault へ渡す。同時に有効なのは2本まで
 - **本文**: `{"schema_version": 1, "date": "YYYY-MM-DD", "generated_at", "source", "definition", "races": [{"race_id": "YYYYMMDD-JJ-RR", "boats": [{"boat": 1, ...}], ...}]}`
   - date は当日〜3日先（日本時間）
