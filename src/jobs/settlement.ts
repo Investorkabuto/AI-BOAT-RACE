@@ -86,20 +86,21 @@ export async function waiveFinesForCancelled(db: D1Database, raceIds: readonly s
   return n;
 }
 
-export function parseResult(row: { status: string; refunded_boats_json: string; payouts_json: string }): RaceResult {
+export function parseResult(row: { status: string; refunded_boats_json: string; payouts_json: string; unsold_json?: string | null }): RaceResult {
   return {
     status: row.status === 'cancelled' ? 'cancelled' : 'official',
     refunded_boats: JSON.parse(row.refunded_boats_json) as number[],
     payouts: JSON.parse(row.payouts_json) as Payout[],
+    unsold: JSON.parse(row.unsold_json || '[]') as BetType[],
   };
 }
 
 /** 公式結果がそろっていれば、そのレースの舟券を判定して精算する。結果がなければ false */
 export async function settleRace(db: D1Database, race: RaceRow, nowMs: number): Promise<boolean> {
   const row = await db
-    .prepare('SELECT status, refunded_boats_json, payouts_json FROM race_results WHERE race_id = ?')
+    .prepare('SELECT status, refunded_boats_json, payouts_json, unsold_json FROM race_results WHERE race_id = ?')
     .bind(race.id)
-    .first<{ status: string; refunded_boats_json: string; payouts_json: string }>();
+    .first<{ status: string; refunded_boats_json: string; payouts_json: string; unsold_json: string }>();
   if (!row) return false;
   const result = parseResult(row);
   const bets = (await db.prepare("SELECT * FROM bets WHERE realm = 'live' AND race_id = ? AND status = 'locked'").bind(race.id).all<BetRow>()).results;

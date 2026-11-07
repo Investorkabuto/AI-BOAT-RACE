@@ -292,7 +292,7 @@ internalApi.put('/history', async (c) => {
     if (!isJcd(r.jcd) || typeof r.rno !== 'number' || !Number.isInteger(r.rno) || r.rno < 1 || r.rno > 12 || !hm) throw new ApiError(400, 'bad_request', `invalid race: ${JSON.stringify({ jcd: r.jcd, rno: r.rno, deadline: r.deadline })}`);
     const id = raceId(date, r.jcd, r.rno);
     const ms = jstToMs(date, hm.hour, hm.minute);
-    let result: { status: 'official' | 'cancelled'; v: { finish: number[][]; refunded: number[]; payouts: Payout[] }; start: unknown } | null = null;
+    let result: { status: 'official' | 'cancelled'; v: { finish: number[][]; refunded: number[]; payouts: Payout[]; unsold: BetType[] }; start: unknown } | null = null;
     if (r.result) {
       const v = validateResult({ ...(r.result as ResultIn), race_id: id });
       if (typeof v === 'string') skipped.push(`${id}: result ${v}`);
@@ -341,8 +341,8 @@ internalApi.put('/history', async (c) => {
       const done = "SELECT id FROM races WHERE id = ? AND status IN ('settled', 'cancelled')";
       push(
         'result',
-        db.prepare(`INSERT OR IGNORE INTO race_results (race_id, status, finish_json, refunded_boats_json, payouts_json, fetched_at) SELECT id, ?, ?, ?, ?, ? FROM (${done})`).bind(
-          result.status, JSON.stringify(result.v.finish), JSON.stringify(result.v.refunded), JSON.stringify(result.v.payouts), now, id,
+        db.prepare(`INSERT OR IGNORE INTO race_results (race_id, status, finish_json, refunded_boats_json, payouts_json, unsold_json, fetched_at) SELECT id, ?, ?, ?, ?, ?, ? FROM (${done})`).bind(
+          result.status, JSON.stringify(result.v.finish), JSON.stringify(result.v.refunded), JSON.stringify(result.v.payouts), JSON.stringify(result.v.unsold), now, id,
         ),
       );
       // 中止・不成立のレースは、すでに精算済み（舟券なし）で作られていても中止にする（過去分の取り直しで分かったとき）
@@ -434,11 +434,12 @@ export interface ResultIn {
   finish?: unknown;
   refunded_boats?: unknown;
   payouts?: { bet_type: string; combo: string; payout: number }[];
+  unsold?: unknown; // 不成立の券種（その券種の舟券は全額返還）
   start?: unknown; // スタート情報 [{course, boat, st}]（任意。解析できなければ省く）
 }
 
 /** 取り込む結果1件を検証して正規化する。誤りがあれば理由の文字列を返す */
-export function validateResult(r: ResultIn): { finish: number[][]; refunded: number[]; payouts: Payout[] } | string {
+export function validateResult(r: ResultIn): { finish: number[][]; refunded: number[]; payouts: Payout[]; unsold: BetType[] } | string {
   if (!r || typeof r.race_id !== 'string' || (r.status !== 'official' && r.status !== 'cancelled')) return 'race_id/status';
   const finish = (Array.isArray(r.finish) ? r.finish : []).map((x) => (Array.isArray(x) ? x : [x])) as number[][];
   const refunded = (Array.isArray(r.refunded_boats) ? r.refunded_boats : []) as number[];
@@ -450,8 +451,15 @@ export function validateResult(r: ResultIn): { finish: number[][]; refunded: num
     if (!combo) return `combo ${p.combo}`;
     payouts.push({ bet_type: p.bet_type as BetType, combo, payout: p.payout });
   }
-  if (r.status === 'official' && (finish.length < 2 || payouts.length === 0)) return 'official result needs finish and payouts';
-  return { finish, refunded, payouts };
+  const unsold: BetType[] = [];
+  for (const u of Array.isArray(r.unsold) ? r.unsold : []) {
+    if (!(BET_TYPES as readonly string[]).includes(u as string)) return `unsold ${JSON.stringify(u)}`;
+    if (!unsold.includes(u as BetType)) unsold.push(u as BetType);
+  }
+  if (unsold.some((u) => payouts.some((p) => p.bet_type === u))) return 'unsold bet type has payouts';
+  // 一部の券種が不成立のレースは、完走が少なく着順が2艇そろわないことがある（2026-11-07 戸田7R は単勝だけ成立で着順の表なし）
+  if (r.status === 'official' && (payouts.length === 0 || (finish.length < 2 && unsold.length === 0))) return 'official result needs finish and payouts';
+  return { finish, refunded, payouts, unsold };
 }
 
 /**
@@ -476,12 +484,12 @@ internalApi.post('/results', async (c) => {
     accepted.push(r);
     stmts.push(
       c.env.DB.prepare(
-        `INSERT INTO race_results (race_id, status, finish_json, refunded_boats_json, payouts_json, fetched_at)
-         SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM races WHERE id = ?)
+        `INSERT INTO race_results (race_id, status, finish_json, refunded_boats_json, payouts_json, unsold_json, fetched_at)
+         SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM races WHERE id = ?)
          ON CONFLICT (race_id) DO UPDATE SET status = excluded.status, finish_json = excluded.finish_json, refunded_boats_json = excluded.refunded_boats_json,
-           payouts_json = excluded.payouts_json, fetched_at = excluded.fetched_at
+           payouts_json = excluded.payouts_json, unsold_json = excluded.unsold_json, fetched_at = excluded.fetched_at
          WHERE EXISTS (SELECT 1 FROM races WHERE id = excluded.race_id AND status IN ('scheduled', 'locked'))`,
-      ).bind(r.race_id, r.status, JSON.stringify(v.finish), JSON.stringify(v.refunded), JSON.stringify(v.payouts), now, r.race_id),
+      ).bind(r.race_id, r.status, JSON.stringify(v.finish), JSON.stringify(v.refunded), JSON.stringify(v.payouts), JSON.stringify(v.unsold), now, r.race_id),
     );
     const starts = r.status === 'official' ? normalizeStarts(r.start) : null;
     if (starts) {

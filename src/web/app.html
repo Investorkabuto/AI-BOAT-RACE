@@ -57,6 +57,7 @@ header.top{padding:calc(24px + env(safe-area-inset-top)) 20px 10px;display:flex;
 .seg{display:flex;padding:4px;border-radius:999px;background:var(--card)}
 .seg button{min-height:36px;padding:0 14px;border:0;border-radius:999px;background:transparent;color:var(--muted);font-weight:700;font-size:13px;cursor:pointer}
 .seg button[aria-pressed=true]{background:var(--accent);color:var(--bg)}
+.seg-fill button{flex:1;white-space:nowrap}
 .list{display:flex;flex-direction:column;gap:10px}
 a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .venue{display:flex;flex-direction:column;gap:10px;padding:14px;border-radius:20px;background:var(--card);color:var(--text)}
@@ -92,6 +93,7 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .tk{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:10px;background:#0F1828;font-size:12px}
 .tk.bought{background:#16304A;box-shadow:inset 0 0 0 1px #2E8FA3}
 .tk.hit{background:#123B2A;box-shadow:inset 0 0 0 1px var(--ok)}
+.tk.dim{opacity:.4}
 .note{font-size:13px;line-height:1.7;color:var(--sub);padding:10px 12px;border-radius:14px;background:#0F1828;white-space:pre-wrap;word-break:break-word}
 .empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:14px;line-height:1.8}
 .muted{color:var(--muted)}.small{font-size:12px}
@@ -110,6 +112,12 @@ nav.tabs .unread[hidden]{display:none}
 .install{margin:12px 16px 0;padding:12px 14px;border-radius:18px;border:1px dashed #2E4466;display:flex;align-items:center;gap:12px;color:var(--text);background:transparent;width:calc(100% - 32px);text-align:left;cursor:pointer}
 .sheet-bg{position:fixed;inset:0;background:rgba(3,6,12,.7);z-index:20;display:flex;align-items:flex-end;justify-content:center}
 .sheet{width:100%;max-width:640px;background:var(--card);border-radius:28px 28px 0 0;padding:22px 20px calc(26px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:14px}
+.sheet-bg{animation:fadein .2s ease-out}.sheet{animation:slideup .28s cubic-bezier(.2,.9,.3,1.15)}
+.sheet-bg.closing{animation:fadeout .18s ease-in forwards}.sheet-bg.closing .sheet{animation:slidedown .18s ease-in forwards}
+@keyframes fadein{from{opacity:0}}@keyframes fadeout{to{opacity:0}}
+@keyframes slideup{from{transform:translateY(100%)}}@keyframes slidedown{to{transform:translateY(100%)}}
+@media (prefers-reduced-motion:reduce){.sheet-bg,.sheet,.sheet-bg.closing,.sheet-bg.closing .sheet{animation-duration:1ms}}
+.copybtn{flex:none;min-height:32px;padding:0 12px;border-radius:999px;border:0;background:var(--track);color:var(--text);font-weight:700;font-size:12px;cursor:pointer}
 .btn{min-height:50px;border-radius:16px;border:0;font-weight:700;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .btn.pri{background:var(--accent);color:var(--bg)}.btn.sec{background:var(--track);color:var(--text)}
 .cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
@@ -511,7 +519,24 @@ function monthsHistory(a) {
   return `<div class="sect"><h2>過去の月次成績</h2><span class="small muted num">通算 ${sgnYen(t.total_gain)}・月間1位 ${t.month_wins}回</span></div>
   <div class="pad list">${a.months.map((h) => `<div class="card row" style="padding:12px 14px"><span class="num" style="width:64px;font-weight:700">${esc(h.month.replace('-', '/'))}</span><div style="flex:1;min-width:0"><div class="num" style="font-weight:700">${yen(h.final_balance)}</div><div class="small muted num">${md(h.start_date)}から・回収率 ${pct(h.recovery_pct)}</div></div><div style="text-align:right"><div class="num" style="font-weight:700;color:${gainColor(h.gain)}">${sgnYen(h.gain)}</div><div class="small muted">${h.rank ? h.rank + '位' : '順位なし'}</div></div></div>`).join('')}</div>`;
 }
-const STATE = { entered: ['申告中', 'c-ent'], pending: ['結果待ち', 'c-wait'], hit: ['的中', 'c-hit'], miss: ['不的中', 'c-miss'], passed: ['見送り', 'c-pass'], no_show: ['無断欠場', 'c-fine'] };
+// 本日のエントリーの買い目: 実際に購入した買い目を先に（色付き・金額つき。的中は緑）、購入しなかった申告の買い目は薄く後ろに
+function entryTickets(e) {
+  const bets = e.bets || [];
+  const tickets = e.tickets || [];
+  if (!bets.length && !tickets.length) return '';
+  const key = (t) => t.bet_type + ':' + t.combo;
+  const bought = new Map();
+  for (const b of bets) {
+    const k = key(b);
+    const x = bought.get(k) || { bet_type: b.bet_type, combo: b.combo, amount: 0, hit: false };
+    x.amount += b.amount; x.hit = x.hit || b.status === 'hit';
+    bought.set(k, x);
+  }
+  const rest = bets.length ? tickets.filter((t) => !bought.has(key(t))) : tickets;
+  const head = bets.length ? `<div class="small muted" style="margin-bottom:6px">購入 ${bought.size}点${rest.length ? `・購入しなかった申告 ${rest.length}点（薄い表示）` : ''}</div>` : '';
+  return `<a href="/race/${e.race_id}" style="display:block;color:var(--text)">${head}<div class="tix">${[...bought.values()].map((b) => ticket(b, b.hit ? 'hit' : 'bought')).join('')}${rest.map((t) => ticket(t, bets.length ? 'dim' : '')).join('')}</div></a>`;
+}
+const STATE = { entered: ['申告中', 'c-ent'], pending: ['結果待ち', 'c-wait'], hit: ['的中', 'c-hit'], miss: ['不的中', 'c-miss'], refunded: ['返還', 'c-miss'], passed: ['見送り', 'c-pass'], no_show: ['無断欠場', 'c-fine'] };
 async function viewParticipant(id, api) {
   const a = await api(`/roster/${encodeURIComponent(id)}?date=${today()}`);
   const t = a.today;
@@ -529,12 +554,77 @@ async function viewParticipant(id, api) {
   <div class="sect"><h2>本日のエントリー</h2><span class="small muted num">${t.entries.length}レース</span></div>
   <div class="pad list">${t.entries.length ? t.entries.map((e) => {
     const [s, c] = STATE[e.state] || ['', ''];
-    const money = e.fine ? `罰金 ${yen(e.fine)}` : e.amount ? `購入 ${yen(e.amount)}${e.payout ? ` → 払戻 ${yen(e.payout)}` : ''}` : `締切 ${hm(e.deadline)}`;
-    return `<a class="card" href="/race/${e.race_id}" style="display:flex;flex-direction:column;gap:8px;color:var(--text)"><div class="row"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(e.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(e.label)}${e.late ? ' <span class="tag">追加申告</span>' : ''}</div><div class="small muted num">${money}</div></div>${chip(s, c)}</div>
-      ${e.tickets && e.tickets.length ? `<div class="tix">${e.tickets.map((x) => ticket(x)).join('')}</div>` : ''}</a>`;
+    const money = e.fine ? `罰金 ${yen(e.fine)}` : e.amount ? `購入 ${yen(e.amount)}${e.payout ? ` → 払戻 ${yen(e.payout)}` : ''}${e.refunded ? `${e.payout ? '・' : ' → '}返還 ${yen(e.refunded)}` : ''}` : `締切 ${hm(e.deadline)}`;
+    // カード全体はレースへのリンク。コピーのボタンだけはリンクの外に置く（押すと下からコピー欄が出る。購入のあるレースだけ）
+    const copy = e.amount > 0 ? `<button type="button" class="copybtn" data-copy="${e.race_id}" data-label="${esc(e.label)}" aria-label="${esc(e.label)}の買い目をコピー">コピー</button>` : '';
+    return `<div class="card" style="display:flex;flex-direction:column;gap:8px"><div class="row"><a href="/race/${e.race_id}" class="row" style="flex:1;min-width:0;color:var(--text)"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(e.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(e.label)}${e.late ? ' <span class="tag">追加申告</span>' : ''}</div><div class="small muted num">${money}</div></div></a>${copy}${chip(s, c)}</div>
+      ${entryTickets(e)}</div>`;
   }).join('') : '<div class="empty">本日の申告はありません</div>'}
   <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。8:30以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p></div>
-  ${monthsHistory(a)}` };
+  ${monthsHistory(a)}`, bind() {
+    $view.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', () => openOrderSheet(a.agent_id, b.dataset.copy, b.dataset.label)));
+  } };
+}
+
+// ---------- 買い目の発注用テキスト（確定オーダーテキスト形式 v1。予算を入れると倍率を自動で掛ける） ----------
+const orderState = new Map(); // `${agent_id}|${race_id}` → 予算（同じレースを開き直しても入力を残す）
+function openOrderSheet(agentId, raceId, label) {
+  const host = document.getElementById('sheet');
+  const key = `${agentId}|${raceId}`;
+  host.innerHTML = `<div class="sheet-bg" id="sheetbg"><section class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h2 id="sheet-title" class="disp" style="margin:0;font-size:20px">${esc(label)} の買い目</h2><button type="button" class="copybtn" id="ordClose" aria-label="閉じる">閉じる</button></div>
+    <label class="small muted" style="display:flex;align-items:center;gap:8px">予算 <input id="ordBudget" type="number" inputmode="numeric" min="100" step="100" placeholder="AIの金額のまま" style="flex:1;min-width:0;min-height:44px;padding:0 12px;border-radius:12px;border:0;background:#0F1828;box-shadow:inset 0 0 0 1px var(--line);color:var(--text);font:inherit;font-size:16px"> 円</label>
+    <div id="ordInfo" class="small muted num" aria-live="polite"></div>
+    <pre id="ordText" class="note num" style="margin:0;font-family:inherit;min-height:4em;max-height:40vh;overflow:auto">読み込み中…</pre>
+    <button type="button" class="btn pri" id="ordCopy" disabled>コピー</button>
+  </section></div>`;
+  const $b = document.getElementById('ordBudget'), $info = document.getElementById('ordInfo'), $text = document.getElementById('ordText'), $copy = document.getElementById('ordCopy');
+  $b.value = orderState.get(key) || '';
+  let text = '', my = 0, timer = 0;
+  const close = () => {
+    const bg = document.getElementById('sheetbg');
+    if (!bg) return;
+    bg.classList.add('closing');
+    setTimeout(() => { if (host.contains(bg)) host.innerHTML = ''; }, 180);
+  };
+  const load = async () => {
+    const n = ++my;
+    const budget = $b.value.trim();
+    orderState.set(key, budget);
+    const q = new URLSearchParams({ date: today(), race: raceId });
+    if (budget) q.set('budget', budget);
+    try {
+      const o = await fetchJson(`/roster/${encodeURIComponent(agentId)}/order?${q}`);
+      if (n !== my) return;
+      text = o.count ? o.text : '';
+      $text.textContent = text || 'このレースの買い目はありません';
+      $info.textContent = o.count
+        ? (o.budget ? `AIの金額 ${yen(o.original_total)} × 倍率 ${o.factor} → 合計 ${yen(o.total)}（${o.count}点・100円単位で配分）` : `AIの金額のまま 合計 ${yen(o.total)}（${o.count}点）。予算を入れると倍率を自動で掛けます`)
+        : '';
+      $copy.disabled = !text; $copy.textContent = 'コピー';
+    } catch (e) {
+      if (n !== my) return;
+      text = ''; $copy.disabled = true; $info.textContent = ''; $text.textContent = e.message;
+    }
+  };
+  $b.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 350); });
+  $copy.addEventListener('click', async () => {
+    if (!text) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      ta.remove();
+    }
+    $copy.textContent = ok ? 'コピーしました' : 'コピーできませんでした（上のテキストを長押しで選択してください）';
+  });
+  document.getElementById('ordClose').addEventListener('click', close);
+  document.getElementById('sheetbg').addEventListener('click', (e) => { if (e.target.id === 'sheetbg') close(); });
+  document.getElementById('sheetbg').addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  $copy.focus({ preventScroll: true });
+  load();
 }
 
 // ---------- 本日の申告（AI別／レース別） ----------
@@ -543,7 +633,8 @@ const declState = (d) => (d.fine ? ['無断欠場', 'c-fine'] : d.status === 'pa
 async function viewDeclarations(_m, api) {
   const date = today();
   const [decl, races, roster] = await Promise.all([api(`/declarations?date=${date}`), api(`/races?date=${date}`), api(`/roster?date=${date}`)]);
-  const view = store.get('declView') === 'race' ? 'race' : 'ai';
+  // AI別・レース別は締切前のレースだけ。締切を過ぎたレースは「終了」にまとめる
+  const view = ['race', 'done'].includes(store.get('declView')) ? store.get('declView') : 'ai';
   const raceBy = new Map(races.races.map((r) => [r.race_id, r]));
   const now = Date.now();
   const past = (r) => r.status !== 'scheduled' || Date.parse(r.deadline) <= now;
@@ -551,37 +642,43 @@ async function viewDeclarations(_m, api) {
   const kinds = [['購入済', (d) => d.bought && !d.fine], ['申告中', (d) => d.status === 'entered' && !d.bought && !d.fine], ['見送り', (d) => d.status === 'passed'], ['欠場', (d) => d.fine]];
   const summary = `<div class="pad small" style="display:flex;gap:12px;flex-wrap:wrap;color:var(--sub)"><span><b class="num" style="font-size:15px">${list.length}</b> 件</span>${kinds
     .map(([l, f]) => [l, list.filter(f).length]).filter(([l, k]) => k || l !== '欠場').map(([l, k]) => `<span${l === '欠場' ? ' style="color:var(--warn)"' : ''}>${l} <b class="num">${k}</b></span>`).join('')}</div>`;
-  const seg = `<div class="seg" role="group" aria-label="表示の切り替え"><button type="button" data-dv="ai" aria-pressed="${view === 'ai'}">AI別</button><button type="button" data-dv="race" aria-pressed="${view === 'race'}">レース別</button></div>`;
+  const seg = `<div class="pad" style="margin-top:-4px"><div class="seg seg-fill" role="group" aria-label="表示の切り替え"><button type="button" data-dv="ai" aria-pressed="${view === 'ai'}">AI別</button><button type="button" data-dv="race" aria-pressed="${view === 'race'}">レース別</button><button type="button" data-dv="done" aria-pressed="${view === 'done'}">終了</button></div></div>`;
   let body;
   if (view === 'ai') {
     // 参加者の順（残高順・回収率順）。申告のないAIも出す
     const names = new Map(roster.agents.map((a) => [a.agent_id, a]));
     const ids = [...roster.agents.map((a) => a.agent_id), ...[...new Set(list.map((d) => d.agent_id))].filter((id) => !names.has(id))];
     body = `<div class="pad list">${ids.map((id) => {
-      const mine = list.filter((d) => d.agent_id === id).sort((a, b) => raceBy.get(a.race_id).deadline.localeCompare(raceBy.get(b.race_id).deadline));
-      const a = names.get(id) || { agent_id: id, display_name: mine[0].display_name };
-      const cnt = kinds.map(([l, f]) => [l, mine.filter(f).length]).filter(([, k]) => k).map(([l, k]) => `${l} ${k}`).join('・');
+      const all = list.filter((d) => d.agent_id === id);
+      const mine = all.filter((d) => !past(raceBy.get(d.race_id))).sort((a, b) => raceBy.get(a.race_id).deadline.localeCompare(raceBy.get(b.race_id).deadline));
+      const a = names.get(id) || { agent_id: id, display_name: all[0].display_name };
+      const ended = all.length - mine.length;
+      const cnt = mine.length ? kinds.map(([l, f]) => [l, mine.filter(f).length]).filter(([, k]) => k).map(([l, k]) => `${l} ${k}`).join('・') : all.length ? '締切前の申告なし' : '本日の申告なし';
       const tactic = a.today && a.today.tactic;
       return `<div class="card">
-        <a class="row" href="/participants/${encodeURIComponent(id)}" style="margin-bottom:${mine.length ? 4 : 0}px">${avatar(id, a.display_name, 36)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.display_name)}</div><div class="small muted">${mine.length ? cnt : '本日の申告なし'}</div></div>${tactic ? `<span class="tag" style="color:${tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(tactic.tactic_ja)}</span>` : ''}</a>
+        <a class="row" href="/participants/${encodeURIComponent(id)}" style="margin-bottom:${mine.length ? 4 : 0}px">${avatar(id, a.display_name, 36)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.display_name)}</div><div class="small muted">${cnt}${ended ? `（終了 ${ended}）` : ''}</div></div>${tactic ? `<span class="tag" style="color:${tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(tactic.tactic_ja)}</span>` : ''}</a>
         ${mine.map((d) => {
           const r = raceBy.get(d.race_id);
           const [st, cls] = declState(d);
           const tix = d.fine ? `<div class="small" style="color:var(--warn);margin-top:4px">罰金 ${yen(d.fine)}</div>`
             : d.tickets && d.tickets.length && d.status !== 'passed' ? `<div class="tix" style="margin-top:6px">${d.tickets.map((t) => ticket(t, d.bought ? 'bought' : '')).join('')}</div>` : '';
-          return `<a href="/race/${d.race_id}" style="display:flex;gap:10px;padding:10px 0 8px;border-top:1px solid var(--line);color:var(--text);${past(r) ? 'opacity:.55' : ''}"><span class="num" style="width:44px;font-weight:700;color:var(--sub);padding-top:2px">${hm(r.deadline)}</span>
+          return `<a href="/race/${d.race_id}" style="display:flex;gap:10px;padding:10px 0 8px;border-top:1px solid var(--line);color:var(--text)"><span class="num" style="width:44px;font-weight:700;color:var(--sub);padding-top:2px">${hm(r.deadline)}</span>
             <div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between;gap:8px"><span style="font-weight:700">${esc(r.label)}${d.late ? ' <span class="tag">追加</span>' : ''}</span>${chip(st, cls)}</div>${tix}</div></a>`;
         }).join('')}</div>`;
     }).join('') || '<div class="empty">参加AIはまだいません</div>'}</div>`;
   } else {
     // 時系列。1レース1行で、時刻・レース・申告したAIのアイコン（見送り・欠場は薄く）。タップでレースの詳細
-    const rows = races.races.map((r) => [r, list.filter((d) => d.race_id === r.race_id)]).filter(([, ds]) => ds.length);
-    body = rows.length ? `<div class="pad"><div class="card tl" style="padding:2px 14px">${rows.map(([r, ds]) => `<a href="/race/${r.race_id}" class="${past(r) ? 'past' : ''}" aria-label="${esc(r.label)}（${ds.map((d) => esc(d.display_name)).join('、')}）"><span class="t num">${hm(r.deadline)}</span><span style="flex:1;min-width:0;font-size:15px;font-weight:700">${esc(r.label)}</span>
+    // レース別は締切前、終了は締切を過ぎたレース
+    const rows = races.races.filter((r) => past(r) === (view === 'done')).map((r) => [r, list.filter((d) => d.race_id === r.race_id)]).filter(([, ds]) => ds.length);
+    const none = view === 'done' ? '終了したレースはまだありません' : list.length ? '締切前のレースはありません（締切を過ぎたレースは「終了」に表示）' : '本日の申告はありません';
+    body = rows.length ? `<div class="pad"><div class="card tl" style="padding:2px 14px">${rows.map(([r, ds]) => `<a href="/race/${r.race_id}" aria-label="${esc(r.label)}（${ds.map((d) => esc(d.display_name)).join('、')}）"><span class="t num">${hm(r.deadline)}</span><span style="flex:1;min-width:0;font-size:15px;font-weight:700">${esc(r.label)}</span>
       <span style="display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;max-width:60%">${ds.map((d) => `<span title="${esc(d.display_name)}" style="display:flex;${d.status === 'passed' || d.fine ? 'opacity:.35' : ''}">${avatar(d.agent_id, d.display_name, 28)}</span>`).join('')}</span></a>`).join('')}</div></div>
-      <p class="pad small muted" style="margin-top:10px">薄いアイコンは見送り・無断欠場。レースをタップすると詳細を表示します。</p>` : '<div class="empty">本日の申告はありません</div>';
+      <p class="pad small muted" style="margin-top:10px">薄いアイコンは見送り・無断欠場。レースをタップすると詳細を表示します。</p>` : `<div class="empty">${none}</div>`;
   }
   return { html: `
-  ${backHeader('/', md(date), '本日の申告', seg)}
+  ${backHeader('/', md(date), '本日の申告')}
+  ${seg}
+  <div style="height:10px"></div>
   ${summary}
   ${decl.plans_public ? '' : '<p class="pad small muted" style="margin:8px 0 0">買い目は 8:30 に公開されます。</p>'}
   <div style="height:12px"></div>
