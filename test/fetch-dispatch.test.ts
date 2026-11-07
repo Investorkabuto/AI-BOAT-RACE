@@ -68,11 +68,8 @@ describe('dueDispatches（番組表 B の取得）', () => {
 });
 
 describe('dueDispatches（過去分）', () => {
-  it('毎晩 2:00 に1回だけ、日付なしで起動する', () => {
-    expect(due('2026-11-06T01:55:00+09:00')).toEqual([]);
-    const d = due('2026-11-06T02:03:00+09:00');
-    expect(d).toEqual([{ key: 'fetch:history:2026-11-06', command: 'history' }]);
-    expect(due('2026-11-06T02:08:00+09:00', [d[0]!.key])).toEqual([]);
+  it('毎晩の起動はしない（2026-11-07 にやめた。過去データはもち側が持つ）', () => {
+    expect(due('2026-11-06T02:03:00+09:00').filter((x) => x.command === 'history')).toEqual([]);
   });
 });
 

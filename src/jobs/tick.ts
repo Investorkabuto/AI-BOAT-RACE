@@ -8,6 +8,7 @@
 //  6. 運営タスクの失効、滞留通知、Webhook の配送、観戦画面への的中の通知、ルール改定の通知、月替わりの失格の復帰
 //  7. 口座残高制: 月初（と承認直後）の残高の付与、日ごとの確定残高の記録、過ぎた月の月次成績の確定
 //  8. 分析の事前集計と、詰めた形の片付け（v1.3。1日の読み書きの量の上限まで）
+//  9. 過去分（大会開始前のレース）の削除（2026-11-07 管理者決定。消し終えたら何もしない）
 import type { Env } from '../env';
 import { ensureSchema } from '../db/migrate';
 import { eventStatement, statsBetween, type RaceRow } from '../db/repo';
@@ -23,6 +24,7 @@ import { accountStandings, finalizeMonths, grantCurrentMonth, recordBalanceDays 
 import { accountRange, accountRulesApply } from '../lib/account';
 import { aggregate } from './aggregate';
 import { compactPacked } from './compact';
+import { purgeHistory } from './purge';
 import { loadUsage, saveUsage } from './budget';
 import { checkAlerts, commentaryTasks, expireTasks, seasonReviewTask, tasksAfterDayClose } from '../operator/scheduler';
 
@@ -90,6 +92,11 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
     await saveUsage(db, usage, nowMs);
   } catch (e) {
     log.push(`background error: ${String(e)}`);
+  }
+  try {
+    log.push(...(await purgeHistory(db, nowMs)));
+  } catch (e) {
+    log.push(`purge error: ${String(e)}`);
   }
   await db.prepare('DELETE FROM challenges WHERE issued_ms < ?').bind(nowMs - 60 * 60 * 1000).run();
   return log;
