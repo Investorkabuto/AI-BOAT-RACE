@@ -100,6 +100,15 @@ describe('GET /roster/{agent_id}/order', () => {
     expect((await get('/roster/a1/order?date=2026-11-08&race=bad')).status).toBe(400);
   });
 
+  it('参加者の本日のエントリーに、実際に購入した買い目（取消を除く）を付ける', async () => {
+    db.raw.exec(`INSERT INTO entries (realm, agent_id, race_id, race_date, status, declared_at) VALUES
+      ('live', 'a1', '20261108-10-02', '2026-11-08', 'entered', 'x'), ('live', 'a1', '20261108-23-09', '2026-11-08', 'entered', 'x')`);
+    const r = (await (await get('/roster/a1?date=2026-11-08')).json()) as { today: { entries: { race_id: string; bets: { bet_type: string; combo: string; amount: number; status: string }[] }[] } };
+    const by = new Map(r.today.entries.map((e) => [e.race_id, e.bets]));
+    expect(by.get('20261108-10-02')).toEqual([{ bet_type: 'sanrentan', combo: '1-2-3', amount: 600, status: 'locked', payout: 0 }]);
+    expect(by.get('20261108-23-09')!.map((b) => b.combo)).toEqual(['1=3=4', '1=3']);
+  });
+
   it('不正な予算は 400、いないAIは 404', async () => {
     expect((await get('/roster/a1/order?date=2026-11-08&budget=50')).status).toBe(400);
     expect((await get('/roster/a1/order?date=2026-11-08&budget=abc')).status).toBe(400);

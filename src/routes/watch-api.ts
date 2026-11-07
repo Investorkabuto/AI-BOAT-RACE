@@ -152,7 +152,7 @@ watchApi.get('/roster/:id', async (c) => {
   if (!isDate(date)) return c.json(bad('date は YYYY-MM-DD'), 400);
   const { startsOn } = monthRange(date.slice(0, 7));
   // プロフィール・成績・作戦・その日のエントリーを同時に読む（存在しないAIなら結果は捨てて 404）
-  const [a, monthStats, allTimeStats, dailyMap, tactic, entryRows] = await Promise.all([
+  const [a, monthStats, allTimeStats, dailyMap, tactic, entryRows, betRows] = await Promise.all([
     db
       .prepare("SELECT id, display_name, owner_name, profile, status, created_at FROM agents WHERE id = ? AND realm = 'live' AND status IN ('active', 'disqualified')")
       .bind(id)
@@ -176,6 +176,14 @@ watchApi.get('/roster/:id', async (c) => {
       )
       .bind(id, date)
       .all<{ race_id: string; status: string; late: number; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; misses: number; refunded: number; pending: number }>(),
+    // 実際に購入した買い目（取消を除く。購入の順）
+    db
+      .prepare(
+        `SELECT b.race_id, b.bet_type, b.combo, b.amount, b.status, b.payout, r.deadline_ms FROM bets b JOIN races r ON r.id = b.race_id
+         WHERE b.agent_id = ? AND b.realm = 'live' AND b.race_date = ? AND b.status != 'cancelled' ORDER BY b.received_ms, b.id`,
+      )
+      .bind(id, date)
+      .all<{ race_id: string; bet_type: BetType; combo: string; amount: number; status: string; payout: number; deadline_ms: number }>(),
   ]);
   if (!a) return c.json({ error: { code: 'not_found', message: 'agent not found' } }, 404);
   const ym = date.slice(0, 7);
@@ -189,6 +197,14 @@ watchApi.get('/roster/:id', async (c) => {
     .sort((x, y) => x.race_date.localeCompare(y.race_date))
     .map((d) => ({ date: d.race_date, stake: d.stake, payout: d.payout, recovery_pct: recoveryPct(d.payout, d.stake) }));
   const plansOpen = Date.now() >= entryDeadlineMs(date);
+  // 購入は、新ルールの開催日は購入の時点で公開済み。旧ルールの日は締切後だけ出す（GET /races/{race_id} と同じ）
+  const disclosed = entryRulesApply(date);
+  const nowMs = Date.now();
+  const betsBy = new Map<string, { bet_type: BetType; combo: string; amount: number; status: string; payout: number }[]>();
+  for (const b of betRows.results) {
+    if (!disclosed && b.deadline_ms > nowMs) continue;
+    betsBy.set(b.race_id, [...(betsBy.get(b.race_id) ?? []), { bet_type: b.bet_type, combo: b.combo, amount: b.amount, status: b.status, payout: b.payout }]);
+  }
   const entries = entryRows.results.map((e) => {
     // 状況: passed=見送り / no_show=無断欠場 / hit・miss=判定済み / refunded=全額返還（中止・不成立・返還艇） / pending=購入済み・結果待ち / entered=申告中（未購入）
     const judged = e.hits > 0 ? 'hit' : e.misses > 0 ? 'miss' : 'refunded';
@@ -196,6 +212,7 @@ watchApi.get('/roster/:id', async (c) => {
     return {
       race_id: e.race_id, label: raceLabel(e.jcd, e.rno), deadline: e.deadline_at, race_status: e.race_status, state, late: e.late === 1,
       amount: e.amount, payout: e.payout, refunded: e.refunded, fine: e.fine,
+      bets: betsBy.get(e.race_id) ?? [],
       ...(plansOpen ? { tickets: e.tickets_json ? JSON.parse(e.tickets_json) : [], rationale: e.rationale } : {}),
     };
   });
@@ -210,7 +227,7 @@ watchApi.get('/roster/:id', async (c) => {
     all_time: { ...fmtStats(allTime), ...(careerTotals(history).get(id) ?? { months: 0, total_gain: 0, month_wins: 0 }) },
     daily,
     today: { tactic: tactic ? { tactic: tactic.tactic, tactic_ja: TACTIC_JA[tactic.tactic], chosen_by: tactic.chosen_by } : null, plans_public: plansOpen, entries },
-    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は 8:30 から公開',
+    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は 8:30 から公開。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）',
   });
 });
 
