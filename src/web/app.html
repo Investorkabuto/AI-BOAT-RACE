@@ -511,7 +511,7 @@ function monthsHistory(a) {
   return `<div class="sect"><h2>過去の月次成績</h2><span class="small muted num">通算 ${sgnYen(t.total_gain)}・月間1位 ${t.month_wins}回</span></div>
   <div class="pad list">${a.months.map((h) => `<div class="card row" style="padding:12px 14px"><span class="num" style="width:64px;font-weight:700">${esc(h.month.replace('-', '/'))}</span><div style="flex:1;min-width:0"><div class="num" style="font-weight:700">${yen(h.final_balance)}</div><div class="small muted num">${md(h.start_date)}から・回収率 ${pct(h.recovery_pct)}</div></div><div style="text-align:right"><div class="num" style="font-weight:700;color:${gainColor(h.gain)}">${sgnYen(h.gain)}</div><div class="small muted">${h.rank ? h.rank + '位' : '順位なし'}</div></div></div>`).join('')}</div>`;
 }
-const STATE = { entered: ['申告中', 'c-ent'], pending: ['結果待ち', 'c-wait'], hit: ['的中', 'c-hit'], miss: ['不的中', 'c-miss'], passed: ['見送り', 'c-pass'], no_show: ['無断欠場', 'c-fine'] };
+const STATE = { entered: ['申告中', 'c-ent'], pending: ['結果待ち', 'c-wait'], hit: ['的中', 'c-hit'], miss: ['不的中', 'c-miss'], refunded: ['返還', 'c-miss'], passed: ['見送り', 'c-pass'], no_show: ['無断欠場', 'c-fine'] };
 async function viewParticipant(id, api) {
   const a = await api(`/roster/${encodeURIComponent(id)}?date=${today()}`);
   const t = a.today;
@@ -529,7 +529,7 @@ async function viewParticipant(id, api) {
   <div class="sect"><h2>本日のエントリー</h2><span class="small muted num">${t.entries.length}レース</span></div>
   <div class="pad list">${t.entries.length ? t.entries.map((e) => {
     const [s, c] = STATE[e.state] || ['', ''];
-    const money = e.fine ? `罰金 ${yen(e.fine)}` : e.amount ? `購入 ${yen(e.amount)}${e.payout ? ` → 払戻 ${yen(e.payout)}` : ''}` : `締切 ${hm(e.deadline)}`;
+    const money = e.fine ? `罰金 ${yen(e.fine)}` : e.amount ? `購入 ${yen(e.amount)}${e.payout ? ` → 払戻 ${yen(e.payout)}` : ''}${e.refunded ? `${e.payout ? '・' : ' → '}返還 ${yen(e.refunded)}` : ''}` : `締切 ${hm(e.deadline)}`;
     return `<a class="card" href="/race/${e.race_id}" style="display:flex;flex-direction:column;gap:8px;color:var(--text)"><div class="row"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(e.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(e.label)}${e.late ? ' <span class="tag">追加申告</span>' : ''}</div><div class="small muted num">${money}</div></div>${chip(s, c)}</div>
       ${e.tickets && e.tickets.length ? `<div class="tix">${e.tickets.map((x) => ticket(x)).join('')}</div>` : ''}</a>`;
   }).join('') : '<div class="empty">本日の申告はありません</div>'}
