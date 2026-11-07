@@ -534,7 +534,65 @@ async function viewParticipant(id, api) {
       ${e.tickets && e.tickets.length ? `<div class="tix">${e.tickets.map((x) => ticket(x)).join('')}</div>` : ''}</a>`;
   }).join('') : '<div class="empty">本日の申告はありません</div>'}
   <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。8:30以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p></div>
-  ${monthsHistory(a)}` };
+  ${t.entries.some((e) => e.amount > 0) ? orderPanel() : ''}
+  ${monthsHistory(a)}`, bind() { bindOrderPanel(a.agent_id); } };
+}
+
+// ---------- 買い目の発注用テキスト（確定オーダーテキスト形式 v1。予算を入れると倍率を自動で掛ける） ----------
+const orderPanel = () => `<div class="sect"><h2>買い目をテキストでコピー</h2></div>
+  <div class="pad"><div class="card" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+      <label class="small muted">予算 <input id="ordBudget" type="number" inputmode="numeric" min="100" step="100" placeholder="AIの金額のまま" style="width:150px;min-height:40px;padding:0 12px;border-radius:12px;border:0;background:#0F1828;box-shadow:inset 0 0 0 1px var(--line);color:var(--text);font:inherit;font-size:16px"> 円</label>
+      <label class="small muted" style="display:flex;align-items:center;gap:4px"><input id="ordAll" type="checkbox" style="width:18px;height:18px;accent-color:var(--accent)"> 締切後も含める</label>
+    </div>
+    <div id="ordInfo" class="small muted num" aria-live="polite"></div>
+    <pre id="ordText" class="note num" style="margin:0;font-family:inherit;min-height:2em"></pre>
+    <button type="button" class="btn pri" id="ordCopy" disabled>コピー</button>
+  </div></div>`;
+const orderState = new Map(); // agent_id → { budget, all }（同じページを開き直しても入力を残す）
+function bindOrderPanel(agentId) {
+  const $b = document.getElementById('ordBudget');
+  if (!$b) return;
+  const $all = document.getElementById('ordAll'), $info = document.getElementById('ordInfo'), $text = document.getElementById('ordText'), $copy = document.getElementById('ordCopy');
+  const st = orderState.get(agentId) || { budget: '', all: false };
+  $b.value = st.budget; $all.checked = st.all;
+  let text = '', my = 0, timer = 0;
+  const load = async () => {
+    const n = ++my;
+    const budget = $b.value.trim();
+    orderState.set(agentId, { budget, all: $all.checked });
+    const q = new URLSearchParams({ date: today() });
+    if (budget) q.set('budget', budget);
+    if ($all.checked) q.set('all', '1');
+    try {
+      const o = await fetchJson(`/roster/${encodeURIComponent(agentId)}/order?${q}`);
+      if (n !== my) return;
+      text = o.count ? o.text : '';
+      $text.textContent = text || ($all.checked ? '本日の買い目はありません' : '締切前の買い目はありません（「締切後も含める」で本日の全部を表示）');
+      $info.textContent = o.count
+        ? (o.budget ? `AIの金額 ${yen(o.original_total)} × 倍率 ${o.factor} → 合計 ${yen(o.total)}（${o.count}点・100円単位で配分）` : `AIの金額のまま 合計 ${yen(o.total)}（${o.count}点）`)
+        : '';
+      $copy.disabled = !text; $copy.textContent = 'コピー';
+    } catch (e) {
+      if (n !== my) return;
+      text = ''; $copy.disabled = true; $info.textContent = ''; $text.textContent = e.message;
+    }
+  };
+  $b.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 350); });
+  $all.addEventListener('change', load);
+  $copy.addEventListener('click', async () => {
+    if (!text) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      ta.remove();
+    }
+    $copy.textContent = ok ? 'コピーしました' : 'コピーできませんでした（上のテキストを長押しで選択してください）';
+  });
+  load();
 }
 
 // ---------- 本日の申告（AI別／レース別） ----------
