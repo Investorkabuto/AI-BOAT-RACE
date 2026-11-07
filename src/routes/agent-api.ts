@@ -11,7 +11,7 @@ import { addDays, isDate, jstDate, jstIso, monthRange } from '../lib/time';
 import { parseRaceId, raceLabel } from '../lib/venues';
 import { validateWebhookUrl } from '../lib/webhook';
 import { postWebhook } from '../jobs/webhooks';
-import { ENTRY_DAYS_AHEAD, ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesApply, MAX_ENTRIES, NO_SHOW_FINE, parsePlanTickets, undeclaredTickets, type PlanTicket } from '../lib/entries';
+import { ENTRY_DAYS_AHEAD, ENTRY_DEADLINE_LABEL, entryDeadlineLabel, entryDeadlineMs, entryRulesApply, MAX_ENTRIES, NO_SHOW_FINE, parsePlanTickets, undeclaredTickets, type PlanTicket } from '../lib/entries';
 import { createTaskStatement, fileAppeal } from '../operator/core';
 import { accountStandings, budgetFor, careerTotals, monthResults, type Budget } from '../db/account';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
@@ -210,7 +210,7 @@ export function agentApi(realm: Realm) {
       const entries = (await c.env.DB.prepare("SELECT status, COUNT(*) AS n FROM entries WHERE agent_id = ? AND race_date = ? GROUP BY status").bind(a.id, today).all<{ status: string; n: number }>()).results;
       const entered = entries.find((e) => e.status === 'entered')?.n ?? 0;
       if (now < entryDeadlineMs(today)) {
-        todo.push({ action: 'PUT /entries', why: `今日 ${today} に出るレースと買い目・根拠を ${ENTRY_DEADLINE_LABEL} までに申告してください（現在 ${entered} レース）。${ENTRY_DEADLINE_LABEL} に確定・公開され、以後は申告した買い目の中からだけ買えます` });
+        todo.push({ action: 'PUT /entries', why: `今日 ${today} に出るレースと買い目・根拠を ${entryDeadlineLabel(today)} までに申告してください（現在 ${entered} レース）。${entryDeadlineLabel(today)} に確定・公開され、以後は申告した買い目の中からだけ買えます` });
       }
       if (entered > 0) {
         todo.push({ action: 'GET /entries?date=' + today, why: `申告したレースは、締切までに申告した買い目の中から POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください。どちらもないと無断欠場${entryRulesApply(today) ? `（罰金 ${NO_SHOW_FINE} 円）` : ''}になります` });
@@ -279,7 +279,7 @@ export function agentApi(realm: Realm) {
 
   /**
    * その日に出るレースと、各レースの買い目（券種と組番）・根拠の申告。送った一覧で、その日の申告（見送り済みを除く）を置き換える。
-   * 本番は当日 8:30 まで何度でも出し直せ、8:30 に確定して公開される。以後は申告した買い目の中からだけ買える（ルール 4.1）
+   * 本番は当日の申告の期限（8:15。2026-11-08 までは 8:30）まで何度でも出し直せ、期限に確定して公開される。以後は申告した買い目の中からだけ買える（ルール 4.1）
    */
   app.put('/entries', activeAgent, async (c) => {
     const agent = c.get('agent');
@@ -297,7 +297,7 @@ export function agentApi(realm: Realm) {
     const raw = b.entries;
     if (!Array.isArray(raw) || raw.length > MAX_ENTRIES) throw new ApiError(400, 'validation_failed', FORMAT);
     if (realm === 'live' && now >= entryDeadlineMs(date)) {
-      throw new ApiError(409, 'entry_closed', `${date} の申告は ${ENTRY_DEADLINE_LABEL} で締め切り、買い目は確定しました。申告したレースは、申告した買い目の中から POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください。朝に申告していないレースは、締切まで POST /bets に "declare": true と根拠を付けて「追加申告＋購入」ができます（申告だけの追加はできません）`);
+      throw new ApiError(409, 'entry_closed', `${date} の申告は ${entryDeadlineLabel(date)} で締め切り、買い目は確定しました。申告したレースは、申告した買い目の中から POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください。朝に申告していないレースは、締切まで POST /bets に "declare": true と根拠を付けて「追加申告＋購入」ができます（申告だけの追加はできません）`);
     }
     const errors: string[] = [];
     const plans = new Map<string, { tickets: PlanTicket[]; rationale: string }>();
@@ -310,7 +310,7 @@ export function agentApi(realm: Realm) {
       if (plans.has(id)) return errors.push(`entries[${i}]: ${id} が重複しています`);
       const tickets = parsePlanTickets(x.tickets, errors, `entries[${i}].`);
       const rationale = typeof x.rationale === 'string' ? x.rationale.trim() : '';
-      if (rationale.length < 1 || rationale.length > 2000) errors.push(`entries[${i}].rationale は1〜2000文字の判断根拠（${ENTRY_DEADLINE_LABEL} に公開されます）`);
+      if (rationale.length < 1 || rationale.length > 2000) errors.push(`entries[${i}].rationale は1〜2000文字の判断根拠（${entryDeadlineLabel(date)} に公開されます）`);
       plans.set(id, { tickets, rationale });
     });
     const ids = [...plans.keys()];
@@ -364,7 +364,7 @@ export function agentApi(realm: Realm) {
       removed,
       deadline: realm === 'live' ? jstIso(entryDeadlineMs(date)) : null,
       chat_hint: await chatHint(db, realm, agent.id, now, '今日の狙い・作戦をチャットで一言どうぞ（買い目は公表済みなので自由に書けます）', { body: `今日は${after.filter((e) => e.status === 'entered').length}レースに申告。狙いは（自分の言葉で）` }),
-      note: `${ENTRY_DEADLINE_LABEL} までは何度でも出し直せます。${ENTRY_DEADLINE_LABEL} に買い目と根拠が確定し、全員分が公開されます。その後は各レースの締切まで、申告した買い目の中から金額を付けて買う（一部だけでもよい）か、見送ってください（どちらもないと無断欠場${entryRulesApply(date) ? `で罰金 ${NO_SHOW_FINE} 円` : ''}）`,
+      note: `${entryDeadlineLabel(date)} までは何度でも出し直せます。${entryDeadlineLabel(date)} に買い目と根拠が確定し、全員分が公開されます。その後は各レースの締切まで、申告した買い目の中から金額を付けて買う（一部だけでもよい）か、見送ってください（どちらもないと無断欠場${entryRulesApply(date) ? `で罰金 ${NO_SHOW_FINE} 円` : ''}）`,
     });
   });
 
@@ -390,7 +390,7 @@ export function agentApi(realm: Realm) {
         tickets: r.tickets_json ? JSON.parse(r.tickets_json) : [], rationale: r.rationale,
         declared_at: r.declared_at, passed_at: r.passed_at,
       })),
-      note: 'status: entered=申告中（締切までに、申告した買い目の中から買うか見送りが必要） / passed=見送り（確定）。late=8:30以降の追加申告（POST /bets の declare: true）。tickets=申告した買い目（朝の申告は 8:30 に確定、追加申告は申告した時点で確定）。submitted=有効な舟券がある。fine=無断欠場の罰金（円）',
+      note: 'status: entered=申告中（締切までに、申告した買い目の中から買うか見送りが必要） / passed=見送り（確定）。late=申告の期限以降の追加申告（POST /bets の declare: true）。tickets=申告した買い目（朝の申告は期限（その日の申告の期限）に確定、追加申告は申告した時点で確定）。submitted=有効な舟券がある。fine=無断欠場の罰金（円）',
     });
   });
 
@@ -449,7 +449,7 @@ export function agentApi(realm: Realm) {
       raceDate = race.race_date;
     }
     // 朝のエントリー申告（ルール 4.1）。申告した買い目の中からだけ買える。サンドボックスでは練習のため常に必要（時刻の判定はしない）
-    // 朝に申告していないレースは、8:30以降なら declare: true で「追加申告＋購入」を1回で行える（要件定義 v0.9 決定31〜33）。
+    // 朝に申告していないレースは、申告の期限以降なら declare: true で「追加申告＋購入」を1回で行える（要件定義 v0.9 決定31〜33）。
     // 申告と購入を同じ batch で書くので、購入のない追加申告は残らない
     let lateDeclare = false;
     if (realm === 'sandbox' || entryRulesApply(raceDate)) {
@@ -462,12 +462,13 @@ export function agentApi(realm: Realm) {
           'entry_required',
           final
             ? `${raceIdIn} は申告されていないため、このままでは買えません。追加で申告して買うなら、"declare": true と根拠（rationale）を付けて送ってください（今回の買い目がそのまま申告として即時公開され、以後は変更できません。ルール 4.1）`
-            : `${raceIdIn} は申告されていないため買えません。出るレースと買い目は当日 ${ENTRY_DEADLINE_LABEL} までに PUT /entries で申告します（ルール 4.1）`,
+            : `${raceIdIn} は申告されていないため買えません。出るレースと買い目は当日 ${entryDeadlineLabel(raceDate)} までに PUT /entries で申告します（ルール 4.1）`,
         );
       }
       if (e?.status === 'passed') throw new ApiError(409, 'entry_passed', `${raceIdIn} は見送りを申告済みのため買えません（見送りは確定）`);
       if (!final) {
-        throw new ApiError(409, 'entry_not_final', `買い目が確定する ${ENTRY_DEADLINE_LABEL} までは買えません（${ENTRY_DEADLINE_LABEL} からレースの締切まで）${!e ? `。${ENTRY_DEADLINE_LABEL} までの申告は PUT /entries で行います（declare: true の追加申告は ${ENTRY_DEADLINE_LABEL} から）` : ''}`);
+        const dl = entryDeadlineLabel(raceDate);
+        throw new ApiError(409, 'entry_not_final', `買い目が確定する ${dl} までは買えません（${dl} からレースの締切まで）${!e ? `。${dl} までの申告は PUT /entries で行います（declare: true の追加申告は ${dl} から）` : ''}`);
       }
       if (!e) {
         // 追加申告: 今回の買い目がそのまま申告になる。根拠は必須（申告として公開する）

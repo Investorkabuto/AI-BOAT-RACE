@@ -14,9 +14,32 @@ export const LEGACY_DAILY_BUDGET = 10_000;
 export const ENTRY_DAILY_BUDGET = 20_000;
 /** 無断欠場1回の罰金（円） */
 export const NO_SHOW_FINE = 2_000;
-/** 朝の申告の期限（当日の日本時間） */
-export const ENTRY_DEADLINE_HM = { hour: 8, minute: 30 } as const;
-export const ENTRY_DEADLINE_LABEL = '8:30';
+/**
+ * 朝の申告の期限（確定・公開の時刻。当日の日本時間）。開催日ごとに、from 以降で最も新しいものを使う。
+ * 2026-11-09 の申告分から 8:30 → 8:15（決定58、2026-11-08 管理者決定。締切 8:35 のレースでも購入・見送りの時間を20分取るため）
+ */
+type DeadlineHm = { from: string; hour: number; minute: number };
+const FIRST_DEADLINE: DeadlineHm = { from: '0000-00-00', hour: 8, minute: 30 };
+/** 現行（最新）の申告の期限。文書・説明文に使う表記 */
+export const ENTRY_DEADLINE_HM: DeadlineHm = { from: '2026-11-09', hour: 8, minute: 15 };
+export const ENTRY_DEADLINES: readonly DeadlineHm[] = [FIRST_DEADLINE, ENTRY_DEADLINE_HM];
+export const ENTRY_DEADLINE_LABEL = hmLabel(ENTRY_DEADLINE_HM);
+
+function hmLabel(t: { hour: number; minute: number }): string {
+  return `${t.hour}:${String(t.minute).padStart(2, '0')}`;
+}
+
+/** その開催日の申告の期限（時・分） */
+export function entryDeadlineHm(raceDate: string): { hour: number; minute: number } {
+  let hm = FIRST_DEADLINE;
+  for (const d of ENTRY_DEADLINES) if (raceDate >= d.from) hm = d;
+  return hm;
+}
+
+/** その開催日の申告の期限の表記（例 "8:15"） */
+export function entryDeadlineLabel(raceDate: string): string {
+  return hmLabel(entryDeadlineHm(raceDate));
+}
 /**
  * 何日先のレースまで申告を受け付けるか。0 = 当日の分だけ（日本時間 0:00 から）。
  * 番組表（Bファイル）の取り込みで、前日の夕方から翌日のレースが作られるようになったが、前日からの申告を認めるかは
@@ -39,7 +62,8 @@ export function dailyBudget(raceDate: string, start: string | null = ENTRY_RULES
 
 /** その開催日の申告の期限（epoch ms） */
 export function entryDeadlineMs(raceDate: string): number {
-  return jstToMs(raceDate, ENTRY_DEADLINE_HM.hour, ENTRY_DEADLINE_HM.minute);
+  const hm = entryDeadlineHm(raceDate);
+  return jstToMs(raceDate, hm.hour, hm.minute);
 }
 
 /** 1レースに申告できる買い目の数の上限（1回の提出の上限と同じ） */
