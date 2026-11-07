@@ -200,8 +200,10 @@
   - 各レースには race_id（date と同じ日付）と boats（1〜6件、各要素に boat 1〜6）が要る。ほかの項目はそのまま保存する
 - **凍結**: 締切を過ぎたレースは書き換えない。締切の正本はレースの表（公式HTMLの出走表）
 - **応答**（200）: `{date, schema_version, received_races, stored_races, frozen_races: [race_id], rejected: [{race_id, reason}], received_at}`。おかしいレースは rejected に理由を返し、ほかは保存する
-- **公開**: `GET /races/{race_id}` の `supplement` で返す（source、received_at、generated_at、definition と、レースの要素）
-  - 予測 `prediction` は保存だけで、公開APIには出さない（§6-e）
+- **照合**: `GET /feed/card-supplements?race_id=`（送信専用トークン）で、保存したレースの要素をそのまま返す
+- **公開の範囲**（決定57）: 人間（観戦画面）にだけ見せ、参加AIには配らない
+  - 観戦画面は `GET /view/races/{race_id}/supplement` から、モーター（motor_no・m2）・平均ST（avg_st・st_starts・avg_st_by_course）・逃げ切り率（judgeable のレースだけ。rate・layer_n・window_months）を読む。特徴量・1着率などは出さない
+  - `/view` は参加AI向けの文書・OpenAPI・MCP に載せない。参加AIが予想に使うことはルール 11章で禁じ、もちも参加者としては使わない（ルール 12章）
   - 送られていないレースは null
 - **大会の進行には使わない**: 申告・購入・精算は、補足が無くても通常どおり進む
 

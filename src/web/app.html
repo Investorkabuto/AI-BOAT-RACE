@@ -141,6 +141,7 @@ nav.tabs .unread[hidden]{display:none}
 .ent{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.ent:last-child{border-bottom:0}
 .grade{font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--line);color:var(--sub)}.grade.A1{background:#3A3216;color:var(--gold)}.grade.A2{background:#16304A;color:#9BEFF7}
 .lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 8px;margin-top:2px}.lanes span{display:flex;align-items:center;gap:4px;font-size:12px;min-width:0;white-space:nowrap;overflow:hidden}
+.stx summary{cursor:pointer;margin-top:3px;list-style:none}.stx summary::-webkit-details-marker{display:none}.stx summary::after{content:' ▾'}.stx[open] summary::after{content:' ▴'}.stc span.few{opacity:.45}
 .stc{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;margin-top:5px}.stc span{display:flex;flex-direction:column;align-items:center;padding:3px 0;border-radius:8px;background:var(--line);font-size:11px;line-height:1.3;color:var(--sub)}.stc span i{font-style:normal;font-size:10px;color:var(--muted)}.stc span.me{box-shadow:inset 0 0 0 1px var(--accent);color:var(--text)}
 #ents[data-st=all] .dt,#ents[data-st=detail] .bs{display:none}
 .starts{display:flex;gap:6px;margin-top:12px}.starts div{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px}
@@ -343,8 +344,9 @@ const stFmt = (v) => (v == null ? '—' : Number(v).toFixed(3).replace(/^0\./, '
 function stLine(b, frame) {
   if (!b || b.avg_st == null) return '';
   const byc = b.avg_st_by_course || {};
-  return `<div class="small num sta" style="margin-top:3px;color:var(--sub)">平均ST <b style="color:var(--text)">${stFmt(b.avg_st)}</b> <span class="muted">（${Number(b.st_starts) || 0}走）</span></div>
-    <div class="stc num">${[1, 2, 3, 4, 5, 6].map((c) => { const x = byc[c] || {}; return `<span class="${c === frame ? 'me' : ''}" title="${c}コース ${Number(x.starts) || 0}走"><i>${c}コース</i>${stFmt(x.avg_st)}</span>`; }).join('')}</div>`;
+  const own = byc[frame] || {};
+  return `<div class="small num" style="margin-top:3px;color:var(--sub);display:flex;flex-wrap:wrap;column-gap:12px"><span style="white-space:nowrap">平均ST <b style="color:var(--text)">${stFmt(b.avg_st)}</b> <span class="muted">（${Number(b.st_starts) || 0}走）</span></span><span style="white-space:nowrap">${frame}コース <b style="color:var(--text)">${stFmt(own.avg_st)}</b> <span class="muted">（${Number(own.starts) || 0}走）</span></span></div>
+    <details class="stx"><summary class="small muted">コース別</summary><div class="stc num">${[1, 2, 3, 4, 5, 6].map((c) => { const x = byc[c] || {}; const n = Number(x.starts) || 0; return `<span class="${c === frame ? 'me' : ''}${n < 20 ? ' few' : ''}" title="${c}コース ${n}走"><i>${c}コース</i>${stFmt(x.avg_st)}<i>${n}走</i></span>`; }).join('')}</div></details>`;
 }
 const stText = (st) => (st ? st.replace(/^0\./, '.').replace(/^([FL])0\./, '$1.') : '—');
 const dateQ = (date) => (date === today() ? '' : `?date=${date}`);
@@ -392,7 +394,9 @@ async function viewRace(id, api) {
   const date = `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}`;
   const jcd = id.slice(9, 11), rno = Number(id.slice(12, 14));
   // レース詳細と、同じ日の一覧（1R〜12R の切り替え用）を同時に読む
-  const [r, day] = await Promise.all([api(`/races/${encodeURIComponent(id)}`), api(`/races?date=${date}`).catch((e) => { if (e instanceof Miss) throw e; return null; })]);
+  // 出走表の補足（もちのフィード）は観戦画面専用の /view から読む（参加AIには配らない。決定57）。無くても画面は出す
+  const [r, day, sv] = await Promise.all([api(`/races/${encodeURIComponent(id)}`), api(`/races?date=${date}`).catch((e) => { if (e instanceof Miss) throw e; return null; }), api(`/view/races/${encodeURIComponent(id)}/supplement`).catch(() => null)]);
+  const sp = sv && sv.supplement;
   const now = Date.now();
   const [st, cls] = raceState(r, now);
   const sameVenue = day ? day.races.filter((x) => x.jcd === jcd).sort((a, b) => a.rno - b.rno) : [];
@@ -406,22 +410,23 @@ async function viewRace(id, api) {
   const courseOf = new Map(start.map((x) => [x.boat, x]));
   const official = `https://www.boatrace.jp/owpc/pc/race/racelist?rno=${rno}&jcd=${jcd}&hd=${id.slice(0, 8)}`;
   // 出走表の補足（もちの夜間バッチ。平均ST（集計値）は全体とコース別を切り替える。決定49・54）
-  const supp = new Map(((r.supplement && r.supplement.boats) || []).map((b) => [b.boat, b]));
+  const supp = new Map(((sp && sp.boats) || []).map((b) => [b.boat, b]));
   const cardBy = new Map(((r.card && r.card.racers) || []).map((b) => [b.boat, b]));
   const hasSt = [...supp.values()].some((b) => b.avg_st != null);
   const hasMotor = [...supp.values(), ...cardBy.values()].some((b) => b.motor_no != null);
+  const nige = sp && sp.nige;
   // 全体: 選手の基本情報（今までどおり）。詳細: モーターと平均ST（集計値。全体とコース別）
   const stView = store.get('stView') === 'detail' ? 'detail' : 'all';
-  const stSeg = (hasSt || hasMotor) && r.entrants && r.entrants.length ? `<div class="pad" style="margin:-2px 0 8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span class="small muted">詳細: モーター・平均ST</span><div class="seg" role="group" aria-label="出走表の表示"><button type="button" data-st="all" aria-pressed="${stView === 'all'}">全体</button><button type="button" data-st="detail" aria-pressed="${stView === 'detail'}">詳細</button></div></div>` : '';
+  const stSeg = (hasSt || hasMotor || nige) && r.entrants && r.entrants.length ? `<div class="pad" style="margin:-2px 0 8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span class="small muted">詳細: モーター・平均ST・逃げ切り率</span><div class="seg" role="group" aria-label="出走表の表示"><button type="button" data-st="all" aria-pressed="${stView === 'all'}">全体</button><button type="button" data-st="detail" aria-pressed="${stView === 'detail'}">詳細</button></div></div>` : '';
   const entrantsHtml = `<div class="sect"><h2>出走表</h2><a class="small" href="${official}" target="_blank" rel="noopener">公式の出走表 ↗</a></div>
-  ${stSeg}<div class="pad" id="ents" data-st="${stView}">${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
+  ${stSeg}<div class="pad" id="ents" data-st="${stView}">${nige && r.entrants && r.entrants.length ? `<div class="dt"><div class="card" style="margin-bottom:8px;display:flex;align-items:center;gap:12px">${boat(1, 30)}<div style="flex:1;min-width:0"><div class="small muted">1号艇の逃げ切り率（過去の同じ条件のレースからの推定）</div><div class="small muted num" style="margin-top:2px">${[nige.layer_n != null ? `同じ条件 ${Number(nige.layer_n).toLocaleString()}レース` : '', nige.window_months != null ? `直近${nige.window_months}か月` : ''].filter(Boolean).join('・')}</div></div><b class="num" style="font-size:26px;color:var(--accent)">${Math.round(nige.rate * 100)}%</b></div></div>` : ''}${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
     const pl = place.get(e.boat);
     const sc = courseOf.get(e.boat);
     const right = (refunded.has(e.boat) ? chip('返還', 'c-cancel') : pl ? `<span class="num" style="font-weight:700;font-size:15px;color:${pl === 1 ? 'var(--gold)' : pl <= 3 ? 'var(--text)' : 'var(--muted)'}">${pl}着</span>` : '')
       + (sc ? `<div class="small muted num" style="margin-top:2px">${sc.course}コース・ST ${esc(stText(sc.st))}</div>` : '');
     return `<div class="ent">${boat(e.boat, 34)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><b style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.name)}</b>${e.grade ? `<span class="grade ${esc(e.grade)}">${esc(e.grade)}</span>` : ''}</div>
       <div class="small muted num bs">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div><div class="dt">${motorLine(supp.get(e.boat), cardBy.get(e.boat))}${stLine(supp.get(e.boat), e.boat)}</div></div>${right ? `<div style="text-align:right;flex-shrink:0">${right}</div>` : ''}</div>`;
-  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。${start.length ? 'コースとSTはレースでの実際の進入とスタートタイミング。' : '進入コースは展示・本番で変わることがあります（レース後に実際のコースを表示します）。'}展示・オッズは公式サイトで確認できます。${hasSt || hasMotor ? '<span class="dt"><br>モーターは番号と2連率（公式の番組表の値）。' : ''}${hasSt ? '平均ST（集計値）は、2023年11月以降の過去の出走から集計した値です（有効なST 0.00〜0.30 のみ。フライング・失格・欠場は除く。括弧内は集計に使った出走数）。公式の平均STとは定義が異なる場合があります。コース別は実際の進入コースで集計し、枠番と同じコースを枠で囲んでいます。' : ''}${hasSt || hasMotor ? '</span>' : ''}</p>`
+  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。${start.length ? 'コースとSTはレースでの実際の進入とスタートタイミング。' : '進入コースは展示・本番で変わることがあります（レース後に実際のコースを表示します）。'}展示・オッズは公式サイトで確認できます。${hasSt || hasMotor || nige ? '<span class="dt"><br>モーターは番号と2連率（公式の番組表の値）。' : ''}${hasSt ? '平均ST（集計値）は、2023年11月以降の過去の出走から集計した値です（有効なST 0.00〜0.30 のみ。フライング・失格・欠場は除く。括弧内は集計に使った出走数）。公式の平均STとは定義が異なる場合があります。コース別は実際の進入コースで集計した値で、「コース別」を押すと6コース分を開きます（出走20走未満は薄く表示）。' : ''}${nige ? '逃げ切り率は、場・季節などが同じ過去のレースで1号艇が1着になった割合からの推定で、予想ではありません。' : ''}${hasSt || hasMotor || nige ? '</span>' : ''}</p>`
     : `<div class="card small muted" style="line-height:1.7">選手の情報はまだ取り込まれていません（毎朝 7:30 ごろに更新）。</div>`}</div>`
     + `<p class="small muted num" style="margin:10px 20px 0;line-height:1.8">データ取得: ${[['番組表', r.data && r.data.card], ['出走表', r.data && r.data.entrants], ['結果', r.data && r.data.result], ['成績', r.data && r.data.record]].map(([k, t]) => `${k} ${t ? hm(t) : '—'}`).join('　')}${r.data && r.data.check ? `　照合 ${r.data.check.ok ? '一致' : '<b style="color:#FFB3B3">不一致</b>'}` : ''}</p>`;
   const res = r.result;

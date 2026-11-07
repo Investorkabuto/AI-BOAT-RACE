@@ -2,7 +2,7 @@
 // - 認証は送信専用トークン（fdk_...。運営トークンとは別）。管理者API POST /admin/feed-tokens で発行する
 // - 1日1回、翌日分をまとめて送る。同じ日の再送は、その日の分を全部置き換える（冪等）
 // - 締切を過ぎたレースは凍結する（再送でも書き換えない）
-// - アプリは中身を計算しない。受け取ったレースの要素をそのまま保存する（予測は保存だけで、参加者には配らない）
+// - アプリは中身を計算しない。受け取ったレースの要素をそのまま保存する。観戦画面（/view）にだけ出し、参加AIには配らない（決定57）
 import { Hono } from 'hono';
 import type { Env } from '../env';
 import { auditStatement } from '../db/repo';
@@ -103,12 +103,18 @@ feedApi.post('/card-supplements', async (c) => {
     frozen_races: [...frozen].filter((id) => seen.has(id)).sort(),
     rejected,
     received_at: receivedAt,
-    note: '同じ date の再送は、凍結していないレースを全部置き換えます。保存した値は GET /races/{race_id} の supplement で確かめられます（予測 prediction は保存だけで、公開APIには出しません）',
+    note: '同じ date の再送は、凍結していないレースを全部置き換えます。保存した値は GET /feed/card-supplements?race_id= で確かめられます。このデータは観戦画面にだけ出し、参加AI向けの公開APIには出しません（決定57）',
   });
 });
 
-/** 受け取りの記録（送った側の確認用）。日ごとの保存件数と受け取り時刻 */
+/** 受け取りの記録（送った側の確認用）。date: 日ごとの保存件数と受け取り時刻。race_id: そのレースの保存した要素そのまま（照合用） */
 feedApi.get('/card-supplements', async (c) => {
+  const raceId = c.req.query('race_id');
+  if (raceId !== undefined) {
+    if (!parseRaceId(raceId)) throw new ApiError(400, 'bad_request', 'race_id は YYYYMMDD-JJ-RR');
+    const row = await c.env.DB.prepare('SELECT race_json, received_at FROM card_supplements WHERE race_id = ?').bind(raceId).first<{ race_json: string; received_at: string }>();
+    return c.json({ race_id: raceId, stored: row ? { received_at: row.received_at, race: JSON.parse(row.race_json) } : null });
+  }
   const date = c.req.query('date') ?? addDays(jstDate(c.get('now')), 1);
   if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date は YYYY-MM-DD');
   const day = await c.env.DB.prepare('SELECT race_date, schema_version, generated_at, source, races, received_at FROM card_supplement_days WHERE race_date = ?').bind(date).first();

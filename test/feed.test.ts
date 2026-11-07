@@ -15,7 +15,7 @@ const boat = (n: number) => ({
   boat: n, reg_no: 3900 + n, name: `選手${n}`, grade: 'A1', nw: 6.5, n2: 40.1, lw: 6.1, l2: 38.2, motor_no: 10 + n, m2: 33.3, boat_no: 20 + n, b2: 31.0,
   avg_st: 0.161, st_starts: 823, avg_st_by_course: { '1': { avg_st: 0.153, starts: 164 } }, prediction: { secret: true },
 });
-const race = (id: string) => ({ race_id: id, venue: '三国', deadline: '10:58', boats: [1, 2, 3, 4, 5, 6].map(boat), features: { win_diff: 1.2 }, prediction: { pred_nige: 0.61 } });
+const race = (id: string) => ({ race_id: id, venue: '三国', deadline: '10:58', boats: [1, 2, 3, 4, 5, 6].map(boat), features: { win_diff: 1.2 }, prediction: { pred_nige: 0.61, pred_win1: 0.55, judgeable: true, layer_n: 1234, window_months: 24 } });
 const payload = (date: string, races: unknown[]) => ({ schema_version: 1, date, generated_at: '2026-11-07T23:12:00+09:00', source: 'mochi-pastdb', definition: 'avg_st = mean of valid ST', races });
 
 beforeEach(async () => {
@@ -54,22 +54,39 @@ describe('送信専用トークン', () => {
 });
 
 describe('受け取り', () => {
-  it('翌日分を保存し、GET /races/{race_id} の supplement で返す（予測は出さない）', async () => {
+  it('翌日分を保存する。公開API（GET /races/{race_id}）には出さず、観戦画面専用の /view で一部だけ出す（決定57）', async () => {
     const t = await issue();
     const res = await req('POST', '/feed/card-supplements', t, payload('2026-11-08', [race('20261108-10-02'), race('20261108-10-03')]));
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ date: '2026-11-08', received_races: 2, stored_races: 2, frozen_races: [], rejected: [] });
 
-    // レースは朝の出走表（公式HTML）で作られる
+    // レースは朝の出走表（公式HTML）で作られる。公開APIには補足を出さない
     db.raw.prepare("INSERT INTO races (id, race_date, jcd, rno, deadline_at, deadline_ms, status, updated_at) VALUES ('20261108-10-02', '2026-11-08', '10', 2, 'x', ?, 'scheduled', 'x')").run(Date.parse('2026-11-08T10:58:00+09:00'));
-    const detail = (await (await req('GET', '/races/20261108-10-02')).json()) as { supplement: Record<string, unknown> & { boats: Record<string, unknown>[] } };
-    expect(detail.supplement).toMatchObject({ source: 'mochi', definition: 'avg_st = mean of valid ST', venue: '三国', features: { win_diff: 1.2 } });
-    expect(detail.supplement.boats[0]).toMatchObject({ boat: 1, reg_no: 3901, avg_st: 0.161, st_starts: 823, avg_st_by_course: { '1': { avg_st: 0.153, starts: 164 } } });
-    expect(JSON.stringify(detail)).not.toContain('pred_nige');
-    expect(JSON.stringify(detail)).not.toContain('secret');
+    const detail = await (await req('GET', '/races/20261108-10-02')).json();
+    expect(detail).not.toHaveProperty('supplement');
+    expect(JSON.stringify(detail)).not.toContain('avg_st');
 
+    // 観戦画面専用: モーター・平均ST・逃げ切り率だけ（特徴量・1着率・登録番号などは出さない）
+    const view = (await (await req('GET', '/view/races/20261108-10-02/supplement')).json()) as { supplement: { boats: Record<string, unknown>[]; nige: unknown } };
+    expect(view.supplement.boats[0]).toEqual({ boat: 1, motor_no: 11, m2: 33.3, avg_st: 0.161, st_starts: 823, avg_st_by_course: { '1': { avg_st: 0.153, starts: 164 } } });
+    expect(view.supplement.nige).toEqual({ rate: 0.61, layer_n: 1234, window_months: 24 });
+    expect(JSON.stringify(view)).not.toContain('win_diff');
+    expect(JSON.stringify(view)).not.toContain('pred_win1');
+    expect((await (await req('GET', '/view/races/20261108-10-09/supplement')).json())).toEqual({ race_id: '20261108-10-09', supplement: null });
+
+    // 送った側の照合: 送信専用トークンで、保存した要素をそのまま
+    const stored = (await (await req('GET', '/feed/card-supplements?race_id=20261108-10-02', t)).json()) as { stored: { race: { prediction: unknown } } };
+    expect(stored.stored.race.prediction).toMatchObject({ pred_nige: 0.61, pred_win1: 0.55 });
+    expect((await req('GET', '/feed/card-supplements?race_id=20261108-10-02')).status).toBe(401);
     const got = (await (await req('GET', '/feed/card-supplements?date=2026-11-08', t)).json()) as { received: { races: number } };
     expect(got.received.races).toBe(2);
+  });
+
+  it('逃げ切り率は判定できるレースだけ出す', async () => {
+    const t = await issue();
+    await req('POST', '/feed/card-supplements', t, payload('2026-11-08', [{ ...race('20261108-10-04'), prediction: { pred_nige: 0.7, judgeable: false } }]));
+    const view = (await (await req('GET', '/view/races/20261108-10-04/supplement')).json()) as { supplement: { nige: unknown } };
+    expect(view.supplement.nige).toBeNull();
   });
 
   it('同じ日の再送は全部置き換える。締切を過ぎたレースは凍結する', async () => {
