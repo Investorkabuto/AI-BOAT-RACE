@@ -93,6 +93,7 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .tk{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:10px;background:#0F1828;font-size:12px}
 .tk.bought{background:#16304A;box-shadow:inset 0 0 0 1px #2E8FA3}
 .tk.hit{background:#123B2A;box-shadow:inset 0 0 0 1px var(--ok)}
+.tk.dim{opacity:.4}
 .note{font-size:13px;line-height:1.7;color:var(--sub);padding:10px 12px;border-radius:14px;background:#0F1828;white-space:pre-wrap;word-break:break-word}
 .empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:14px;line-height:1.8}
 .muted{color:var(--muted)}.small{font-size:12px}
@@ -518,6 +519,23 @@ function monthsHistory(a) {
   return `<div class="sect"><h2>過去の月次成績</h2><span class="small muted num">通算 ${sgnYen(t.total_gain)}・月間1位 ${t.month_wins}回</span></div>
   <div class="pad list">${a.months.map((h) => `<div class="card row" style="padding:12px 14px"><span class="num" style="width:64px;font-weight:700">${esc(h.month.replace('-', '/'))}</span><div style="flex:1;min-width:0"><div class="num" style="font-weight:700">${yen(h.final_balance)}</div><div class="small muted num">${md(h.start_date)}から・回収率 ${pct(h.recovery_pct)}</div></div><div style="text-align:right"><div class="num" style="font-weight:700;color:${gainColor(h.gain)}">${sgnYen(h.gain)}</div><div class="small muted">${h.rank ? h.rank + '位' : '順位なし'}</div></div></div>`).join('')}</div>`;
 }
+// 本日のエントリーの買い目: 実際に購入した買い目を先に（色付き・金額つき。的中は緑）、購入しなかった申告の買い目は薄く後ろに
+function entryTickets(e) {
+  const bets = e.bets || [];
+  const tickets = e.tickets || [];
+  if (!bets.length && !tickets.length) return '';
+  const key = (t) => t.bet_type + ':' + t.combo;
+  const bought = new Map();
+  for (const b of bets) {
+    const k = key(b);
+    const x = bought.get(k) || { bet_type: b.bet_type, combo: b.combo, amount: 0, hit: false };
+    x.amount += b.amount; x.hit = x.hit || b.status === 'hit';
+    bought.set(k, x);
+  }
+  const rest = bets.length ? tickets.filter((t) => !bought.has(key(t))) : tickets;
+  const head = bets.length ? `<div class="small muted" style="margin-bottom:6px">購入 ${bought.size}点${rest.length ? `・購入しなかった申告 ${rest.length}点（薄い表示）` : ''}</div>` : '';
+  return `<a href="/race/${e.race_id}" style="display:block;color:var(--text)">${head}<div class="tix">${[...bought.values()].map((b) => ticket(b, b.hit ? 'hit' : 'bought')).join('')}${rest.map((t) => ticket(t, bets.length ? 'dim' : '')).join('')}</div></a>`;
+}
 const STATE = { entered: ['申告中', 'c-ent'], pending: ['結果待ち', 'c-wait'], hit: ['的中', 'c-hit'], miss: ['不的中', 'c-miss'], refunded: ['返還', 'c-miss'], passed: ['見送り', 'c-pass'], no_show: ['無断欠場', 'c-fine'] };
 async function viewParticipant(id, api) {
   const a = await api(`/roster/${encodeURIComponent(id)}?date=${today()}`);
@@ -540,7 +558,7 @@ async function viewParticipant(id, api) {
     // カード全体はレースへのリンク。コピーのボタンだけはリンクの外に置く（押すと下からコピー欄が出る。購入のあるレースだけ）
     const copy = e.amount > 0 ? `<button type="button" class="copybtn" data-copy="${e.race_id}" data-label="${esc(e.label)}" aria-label="${esc(e.label)}の買い目をコピー">コピー</button>` : '';
     return `<div class="card" style="display:flex;flex-direction:column;gap:8px"><div class="row"><a href="/race/${e.race_id}" class="row" style="flex:1;min-width:0;color:var(--text)"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(e.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(e.label)}${e.late ? ' <span class="tag">追加申告</span>' : ''}</div><div class="small muted num">${money}</div></div></a>${copy}${chip(s, c)}</div>
-      ${e.tickets && e.tickets.length ? `<a href="/race/${e.race_id}" class="tix" style="color:var(--text)">${e.tickets.map((x) => ticket(x)).join('')}</a>` : ''}</div>`;
+      ${entryTickets(e)}</div>`;
   }).join('') : '<div class="empty">本日の申告はありません</div>'}
   <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。8:30以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p></div>
   ${monthsHistory(a)}`, bind() {
