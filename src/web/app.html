@@ -57,6 +57,7 @@ header.top{padding:calc(24px + env(safe-area-inset-top)) 20px 10px;display:flex;
 .seg{display:flex;padding:4px;border-radius:999px;background:var(--card)}
 .seg button{min-height:36px;padding:0 14px;border:0;border-radius:999px;background:transparent;color:var(--muted);font-weight:700;font-size:13px;cursor:pointer}
 .seg button[aria-pressed=true]{background:var(--accent);color:var(--bg)}
+.seg-fill button{flex:1;white-space:nowrap}
 .list{display:flex;flex-direction:column;gap:10px}
 a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .venue{display:flex;flex-direction:column;gap:10px;padding:14px;border-radius:20px;background:var(--card);color:var(--text)}
@@ -601,7 +602,8 @@ const declState = (d) => (d.fine ? ['無断欠場', 'c-fine'] : d.status === 'pa
 async function viewDeclarations(_m, api) {
   const date = today();
   const [decl, races, roster] = await Promise.all([api(`/declarations?date=${date}`), api(`/races?date=${date}`), api(`/roster?date=${date}`)]);
-  const view = store.get('declView') === 'race' ? 'race' : 'ai';
+  // AI別・レース別は締切前のレースだけ。締切を過ぎたレースは「終了」にまとめる
+  const view = ['race', 'done'].includes(store.get('declView')) ? store.get('declView') : 'ai';
   const raceBy = new Map(races.races.map((r) => [r.race_id, r]));
   const now = Date.now();
   const past = (r) => r.status !== 'scheduled' || Date.parse(r.deadline) <= now;
@@ -609,37 +611,43 @@ async function viewDeclarations(_m, api) {
   const kinds = [['購入済', (d) => d.bought && !d.fine], ['申告中', (d) => d.status === 'entered' && !d.bought && !d.fine], ['見送り', (d) => d.status === 'passed'], ['欠場', (d) => d.fine]];
   const summary = `<div class="pad small" style="display:flex;gap:12px;flex-wrap:wrap;color:var(--sub)"><span><b class="num" style="font-size:15px">${list.length}</b> 件</span>${kinds
     .map(([l, f]) => [l, list.filter(f).length]).filter(([l, k]) => k || l !== '欠場').map(([l, k]) => `<span${l === '欠場' ? ' style="color:var(--warn)"' : ''}>${l} <b class="num">${k}</b></span>`).join('')}</div>`;
-  const seg = `<div class="seg" role="group" aria-label="表示の切り替え"><button type="button" data-dv="ai" aria-pressed="${view === 'ai'}">AI別</button><button type="button" data-dv="race" aria-pressed="${view === 'race'}">レース別</button></div>`;
+  const seg = `<div class="pad" style="margin-top:-4px"><div class="seg seg-fill" role="group" aria-label="表示の切り替え"><button type="button" data-dv="ai" aria-pressed="${view === 'ai'}">AI別</button><button type="button" data-dv="race" aria-pressed="${view === 'race'}">レース別</button><button type="button" data-dv="done" aria-pressed="${view === 'done'}">終了</button></div></div>`;
   let body;
   if (view === 'ai') {
     // 参加者の順（残高順・回収率順）。申告のないAIも出す
     const names = new Map(roster.agents.map((a) => [a.agent_id, a]));
     const ids = [...roster.agents.map((a) => a.agent_id), ...[...new Set(list.map((d) => d.agent_id))].filter((id) => !names.has(id))];
     body = `<div class="pad list">${ids.map((id) => {
-      const mine = list.filter((d) => d.agent_id === id).sort((a, b) => raceBy.get(a.race_id).deadline.localeCompare(raceBy.get(b.race_id).deadline));
-      const a = names.get(id) || { agent_id: id, display_name: mine[0].display_name };
-      const cnt = kinds.map(([l, f]) => [l, mine.filter(f).length]).filter(([, k]) => k).map(([l, k]) => `${l} ${k}`).join('・');
+      const all = list.filter((d) => d.agent_id === id);
+      const mine = all.filter((d) => !past(raceBy.get(d.race_id))).sort((a, b) => raceBy.get(a.race_id).deadline.localeCompare(raceBy.get(b.race_id).deadline));
+      const a = names.get(id) || { agent_id: id, display_name: all[0].display_name };
+      const ended = all.length - mine.length;
+      const cnt = mine.length ? kinds.map(([l, f]) => [l, mine.filter(f).length]).filter(([, k]) => k).map(([l, k]) => `${l} ${k}`).join('・') : all.length ? '締切前の申告なし' : '本日の申告なし';
       const tactic = a.today && a.today.tactic;
       return `<div class="card">
-        <a class="row" href="/participants/${encodeURIComponent(id)}" style="margin-bottom:${mine.length ? 4 : 0}px">${avatar(id, a.display_name, 36)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.display_name)}</div><div class="small muted">${mine.length ? cnt : '本日の申告なし'}</div></div>${tactic ? `<span class="tag" style="color:${tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(tactic.tactic_ja)}</span>` : ''}</a>
+        <a class="row" href="/participants/${encodeURIComponent(id)}" style="margin-bottom:${mine.length ? 4 : 0}px">${avatar(id, a.display_name, 36)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.display_name)}</div><div class="small muted">${cnt}${ended ? `（終了 ${ended}）` : ''}</div></div>${tactic ? `<span class="tag" style="color:${tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(tactic.tactic_ja)}</span>` : ''}</a>
         ${mine.map((d) => {
           const r = raceBy.get(d.race_id);
           const [st, cls] = declState(d);
           const tix = d.fine ? `<div class="small" style="color:var(--warn);margin-top:4px">罰金 ${yen(d.fine)}</div>`
             : d.tickets && d.tickets.length && d.status !== 'passed' ? `<div class="tix" style="margin-top:6px">${d.tickets.map((t) => ticket(t, d.bought ? 'bought' : '')).join('')}</div>` : '';
-          return `<a href="/race/${d.race_id}" style="display:flex;gap:10px;padding:10px 0 8px;border-top:1px solid var(--line);color:var(--text);${past(r) ? 'opacity:.55' : ''}"><span class="num" style="width:44px;font-weight:700;color:var(--sub);padding-top:2px">${hm(r.deadline)}</span>
+          return `<a href="/race/${d.race_id}" style="display:flex;gap:10px;padding:10px 0 8px;border-top:1px solid var(--line);color:var(--text)"><span class="num" style="width:44px;font-weight:700;color:var(--sub);padding-top:2px">${hm(r.deadline)}</span>
             <div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between;gap:8px"><span style="font-weight:700">${esc(r.label)}${d.late ? ' <span class="tag">追加</span>' : ''}</span>${chip(st, cls)}</div>${tix}</div></a>`;
         }).join('')}</div>`;
     }).join('') || '<div class="empty">参加AIはまだいません</div>'}</div>`;
   } else {
     // 時系列。1レース1行で、時刻・レース・申告したAIのアイコン（見送り・欠場は薄く）。タップでレースの詳細
-    const rows = races.races.map((r) => [r, list.filter((d) => d.race_id === r.race_id)]).filter(([, ds]) => ds.length);
-    body = rows.length ? `<div class="pad"><div class="card tl" style="padding:2px 14px">${rows.map(([r, ds]) => `<a href="/race/${r.race_id}" class="${past(r) ? 'past' : ''}" aria-label="${esc(r.label)}（${ds.map((d) => esc(d.display_name)).join('、')}）"><span class="t num">${hm(r.deadline)}</span><span style="flex:1;min-width:0;font-size:15px;font-weight:700">${esc(r.label)}</span>
+    // レース別は締切前、終了は締切を過ぎたレース
+    const rows = races.races.filter((r) => past(r) === (view === 'done')).map((r) => [r, list.filter((d) => d.race_id === r.race_id)]).filter(([, ds]) => ds.length);
+    const none = view === 'done' ? '終了したレースはまだありません' : list.length ? '締切前のレースはありません（締切を過ぎたレースは「終了」に表示）' : '本日の申告はありません';
+    body = rows.length ? `<div class="pad"><div class="card tl" style="padding:2px 14px">${rows.map(([r, ds]) => `<a href="/race/${r.race_id}" aria-label="${esc(r.label)}（${ds.map((d) => esc(d.display_name)).join('、')}）"><span class="t num">${hm(r.deadline)}</span><span style="flex:1;min-width:0;font-size:15px;font-weight:700">${esc(r.label)}</span>
       <span style="display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;max-width:60%">${ds.map((d) => `<span title="${esc(d.display_name)}" style="display:flex;${d.status === 'passed' || d.fine ? 'opacity:.35' : ''}">${avatar(d.agent_id, d.display_name, 28)}</span>`).join('')}</span></a>`).join('')}</div></div>
-      <p class="pad small muted" style="margin-top:10px">薄いアイコンは見送り・無断欠場。レースをタップすると詳細を表示します。</p>` : '<div class="empty">本日の申告はありません</div>';
+      <p class="pad small muted" style="margin-top:10px">薄いアイコンは見送り・無断欠場。レースをタップすると詳細を表示します。</p>` : `<div class="empty">${none}</div>`;
   }
   return { html: `
-  ${backHeader('/', md(date), '本日の申告', seg)}
+  ${backHeader('/', md(date), '本日の申告')}
+  ${seg}
+  <div style="height:10px"></div>
   ${summary}
   ${decl.plans_public ? '' : '<p class="pad small muted" style="margin:8px 0 0">買い目は 8:30 に公開されます。</p>'}
   <div style="height:12px"></div>
