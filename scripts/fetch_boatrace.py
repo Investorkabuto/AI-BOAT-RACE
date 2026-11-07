@@ -337,6 +337,7 @@ def result_from_k(race: dict) -> dict:
         # 欠場・フライング・出遅れの艇を含む舟券は返還。失格（S）は返還しない（2026-11-05 運営AIの確認、公式の規定どおり）
         "refunded_boats": sorted(r["boat"] for r in race["rows"] if r["rank"][0] in "FLK"),
         "payouts": [{"bet_type": p["bet_type"], "combo": p["combo"], "payout": p["payout"]} for p in race["payouts"]],
+        "unsold": list(race.get("unsold") or []),
         "start": start,
     }
 
@@ -483,7 +484,10 @@ def parse_result(html: str) -> dict | None:
     text = soup.get_text(" ")
 
     # 払戻金: 「勝式」列に券種名があるセルで現在の券種を切り替え、各行の組番と払戻金を拾う（拡連複・複勝は複数行）
+    # 組番の欄が「不成立」の券種は unsold に入れる（その券種の舟券は全額返還。払戻金の欄の ¥100 は返還の意味なので払戻金にしない。
+    # 例: 2026-11-07 戸田7R は単勝だけ成立、江戸川2R は単勝と2連単だけ成立）
     payouts: list[dict] = []
+    unsold: list[str] = []
     for table in soup.find_all("table"):
         head = table.find("thead")
         if head is None or "勝式" not in head.get_text() or "払戻金" not in head.get_text():
@@ -498,6 +502,10 @@ def parse_result(html: str) -> dict | None:
                 current = BET_TYPE_BY_JA[first]
                 cells = cells[1:]
             if current is None or not cells:
+                continue
+            if "不成立" in nfkc(cells[0].get_text()):
+                if current not in unsold:
+                    unsold.append(current)
                 continue
             m = re.search(r"¥\s*([\d,]+)", nfkc(tr.get_text(" ")).replace("￥", "¥"))
             combo = parse_combo(cells[0])
@@ -530,10 +538,28 @@ def parse_result(html: str) -> dict | None:
                 refunded.add(boat)
         break
 
+    # 「返還」の表（欠場・フライングなどの返還艇）。着順の表に出ない艇もここには載る
+    for table in soup.find_all("table"):
+        head = table.find("thead")
+        if head is None or nfkc(head.get_text()) != "返還":
+            continue
+        for span in table.find_all("span"):
+            t = nfkc(span.get_text())
+            if any("numberSet1_number" in c for c in (span.get("class") or [])) and re.fullmatch(r"[1-6]", t):
+                refunded.add(int(t))
+        break
+
     if not payouts:
-        if re.search(r"レース中止|中止となりました|不成立", text):
+        if unsold or re.search(r"レース中止|中止となりました|不成立", text):
             return {"status": "cancelled", "finish": [], "refunded_boats": [], "payouts": []}
         return None
+    if unsold:
+        # 一部の券種が不成立（完走が少ない）。着順は3艇そろわないので照合せず、載っている分を送る（不成立の欄が出るのは確定後だけ）
+        out = {"status": "official", "finish": finish, "refunded_boats": sorted(refunded), "payouts": payouts, "unsold": unsold}
+        start = parse_start(soup)
+        if start:
+            out["start"] = start
+        return out
     # レース直後は、払戻金が先に載り、着順の表がまだ空（または途中）のことがある。そろうまで「まだ無い」扱いにして次の取得に回す
     if not finish_complete(finish, payouts):
         return None

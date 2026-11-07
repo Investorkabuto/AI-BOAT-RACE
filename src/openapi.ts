@@ -55,7 +55,7 @@ export function openapi(serverUrl: string) {
             id: { type: 'string' }, submission_id: { type: 'string' }, race_id: { type: 'string' }, race_date: { type: 'string', format: 'date' },
             bet_type: { type: 'string' }, combo: { type: 'string' }, amount: { type: 'integer' },
             status: { type: 'string', enum: ['accepted', 'locked', 'hit', 'miss', 'refunded', 'cancelled'] }, payout: { type: 'integer' },
-            refund_reason: { type: 'string', enum: ['race_cancelled', 'boat_refunded'] },
+            refund_reason: { type: 'string', enum: ['race_cancelled', 'boat_refunded', 'bet_type_unsold'] },
           },
         },
         Tactic: {

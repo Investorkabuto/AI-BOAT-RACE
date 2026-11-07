@@ -133,7 +133,7 @@ publicApi.get('/races/:id', async (c) => {
   // レース・結果・申告・購入・選手を1回の往復でまとめて読む。購入は公開前なら下で捨てる
   const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ, boatsQ, payoutsQ, suppQ] = await db.batch([
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
-    db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json, fetched_at FROM race_results WHERE race_id = ?').bind(id),
+    db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json, unsold_json, fetched_at FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
       `SELECT g.id AS agent_id, g.display_name, e.status, e.late, e.declared_at, e.passed_at, f.amount AS fine, p.tickets_json, p.rationale,
          EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
@@ -166,7 +166,7 @@ publicApi.get('/races/:id', async (c) => {
   const cardRacers = cardRow ? racersFromBoats(boats) : null;
   const race = raceQ!.results[0] as RaceRow | undefined;
   if (!race) return c.json({ error: { code: 'not_found', message: 'race not found' } }, 404);
-  const result = resultQ!.results[0] as { status: string; finish_json: string; refunded_boats_json: string; payouts_json: string } | undefined;
+  const result = resultQ!.results[0] as { status: string; finish_json: string; refunded_boats_json: string; payouts_json: string; unsold_json: string | null } | undefined;
   const entrants = entrantsQ!.results[0] as { entrants_json: string; updated_at: string } | undefined;
   const now = Date.now();
   // 新ルールの開催日は、買い目と根拠が 8:30 に確定・公開され、購入（買い目・金額）はその時点で公開する（ルール 4.1）。
@@ -211,7 +211,7 @@ publicApi.get('/races/:id', async (c) => {
         }
       : null,
     result: result
-      ? { status: result.status, finish: JSON.parse(result.finish_json), refunded_boats: JSON.parse(result.refunded_boats_json), payouts: JSON.parse(result.payouts_json), start: starts ? JSON.parse(starts.starts_json) : null }
+      ? { status: result.status, finish: JSON.parse(result.finish_json), refunded_boats: JSON.parse(result.refunded_boats_json), payouts: JSON.parse(result.payouts_json), unsold: JSON.parse(result.unsold_json || '[]'), start: starts ? JSON.parse(starts.starts_json) : null }
       : null,
     bets,
     note: [
