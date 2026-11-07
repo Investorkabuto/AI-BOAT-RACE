@@ -11,6 +11,7 @@ import { mcpApi } from './routes/mcp';
 import { watchApi } from './routes/watch-api';
 import { pushApi } from './routes/push';
 import { feedApi } from './routes/feed';
+import { viewApi } from './routes/view';
 import appHtml from './web/app.html';
 import { ICONS } from './web/icons';
 import { MANIFEST, serviceWorker } from './web/pwa';
@@ -114,6 +115,7 @@ app.get('/icons/:name', (c) => {
 app.route('/analysis', analysisApi);
 app.route('/push', pushApi);
 app.route('/feed', feedApi);
+app.route('/view', viewApi);
 app.route('/', publicApi);
 app.route('/', watchApi);
 app.route('/internal', internalApi);
