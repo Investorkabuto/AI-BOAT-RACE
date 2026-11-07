@@ -131,7 +131,7 @@ publicApi.get('/races/:id', async (c) => {
   const id = c.req.param('id') ?? '';
   const db = c.env.DB;
   // レース・結果・申告・購入・選手を1回の往復でまとめて読む。購入は公開前なら下で捨てる
-  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ, boatsQ, payoutsQ] = await db.batch([
+  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ, boatsQ, payoutsQ, suppQ] = await db.batch([
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
     db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json, fetched_at FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
@@ -153,6 +153,8 @@ publicApi.get('/races/:id', async (c) => {
     // 基礎数値と競走成績の艇・払戻金の正本（v1.3 決定51）
     db.prepare(`SELECT ${BOAT_COLS} FROM race_boats WHERE race_id = ? ORDER BY boat`).bind(id),
     db.prepare('SELECT bet_type, combo, payout, pop FROM race_payouts WHERE race_id = ? ORDER BY rowid').bind(id),
+    // 出走表の補足（もちの夜間バッチ。決定54）
+    db.prepare('SELECT s.race_json, s.received_at, d.definition, d.generated_at FROM card_supplements s LEFT JOIN card_supplement_days d ON d.race_date = s.race_date WHERE s.race_id = ?').bind(id),
   ]);
   const recordMeta = recordQ!.results[0] as { weather: string | null; wind_dir: string | null; wind_m: number | null; wave_cm: number | null; kimarite: string | null; unsold: string; fetched_at: string } | undefined;
   const boats = boatsQ!.results as BoatRow[];
@@ -188,6 +190,8 @@ publicApi.get('/races/:id', async (c) => {
     entrants: entrants ? JSON.parse(entrants.entrants_json) : cardRacers ? entrantsOf(cardRacers) : null,
     // 番組表（公式テキストデータ B）の基礎数値。前日の夕方から分かる値で、取り込んだ版のまま（当日の欠場・選手交代は反映されない）
     card: cardRow && cardRacers ? { source: 'b', fetched_at: cardRow.fetched_at, fixed_course: cardRow.fixed_course === 1, distance: cardRow.distance, racers: cardRacers } : null,
+    // 出走表の補足（もちの夜間バッチ: 番組表Bの数値・平均ST（集計値）・特徴量）。予測（prediction）は保存だけで、ここには出さない
+    supplement: supplementOf(suppQ!.results[0] as SupplementRow | undefined),
     // この1レースのデータの取得状況（取り込み時刻。まだなら null）
     data: {
       card: cardRow?.fetched_at ?? null, entrants: entrants?.updated_at ?? null, record: recordRow?.fetched_at ?? null,
@@ -220,6 +224,22 @@ publicApi.get('/races/:id', async (c) => {
     ].filter(Boolean).join('。'),
   });
 });
+
+type SupplementRow = { race_json: string; received_at: string; definition: string | null; generated_at: string | null };
+
+/** 補足フィードのレースの要素から、公開する部分を作る（予測 prediction は除く。決定 §6-e: 保存だけ） */
+export function supplementOf(row: SupplementRow | undefined) {
+  if (!row) return null;
+  const { prediction: _p, race_id: _id, boats, ...rest } = JSON.parse(row.race_json) as Record<string, unknown> & { boats?: Record<string, unknown>[] };
+  return {
+    source: 'mochi',
+    received_at: row.received_at,
+    generated_at: row.generated_at,
+    definition: row.definition,
+    ...rest,
+    boats: (boats ?? []).map(({ prediction: _bp, ...b }) => b),
+  };
+}
 
 /** その日の全員の申告（どのAIがどのレースに出て、どの買い目を申告したか）。買い目と根拠は 8:30 から公開（ルール 4.1） */
 publicApi.get('/declarations', async (c) => {

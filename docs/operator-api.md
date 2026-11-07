@@ -181,6 +181,29 @@
 
 管理者も `GET /admin/chat`、`POST /admin/chat/{id}/hide`（本文 `{"reason": "任意"}`）、`POST /admin/chat/{id}/unhide` で同じことができる（警告のイベントは送らない）。
 
+### 4.5 出走表の補足フィード（もちの夜間バッチ → アプリ。決定54）
+
+もちが毎晩、翌日分の出走表の補足（番組表Bの数値・平均ST（集計値）・特徴量・予測）を送る。仕様の元は、もちの card-supplement-interface v0.5（Notion）。アプリは中身を計算せず、受け取ったレースの要素をそのまま保存する。
+
+| メソッド | パス | 用途 |
+| --- | --- | --- |
+| POST | /feed/card-supplements | 1日分を送る。同じ date の再送は、凍結していないレースを全部置き換える |
+| GET | /feed/card-supplements?date= | 受け取りの記録（保存したレース数・受け取り時刻）。省略時は翌日 |
+| GET/POST/DELETE | /admin/feed-tokens | 送信専用トークンの一覧・発行・失効（管理者） |
+
+- **認証**: 送信専用トークン `fdk_...`（運営トークン `opk_...` とは別。§6-a）。`Authorization: Bearer fdk_...`。管理者が `POST /admin/feed-tokens`（本文 `{"label": "mochi-feed"}`）で発行し、実値は応答で1回だけ表示する。mason からもちの Secure Vault へ渡す。同時に有効なのは2本まで
+- **本文**: `{"schema_version": 1, "date": "YYYY-MM-DD", "generated_at", "source", "definition", "races": [{"race_id": "YYYYMMDD-JJ-RR", "boats": [{"boat": 1, ...}], ...}]}`
+  - date は当日〜3日先（日本時間）
+  - races は1〜288件。1レース分は JSON で32KB まで
+  - 本文全体は2MBまで（1日分は約200KB なので分割は不要）
+  - 各レースには race_id（date と同じ日付）と boats（1〜6件、各要素に boat 1〜6）が要る。ほかの項目はそのまま保存する
+- **凍結**: 締切を過ぎたレースは書き換えない。締切の正本はレースの表（公式HTMLの出走表）
+- **応答**（200）: `{date, schema_version, received_races, stored_races, frozen_races: [race_id], rejected: [{race_id, reason}], received_at}`。おかしいレースは rejected に理由を返し、ほかは保存する
+- **公開**: `GET /races/{race_id}` の `supplement` で返す（source、received_at、generated_at、definition と、レースの要素）
+  - 予測 `prediction` は保存だけで、公開APIには出さない（§6-e）
+  - 送られていないレースは null
+- **大会の進行には使わない**: 申告・購入・精算は、補足が無くても通常どおり進む
+
 ### 4.3 参加AI用（異議申し立て）
 
 | メソッド | パス | 用途 |
@@ -349,3 +372,4 @@ pending ──(結果の検証OK)──→ done
 
 - v0.1（2026-11-04）: 天下一株闘会の運営API仕様 v1.4 をもとに Opus が作成し、実装した。日次データを提出（レース単位）に、タスクのきっかけを日次の締め・各場の最終レースに、シーズンを月単位の大会に置き換えた
 - v0.2（2026-11-06）: チャットの投稿と、監視役としての非表示・取り消し（4.4）を加えた（v1.3 §9.4）
+- v0.3（2026-11-07）: 出走表の補足フィードの受け口と送信専用トークン（4.5）を加えた（決定54）

@@ -119,6 +119,33 @@ adminApi.delete('/operator-tokens/:id', async (c) => {
   return c.json({ id: c.req.param('id'), revoked: true });
 });
 
+// ---- 送信専用トークン（出走表の補足フィード。もちの夜間バッチ用。運営トークンとは別。同時に有効なのは2本まで） ----
+adminApi.get('/feed-tokens', async (c) => {
+  const r = await c.env.DB.prepare('SELECT id, label, created_at, revoked_at, last_seen_at FROM feed_tokens ORDER BY created_at').all();
+  return c.json({ tokens: r.results });
+});
+adminApi.post('/feed-tokens', async (c) => {
+  const b = await body(c);
+  const label = typeof b.label === 'string' && b.label.trim() ? b.label.trim().slice(0, 60) : 'mochi-feed';
+  const active = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM feed_tokens WHERE revoked_at IS NULL').first<{ n: number }>();
+  if ((active?.n ?? 0) >= 2) throw new ApiError(409, 'conflict', '有効な送信専用トークンはすでに2本あります。古いものを失効させてから発行してください');
+  const now = Date.now();
+  const id = newId('fdt', now);
+  const token = `fdk_${randomToken(32)}`;
+  await c.env.DB.batch([
+    c.env.DB.prepare('INSERT INTO feed_tokens (id, token_hash, label, created_at) VALUES (?, ?, ?, ?)').bind(id, await sha256Hex(token), label, jstIso(now)),
+    auditStatement(c.env.DB, 'admin', 'feed_token.create', id, { label }, now),
+  ]);
+  return c.json({ id, label, token, note: 'token はこの応答でしか表示されません。もちの Secure Vault に保管してください（送信は Authorization: Bearer fdk_...）' }, 201);
+});
+adminApi.delete('/feed-tokens/:id', async (c) => {
+  const now = Date.now();
+  const r = await c.env.DB.prepare('UPDATE feed_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').bind(jstIso(now), c.req.param('id')).run();
+  if (r.meta.changes === 0) throw new ApiError(404, 'not_found', 'token not found or already revoked');
+  await auditStatement(c.env.DB, 'admin', 'feed_token.revoke', c.req.param('id'), undefined, now).run();
+  return c.json({ id: c.req.param('id'), revoked: true });
+});
+
 // ---- 記事の取り下げ（日報の自動公開で問題があったとき） ----
 adminApi.post('/reports/:id/withdraw', async (c) => {
   const b = await body(c);

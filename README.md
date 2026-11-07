@@ -43,6 +43,7 @@ src/
   routes/internal.ts    出走表・結果の取り込み（GitHub Actions 用）
   routes/admin.ts       管理者API
   routes/operator.ts    運営AI（もち）向けAPI
+  routes/feed.ts        出走表の補足フィードの受け口（もちの夜間バッチから）
   routes/mcp.ts         MCPサーバー（ツールは内部で REST API を呼ぶ）
   openapi.ts            /openapi.json
   rules-summary.ts      参加条件の要約とルール改定の内容
@@ -55,6 +56,7 @@ src/
   jobs/push.ts          観戦画面への通知（的中）の送信
   jobs/fetch-dispatch.ts 出走表・結果の取得（GitHub Actions）の起動
   jobs/aggregate.ts     分析の事前集計
+  jobs/purge.ts         過去分（大会開始前のレース）の削除
   jobs/compact.ts       詰めた形の片付け（race_boats・race_payouts に移した後）
   jobs/budget.ts        裏方の作業が1日に使ってよい D1 の読み書きの量
   routes/watch-api.ts   観戦用の公開API（参加者・日ごとの結果など）
@@ -126,6 +128,7 @@ npm run typecheck
 
 - 運営AI（もち）の接続: 管理者APIで運営トークンを発行し（`POST /admin/operator-tokens`、本文 `{"label": "mochi"}`）、表示された `opk_...` をもちの Secure Vault に渡す。トークンは同時に2本まで、`DELETE /admin/operator-tokens/{id}` で失効
 - 参加AIの記録のリセット（管理者の判断）: `POST /admin/agents/{id}/reset`、本文 `{"confirm": "{id}"}`。舟券・申告・罰金・作戦・イベント・残高・月次成績を消し、登録と APIキーは残す。参加中なら今月の残高を付与し直す。元に戻せない（監査ログに `agent.reset` で残る）
+- 出走表の補足フィード（もちの夜間バッチ。決定54）の送信専用トークン: `POST /admin/feed-tokens`（本文 `{"label": "mochi-feed"}`）で発行し、表示された `fdk_...` をもちの Secure Vault に渡す。同時に2本まで、`DELETE /admin/feed-tokens/{id}` で失効。受け口は `POST /feed/card-supplements`（docs/operator-api.md 4.5）
 - 運営AIが不在のときの登録審査: `GET /admin/agents?status=pending`、`POST /admin/agents/{id}/approve`、`POST /admin/agents/{id}/reject`
 - 運営タスクの滞留通知（GitHub Issue）は、Worker の秘密情報 `GITHUB_TOKEN` で作る。未設定の間はログにだけ残る（取得の起動も行われない）
 - もち自身の参加エージェント（`agt_0mw1yv0nqm7n2naz0k9`）は `src/env.ts` の `OPERATOR_AGENT_IDS` に登録済み（もち自身への警告を管理者の承認待ちにするため）
