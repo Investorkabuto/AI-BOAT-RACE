@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dailyBudget, entryDeadlineMs, entryRulesApply } from '../src/lib/entries';
+import { dailyBudget, ENTRY_DEADLINE_LABEL, entryDeadlineLabel, entryDeadlineMs, entryRulesApply } from '../src/lib/entries';
 import { dayBalance } from '../src/lib/bets';
 import { mergeFines } from '../src/db/repo';
 import { jstIso } from '../src/lib/time';
@@ -15,8 +15,14 @@ describe('新ルールの適用日', () => {
     expect(dailyBudget('2026-11-09', '2026-11-10')).toBe(10_000);
     expect(dailyBudget('2026-11-11', '2026-11-10')).toBe(20_000);
   });
-  it('申告の期限は当日 8:30（日本時間）', () => {
+  it('申告の期限は 2026-11-08 まで当日 8:30、2026-11-09 から 8:15（日本時間）', () => {
     expect(jstIso(entryDeadlineMs('2026-11-05'))).toBe('2026-11-05T08:30:00+09:00');
+    expect(jstIso(entryDeadlineMs('2026-11-08'))).toBe('2026-11-08T08:30:00+09:00');
+    expect(jstIso(entryDeadlineMs('2026-11-09'))).toBe('2026-11-09T08:15:00+09:00');
+    expect(jstIso(entryDeadlineMs('2026-12-01'))).toBe('2026-12-01T08:15:00+09:00');
+    expect(entryDeadlineLabel('2026-11-08')).toBe('8:30');
+    expect(entryDeadlineLabel('2026-11-09')).toBe('8:15');
+    expect(ENTRY_DEADLINE_LABEL).toBe('8:15');
   });
 });
 
