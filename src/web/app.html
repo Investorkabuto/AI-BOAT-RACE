@@ -142,7 +142,7 @@ nav.tabs .unread[hidden]{display:none}
 .grade{font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--line);color:var(--sub)}.grade.A1{background:#3A3216;color:var(--gold)}.grade.A2{background:#16304A;color:#9BEFF7}
 .lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 8px;margin-top:2px}.lanes span{display:flex;align-items:center;gap:4px;font-size:12px;min-width:0;white-space:nowrap;overflow:hidden}
 .stc{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;margin-top:5px}.stc span{display:flex;flex-direction:column;align-items:center;padding:3px 0;border-radius:8px;background:var(--line);font-size:11px;line-height:1.3;color:var(--sub)}.stc span i{font-style:normal;font-size:10px;color:var(--muted)}.stc span.me{box-shadow:inset 0 0 0 1px var(--accent);color:var(--text)}
-#ents[data-st=all] .stc,#ents[data-st=course] .sta{display:none}
+#ents[data-st=all] .dt,#ents[data-st=detail] .bs{display:none}
 .starts{display:flex;gap:6px;margin-top:12px}.starts div{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px}
 table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{padding:9px 0;border-bottom:1px solid var(--line)}table.pay td:last-child{text-align:right}
 </style>
@@ -409,8 +409,10 @@ async function viewRace(id, api) {
   const supp = new Map(((r.supplement && r.supplement.boats) || []).map((b) => [b.boat, b]));
   const cardBy = new Map(((r.card && r.card.racers) || []).map((b) => [b.boat, b]));
   const hasSt = [...supp.values()].some((b) => b.avg_st != null);
-  const stView = store.get('stView') === 'course' ? 'course' : 'all';
-  const stSeg = hasSt && r.entrants && r.entrants.length ? `<div class="pad" style="margin:-2px 0 8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span class="small muted">平均ST（集計値）</span><div class="seg" role="group" aria-label="平均STの表示"><button type="button" data-st="all" aria-pressed="${stView === 'all'}">全体</button><button type="button" data-st="course" aria-pressed="${stView === 'course'}">コース別</button></div></div>` : '';
+  const hasMotor = [...supp.values(), ...cardBy.values()].some((b) => b.motor_no != null);
+  // 全体: 選手の基本情報（今までどおり）。詳細: モーターと平均ST（集計値。全体とコース別）
+  const stView = store.get('stView') === 'detail' ? 'detail' : 'all';
+  const stSeg = (hasSt || hasMotor) && r.entrants && r.entrants.length ? `<div class="pad" style="margin:-2px 0 8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span class="small muted">詳細: モーター・平均ST</span><div class="seg" role="group" aria-label="出走表の表示"><button type="button" data-st="all" aria-pressed="${stView === 'all'}">全体</button><button type="button" data-st="detail" aria-pressed="${stView === 'detail'}">詳細</button></div></div>` : '';
   const entrantsHtml = `<div class="sect"><h2>出走表</h2><a class="small" href="${official}" target="_blank" rel="noopener">公式の出走表 ↗</a></div>
   ${stSeg}<div class="pad" id="ents" data-st="${stView}">${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
     const pl = place.get(e.boat);
@@ -418,8 +420,8 @@ async function viewRace(id, api) {
     const right = (refunded.has(e.boat) ? chip('返還', 'c-cancel') : pl ? `<span class="num" style="font-weight:700;font-size:15px;color:${pl === 1 ? 'var(--gold)' : pl <= 3 ? 'var(--text)' : 'var(--muted)'}">${pl}着</span>` : '')
       + (sc ? `<div class="small muted num" style="margin-top:2px">${sc.course}コース・ST ${esc(stText(sc.st))}</div>` : '');
     return `<div class="ent">${boat(e.boat, 34)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><b style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.name)}</b>${e.grade ? `<span class="grade ${esc(e.grade)}">${esc(e.grade)}</span>` : ''}</div>
-      <div class="small muted num">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div>${motorLine(supp.get(e.boat), cardBy.get(e.boat))}${stLine(supp.get(e.boat), e.boat)}</div>${right ? `<div style="text-align:right;flex-shrink:0">${right}</div>` : ''}</div>`;
-  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。${start.length ? 'コースとSTはレースでの実際の進入とスタートタイミング。' : '進入コースは展示・本番で変わることがあります（レース後に実際のコースを表示します）。'}モーターは番号と2連率（公式の番組表の値）。展示・オッズは公式サイトで確認できます。${hasSt ? '<br>平均ST（集計値）は、2023年11月以降の過去の出走から集計した値です（有効なST 0.00〜0.30 のみ。フライング・失格・欠場は除く。括弧内は集計に使った出走数）。公式の平均STとは定義が異なる場合があります。コース別は実際の進入コースで集計し、枠番と同じコースを枠で囲んでいます。' : ''}</p>`
+      <div class="small muted num bs">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div><div class="dt">${motorLine(supp.get(e.boat), cardBy.get(e.boat))}${stLine(supp.get(e.boat), e.boat)}</div></div>${right ? `<div style="text-align:right;flex-shrink:0">${right}</div>` : ''}</div>`;
+  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。${start.length ? 'コースとSTはレースでの実際の進入とスタートタイミング。' : '進入コースは展示・本番で変わることがあります（レース後に実際のコースを表示します）。'}展示・オッズは公式サイトで確認できます。${hasSt || hasMotor ? '<span class="dt"><br>モーターは番号と2連率（公式の番組表の値）。' : ''}${hasSt ? '平均ST（集計値）は、2023年11月以降の過去の出走から集計した値です（有効なST 0.00〜0.30 のみ。フライング・失格・欠場は除く。括弧内は集計に使った出走数）。公式の平均STとは定義が異なる場合があります。コース別は実際の進入コースで集計し、枠番と同じコースを枠で囲んでいます。' : ''}${hasSt || hasMotor ? '</span>' : ''}</p>`
     : `<div class="card small muted" style="line-height:1.7">選手の情報はまだ取り込まれていません（毎朝 7:30 ごろに更新）。</div>`}</div>`
     + `<p class="small muted num" style="margin:10px 20px 0;line-height:1.8">データ取得: ${[['番組表', r.data && r.data.card], ['出走表', r.data && r.data.entrants], ['結果', r.data && r.data.result], ['成績', r.data && r.data.record]].map(([k, t]) => `${k} ${t ? hm(t) : '—'}`).join('　')}${r.data && r.data.check ? `　照合 ${r.data.check.ok ? '一致' : '<b style="color:#FFB3B3">不一致</b>'}` : ''}</p>`;
   const res = r.result;
