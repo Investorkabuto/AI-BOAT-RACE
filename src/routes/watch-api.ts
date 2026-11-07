@@ -1,6 +1,7 @@
 // 観戦用の公開API（認証不要）。人間向けの画面（/、/participants など）も、AIも、同じデータを読む。
 //   GET /roster?date=            参加者一覧（月間成績と、その日の申告・作戦）
 //   GET /roster/{agent_id}?date= 参加者1体（プロフィール、月間・通算成績、日ごとの推移、その日の申告と結果）
+//   GET /roster/{agent_id}/order?date=&budget=&all=1  その日の買い目の発注用テキスト（予算に合わせて倍率を掛ける）
 //   GET /days?month=             月の日ごとのまとめ（レース数、全体の回収率、無断欠場など）
 //   GET /days/{date}             1日のまとめ（日間トップ、高配当の的中）
 //   GET /months                  月次成績表（確定した月の最終残高・増加額・順位）と通算（増加額の合計・月間1位の回数）
@@ -8,7 +9,8 @@ import { Hono } from 'hono';
 import { TACTIC_JA, type Env, type Tactic } from '../env';
 import { statsBetween } from '../db/repo';
 import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } from '../lib/bets';
-import { entryDeadlineMs } from '../lib/entries';
+import { entryDeadlineMs, entryRulesApply } from '../lib/entries';
+import { orderText, type OrderRace } from '../lib/order-text';
 import { publicRead } from '../lib/http';
 import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
 import { raceLabel, VENUES } from '../lib/venues';
@@ -209,6 +211,51 @@ watchApi.get('/roster/:id', async (c) => {
     daily,
     today: { tactic: tactic ? { tactic: tactic.tactic, tactic_ja: TACTIC_JA[tactic.tactic], chosen_by: tactic.chosen_by } : null, plans_public: plansOpen, entries },
     note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は 8:30 から公開',
+  });
+});
+
+/**
+ * その日の買い目を、実券の発注用テキスト（もちの「確定オーダーテキスト」形式仕様 v1）にする。
+ * 既定は締切前のレースだけ（all=1 で締切後も含める）。budget（円）を指定すると、倍率 = budget ÷ 元の合計 を各買い目に掛け、合計が budget になるよう100円単位で配分する。
+ * 買い目・金額は購入の時点で公開済みの情報だけを使う（新ルールの開催日。旧ルールの日は締切後のレースだけ）
+ */
+watchApi.get('/roster/:id/order', async (c) => {
+  const db = c.env.DB;
+  const id = c.req.param('id') ?? '';
+  const date = c.req.query('date') ?? jstDate(Date.now());
+  if (!isDate(date)) return c.json(bad('date は YYYY-MM-DD'), 400);
+  const budgetQ = c.req.query('budget');
+  const budget = budgetQ === undefined || budgetQ === '' ? undefined : Number(budgetQ);
+  if (budget !== undefined && !(Number.isInteger(budget) && budget >= 100 && budget <= 100_000_000)) return c.json(bad('budget は100円以上の整数（円）'), 400);
+  const all = c.req.query('all') === '1';
+  const agent = await db.prepare("SELECT id, display_name FROM agents WHERE id = ? AND realm = 'live' AND status IN ('active', 'disqualified')").bind(id).first<{ id: string; display_name: string }>();
+  if (!agent) return c.json({ error: { code: 'not_found', message: 'agent not found' } }, 404);
+  const now = Date.now();
+  const rows = (
+    await db
+      .prepare(
+        `SELECT b.race_id, r.jcd, r.rno, r.deadline_at, r.deadline_ms, b.bet_type, b.combo, b.amount
+         FROM bets b JOIN races r ON r.id = b.race_id JOIN submissions s ON s.id = b.submission_id
+         WHERE b.agent_id = ? AND b.realm = 'live' AND b.race_date = ? AND b.status != 'cancelled'
+         ORDER BY r.deadline_ms, b.race_id, s.received_ms, b.id`,
+      )
+      .bind(id, date)
+      .all<{ race_id: string; jcd: string; rno: number; deadline_at: string; deadline_ms: number; bet_type: BetType; combo: string; amount: number }>()
+  ).results;
+  const disclosed = entryRulesApply(date);
+  const races = new Map<string, OrderRace>();
+  for (const b of rows) {
+    const past = b.deadline_ms <= now;
+    if ((past && !all) || (!past && !disclosed)) continue;
+    const r = races.get(b.race_id) ?? { label: raceLabel(b.jcd, b.rno), deadline: b.deadline_at, bets: [] };
+    r.bets.push({ bet_type: b.bet_type, combo: b.combo, amount: b.amount });
+    races.set(b.race_id, r);
+  }
+  const out = orderText(date, [...races.values()], budget);
+  return c.json({
+    agent_id: agent.id, display_name: agent.display_name, date, include_past: all, budget: budget ?? null,
+    races: races.size, ...out,
+    note: '実券の発注用テキスト（確定オーダーテキスト形式 v1）。既定は締切前のレースだけ（all=1 で締切後も含める）。budget を指定すると、倍率 = budget ÷ original_total を各買い目に掛け、合計が budget（100円未満切り捨て）になるよう100円単位で配分する（各買い目は最低100円。買い目の数 × 100円が budget を超えるときだけ total が budget を超える）',
   });
 });
 
