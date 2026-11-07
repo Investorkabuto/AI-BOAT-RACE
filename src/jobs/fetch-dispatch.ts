@@ -34,11 +34,8 @@ export const RECORD_SLOTS = [
   { at: '23:20', day: 0 },
   { at: '06:30', day: -1 },
 ] as const;
-/**
- * 過去分（B と K から過去のレースを作る）を進める時刻（日本時間）。毎晩1回、直近から1年前まで（既定。スクリプトの HISTORY_DEFAULT_DAYS）、取り込み済みでない日を新しい順に進める。
- * 1回の実行で最大60日・40分まで（スクリプト側の上限）。B・K は1日2ファイルなので、公式サイトへの負荷は小さい
- */
-export const HISTORY_SLOT = '02:00';
+// 過去分（B と K から過去のレースを作る）の毎晩の起動は 2026-11-07 にやめた（管理者決定。過去データと統計はもち側が持つ）。
+// 取り込み済みの分は jobs/purge.ts が消す。スクリプトの history は手動の起動だけで使える
 /** 出走表の起動は、その時刻からこの時間内だけ行う（デプロイ直後などに夜になってから起動しないように） */
 export const SLOT_WINDOW_MS = 2 * 60 * 60 * 1000;
 /** 結果の取得の最短間隔 */
@@ -95,12 +92,6 @@ export function dueDispatches(p: { nowMs: number; done: ReadonlySet<string>; las
     const target = addDays(today, slot.day);
     const key = `fetch:records:${target}:${slot.at}`;
     if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'records', date: target });
-  }
-  {
-    const [h, m] = HISTORY_SLOT.split(':').map(Number) as [number, number];
-    const at = jstToMs(today, h, m);
-    const key = `fetch:history:${today}`;
-    if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'history' });
   }
   {
     const [h, m] = RESULTS_ALL_SLOT.split(':').map(Number) as [number, number];
