@@ -165,13 +165,15 @@ watchApi.get('/roster/:id', async (c) => {
            (SELECT COALESCE(SUM(amount), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status NOT IN ('cancelled')) AS amount,
            (SELECT COALESCE(SUM(payout), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS payout,
            (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS hits,
+           (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'miss') AS misses,
+           (SELECT COALESCE(SUM(amount), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'refunded') AS refunded,
            (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status IN ('accepted', 'locked')) AS pending
          FROM entries e LEFT JOIN races r ON r.id = e.race_id LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
            LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
          WHERE e.agent_id = ? AND e.realm = 'live' AND e.race_date = ? ORDER BY r.deadline_ms`,
       )
       .bind(id, date)
-      .all<{ race_id: string; status: string; late: number; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; pending: number }>(),
+      .all<{ race_id: string; status: string; late: number; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; misses: number; refunded: number; pending: number }>(),
   ]);
   if (!a) return c.json({ error: { code: 'not_found', message: 'agent not found' } }, 404);
   const ym = date.slice(0, 7);
@@ -186,11 +188,12 @@ watchApi.get('/roster/:id', async (c) => {
     .map((d) => ({ date: d.race_date, stake: d.stake, payout: d.payout, recovery_pct: recoveryPct(d.payout, d.stake) }));
   const plansOpen = Date.now() >= entryDeadlineMs(date);
   const entries = entryRows.results.map((e) => {
-    // 状況: passed=見送り / no_show=無断欠場 / hit・miss=判定済み / pending=購入済み・結果待ち / entered=申告中（未購入）
-    const state = e.status === 'passed' ? 'passed' : e.fine ? 'no_show' : e.amount > 0 ? (e.pending > 0 ? 'pending' : e.hits > 0 ? 'hit' : 'miss') : 'entered';
+    // 状況: passed=見送り / no_show=無断欠場 / hit・miss=判定済み / refunded=全額返還（中止・不成立・返還艇） / pending=購入済み・結果待ち / entered=申告中（未購入）
+    const judged = e.hits > 0 ? 'hit' : e.misses > 0 ? 'miss' : 'refunded';
+    const state = e.status === 'passed' ? 'passed' : e.fine ? 'no_show' : e.amount > 0 ? (e.pending > 0 ? 'pending' : judged) : 'entered';
     return {
       race_id: e.race_id, label: raceLabel(e.jcd, e.rno), deadline: e.deadline_at, race_status: e.race_status, state, late: e.late === 1,
-      amount: e.amount, payout: e.payout, fine: e.fine,
+      amount: e.amount, payout: e.payout, refunded: e.refunded, fine: e.fine,
       ...(plansOpen ? { tickets: e.tickets_json ? JSON.parse(e.tickets_json) : [], rationale: e.rationale } : {}),
     };
   });
@@ -205,7 +208,7 @@ watchApi.get('/roster/:id', async (c) => {
     all_time: { ...fmtStats(allTime), ...(careerTotals(history).get(id) ?? { months: 0, total_gain: 0, month_wins: 0 }) },
     daily,
     today: { tactic: tactic ? { tactic: tactic.tactic, tactic_ja: TACTIC_JA[tactic.tactic], chosen_by: tactic.chosen_by } : null, plans_public: plansOpen, entries },
-    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は 8:30 から公開',
+    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は 8:30 から公開',
   });
 });
 

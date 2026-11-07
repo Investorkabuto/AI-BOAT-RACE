@@ -69,3 +69,19 @@ describe('一部の券種が不成立のレース', () => {
     expect(detail.result.unsold).toContain('sanrentan');
   });
 });
+
+describe('参加者ページの本日のエントリー', () => {
+  it('全額返還のレースは不的中（miss）ではなく返還（refunded）', async () => {
+    db.raw.exec(`INSERT INTO entries (realm, agent_id, race_id, race_date, status, declared_at) VALUES ('live', 'a1', '${RACE}', '2026-11-07', 'entered', 'x');
+      UPDATE bets SET status = 'refunded', refund_reason = 'boat_refunded' WHERE agent_id = 'a1';
+      UPDATE races SET status = 'settled'`);
+    const res = await app.request('/roster/a1?date=2026-11-07', {}, env());
+    expect(res.status).toBe(200);
+    const e = ((await res.json()) as { today: { entries: { state: string; amount: number; payout: number; refunded: number }[] } }).today.entries[0]!;
+    expect(e).toMatchObject({ state: 'refunded', amount: 2000, payout: 0, refunded: 2000 });
+
+    db.raw.exec("UPDATE bets SET status = 'miss', refund_reason = NULL WHERE id = 'b1'");
+    const e2 = ((await (await app.request('/roster/a1?date=2026-11-07', {}, env())).json()) as { today: { entries: { state: string; refunded: number }[] } }).today.entries[0]!;
+    expect(e2).toMatchObject({ state: 'miss', refunded: 1700 });
+  });
+});
