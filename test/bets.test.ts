@@ -63,6 +63,17 @@ describe('judgeBet', () => {
     expect(judgeBet({ bet_type: 'sanrentan', combo: '1-2-4', amount: 100 }, { ...result, refunded_boats: [4] })).toEqual({ status: 'refunded', payout: 0, reason: 'boat_refunded' });
     expect(judgeBet({ bet_type: 'sanrentan', combo: '1-2-3', amount: 100 }, { ...result, status: 'cancelled' })).toEqual({ status: 'refunded', payout: 0, reason: 'race_cancelled' });
   });
+  it('不成立の券種の舟券は返還、成立した券種は通常どおり判定（2026-11-07 江戸川2R）', () => {
+    const r: RaceResult = {
+      status: 'official', refunded_boats: [1, 2, 3, 5],
+      payouts: [{ bet_type: 'nirentan', combo: '6-4', payout: 300 }, { bet_type: 'tansho', combo: '6', payout: 180 }],
+      unsold: ['sanrentan', 'sanrenpuku', 'nirenpuku', 'kakurenpuku', 'fukusho'],
+    };
+    expect(judgeBet({ bet_type: 'nirenpuku', combo: '4=6', amount: 100 }, r)).toEqual({ status: 'refunded', payout: 0, reason: 'bet_type_unsold' });
+    expect(judgeBet({ bet_type: 'nirentan', combo: '6-4', amount: 200 }, r)).toEqual({ status: 'hit', payout: 600 });
+    expect(judgeBet({ bet_type: 'nirentan', combo: '4-6', amount: 100 }, r).status).toBe('miss');
+    expect(judgeBet({ bet_type: 'sanrentan', combo: '1-3-2', amount: 1700 }, r)).toEqual({ status: 'refunded', payout: 0, reason: 'boat_refunded' });
+  });
   it('特払いはその券種の全舟券に払い戻す', () => {
     const r: RaceResult = { ...result, payouts: [{ bet_type: 'sanrentan', combo: '*', payout: 70 }] };
     expect(judgeBet({ bet_type: 'sanrentan', combo: '6-5-4', amount: 200 }, r)).toEqual({ status: 'hit', payout: 140 });

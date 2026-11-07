@@ -113,6 +113,8 @@ export interface RaceResult {
   /** 返還の対象になった艇（欠場など）。この艇を含む舟券は返還 */
   refunded_boats: number[];
   payouts: Payout[];
+  /** 不成立の券種（完走艇が足りないなど）。この券種の舟券は全額返還 */
+  unsold?: BetType[];
 }
 
 export interface BetInput {
@@ -124,12 +126,13 @@ export interface BetInput {
 export type BetOutcome =
   | { status: 'hit'; payout: number }
   | { status: 'miss'; payout: 0 }
-  | { status: 'refunded'; payout: 0; reason: 'race_cancelled' | 'boat_refunded' };
+  | { status: 'refunded'; payout: 0; reason: 'race_cancelled' | 'boat_refunded' | 'bet_type_unsold' };
 
 /**
  * 1枚の舟券を判定する。
  * - 中止・不成立のレースは返還
  * - 返還艇（欠場など）を含む舟券は返還
+ * - 不成立の券種の舟券は返還
  * - 公式の払戻金一覧に同じ券種・組番があれば的中（払戻 = 100円あたり払戻金 × 金額 ÷ 100）
  * - 特払い（組番 "*"）があれば、その券種の返還でない舟券すべてに払い戻す
  * 返還は成績計算から除外する（投票額にも払戻額にも数えない）
@@ -137,6 +140,7 @@ export type BetOutcome =
 export function judgeBet(bet: BetInput, result: RaceResult): BetOutcome {
   if (result.status === 'cancelled') return { status: 'refunded', payout: 0, reason: 'race_cancelled' };
   if (comboBoats(bet.combo).some((b) => result.refunded_boats.includes(b))) return { status: 'refunded', payout: 0, reason: 'boat_refunded' };
+  if (result.unsold?.includes(bet.bet_type)) return { status: 'refunded', payout: 0, reason: 'bet_type_unsold' };
   const units = bet.amount / UNIT;
   const hits = result.payouts.filter((p) => p.bet_type === bet.bet_type && (p.combo === bet.combo || p.combo === SPECIAL_COMBO));
   if (hits.length === 0) return { status: 'miss', payout: 0 };
