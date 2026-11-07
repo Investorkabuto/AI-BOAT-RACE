@@ -246,16 +246,32 @@ publicApi.get('/declarations', async (c) => {
   const date = c.req.query('date') ?? jstDate(Date.now());
   if (!isDate(date)) return c.json({ error: { code: 'validation_failed', message: 'date は YYYY-MM-DD' } }, 400);
   const plansOpen = Date.now() >= entryDeadlineMs(date);
-  const rows = (
-    await c.env.DB.prepare(
+  const db = c.env.DB;
+  const [declQ, betsQ] = await db.batch([
+    db.prepare(
       `SELECT e.race_id, g.id AS agent_id, g.display_name, e.status, e.late, f.amount AS fine, p.tickets_json, p.rationale,
          EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
        FROM entries e JOIN agents g ON g.id = e.agent_id JOIN races r ON r.id = e.race_id
          LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
          LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
        WHERE e.realm = 'live' AND e.race_date = ? ORDER BY r.deadline_ms, e.race_id, g.display_name`,
-    ).bind(date).all<{ race_id: string; agent_id: string; display_name: string; status: string; late: number; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }>()
-  ).results;
+    ).bind(date),
+    // 実際に購入した買い目（取消を除く。購入の順）。観戦ページで申告の買い目と並べて、購入・的中・返還を色分けする
+    db.prepare(
+      `SELECT b.agent_id, b.race_id, b.bet_type, b.combo, b.amount, b.status, b.payout, r.deadline_ms FROM bets b JOIN races r ON r.id = b.race_id
+       WHERE b.realm = 'live' AND b.race_date = ? AND b.status != 'cancelled' ORDER BY b.received_ms, b.id`,
+    ).bind(date),
+  ]);
+  const rows = declQ!.results as { race_id: string; agent_id: string; display_name: string; status: string; late: number; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }[];
+  // 購入は、新ルールの開催日は購入の時点で公開済み。旧ルールの日は締切後だけ出す（GET /races/{race_id}・GET /roster/{agent_id} と同じ）
+  const disclosed = entryRulesApply(date);
+  const nowMs = Date.now();
+  const betsBy = new Map<string, { bet_type: BetType; combo: string; amount: number; status: string; payout: number }[]>();
+  for (const b of betsQ!.results as { agent_id: string; race_id: string; bet_type: BetType; combo: string; amount: number; status: string; payout: number; deadline_ms: number }[]) {
+    if (!disclosed && b.deadline_ms > nowMs) continue;
+    const k = `${b.agent_id}|${b.race_id}`;
+    betsBy.set(k, [...(betsBy.get(k) ?? []), { bet_type: b.bet_type, combo: b.combo, amount: b.amount, status: b.status, payout: b.payout }]);
+  }
   return c.json({
     race_date: date,
     plans_public: plansOpen,
@@ -263,9 +279,10 @@ publicApi.get('/declarations', async (c) => {
       ...r,
       late: late === 1,
       bought: bought === 1,
+      bets: betsBy.get(`${r.agent_id}|${r.race_id}`) ?? [],
       ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
     })),
-    note: `status: entered=申告中 / passed=見送り。late=8:30以降の追加申告（申告した時点で公開）。bought=購入あり（買い目・金額は GET /races/{race_id}）。朝の申告の tickets と rationale は ${ENTRY_DEADLINE_LABEL} から公開`,
+    note: `status: entered=申告中 / passed=見送り。late=8:30以降の追加申告（申告した時点で公開）。bought=購入あり。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）。朝の申告の tickets と rationale は ${ENTRY_DEADLINE_LABEL} から公開`,
   });
 });
 

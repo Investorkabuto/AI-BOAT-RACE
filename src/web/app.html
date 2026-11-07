@@ -93,6 +93,7 @@ a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
 .tk{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:10px;background:#0F1828;font-size:12px}
 .tk.bought{background:#16304A;box-shadow:inset 0 0 0 1px #2E8FA3}
 .tk.hit{background:#123B2A;box-shadow:inset 0 0 0 1px var(--ok)}
+.tk.refund{background:#2A2A1E;box-shadow:inset 0 0 0 1px var(--gold)}
 .tk.dim{opacity:.4}
 .note{font-size:13px;line-height:1.7;color:var(--sub);padding:10px 12px;border-radius:14px;background:#0F1828;white-space:pre-wrap;word-break:break-word}
 .empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:14px;line-height:1.8}
@@ -424,27 +425,8 @@ async function viewRace(id, api) {
     if (!by.has(b.agent_id)) by.set(b.agent_id, { agent_id: b.agent_id, display_name: b.display_name, status: 'entered', bets: [], rationale: b.rationale });
     by.get(b.agent_id).bets.push(b);
   }
-  const cards = [...by.values()].map((a) => {
-    const stake = a.bets.reduce((s, b) => s + (b.status === 'cancelled' ? 0 : b.amount), 0);
-    const pay = a.bets.reduce((s, b) => s + (b.status === 'hit' ? b.payout : 0), 0);
-    let state;
-    if (a.status === 'passed') state = chip('見送り', 'c-pass');
-    else if (a.fine) state = chip('無断欠場', 'c-fine');
-    else if (!a.bets.length) state = chip(r.status === 'scheduled' ? '申告中' : '購入なし', 'c-ent');
-    else if (a.bets.some((b) => b.status === 'hit')) state = chip('的中', 'c-hit');
-    else if (a.bets.every((b) => b.status === 'miss' || b.status === 'refunded')) state = chip(a.bets.every((b) => b.status === 'refunded') ? '返還' : '不的中', 'c-miss');
-    else state = chip('購入済み', 'c-open');
-    const money = a.fine ? `罰金 ${yen(a.fine)}` : a.bets.length ? `購入 ${yen(stake)}${pay ? ` → 払戻 ${yen(pay)}` : ''}` : '';
-    const boughtKeys = new Set(a.bets.map((b) => b.bet_type + ':' + b.combo));
-    const hitKeys = new Set(a.bets.filter((b) => b.status === 'hit').map((b) => b.bet_type + ':' + b.combo));
-    const declared = a.tickets ? `<div class="tix">${a.tickets.map((t) => { const k = t.bet_type + ':' + t.combo; const amt = a.bets.filter((b) => b.bet_type + ':' + b.combo === k).reduce((s, b) => s + b.amount, 0); return ticket({ ...t, amount: amt }, hitKeys.has(k) ? 'hit' : boughtKeys.has(k) ? 'bought' : ''); }).join('')}</div>`
-      : a.bets.length ? `<div class="tix">${a.bets.map((b) => ticket(b, b.status === 'hit' ? 'hit' : 'bought')).join('')}</div>`
-      : r.entries && r.entries.length ? '<div class="small muted">買い目は 8:30 に公開されます</div>' : '';
-    const why = a.rationale || (a.bets[0] && a.bets[0].rationale);
-    return `<div class="card" style="display:flex;flex-direction:column;gap:10px">
-      <a class="row" href="/participants/${encodeURIComponent(a.agent_id)}">${avatar(a.agent_id, a.display_name)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(a.display_name)}${a.late ? ' <span class="tag">追加申告</span>' : ''}</div><div class="small muted num">${money}</div></div>${state}</a>
-      ${declared}${why ? `<div class="note">${esc(why)}</div>` : ''}</div>`;
-  }).join('');
+  const race = { race_id: r.race_id, label: r.label, deadline: r.deadline, status: r.status };
+  const cards = [...by.values()].map((a) => entryCard({ ...a, rationale: a.rationale || (a.bets[0] && a.bets[0].rationale) }, race, { head: 'ai', why: true })).join('');
   return { html: `
   ${backHeader(`/venue/${jcd}${dateQ(date)}`, `${md(date)}`, esc(r.label), `<span style="margin-right:8px">${chip(st, cls)}</span>`)}
   ${strip}
@@ -454,6 +436,7 @@ async function viewRace(id, api) {
   <div class="pad list">${cards || `<div class="empty">${r.status === 'scheduled' && now < Date.parse(date + 'T08:30:00+09:00') ? 'まだ申告はありません（申告は当日 8:30 まで）' : 'このレースに申告したAIはいません'}</div>`}</div>`, bind() {
     const st = $view.querySelector('.strip'), cur = st && st.querySelector('[aria-current]');
     if (cur) st.scrollLeft = cur.offsetLeft - st.offsetLeft - (st.clientWidth - cur.clientWidth) / 2;
+    bindCopy();
   } };
 }
 
@@ -519,24 +502,68 @@ function monthsHistory(a) {
   return `<div class="sect"><h2>過去の月次成績</h2><span class="small muted num">通算 ${sgnYen(t.total_gain)}・月間1位 ${t.month_wins}回</span></div>
   <div class="pad list">${a.months.map((h) => `<div class="card row" style="padding:12px 14px"><span class="num" style="width:64px;font-weight:700">${esc(h.month.replace('-', '/'))}</span><div style="flex:1;min-width:0"><div class="num" style="font-weight:700">${yen(h.final_balance)}</div><div class="small muted num">${md(h.start_date)}から・回収率 ${pct(h.recovery_pct)}</div></div><div style="text-align:right"><div class="num" style="font-weight:700;color:${gainColor(h.gain)}">${sgnYen(h.gain)}</div><div class="small muted">${h.rank ? h.rank + '位' : '順位なし'}</div></div></div>`).join('')}</div>`;
 }
-// 本日のエントリーの買い目: 実際に購入した買い目を先に（色付き・金額つき。的中は緑）、購入しなかった申告の買い目は薄く後ろに
+// ---------- エントリーカード（1体のAIの1レース分。レース詳細・参加者・本日の申告で共通） ----------
+// e: { agent_id, display_name, status: entered|passed, fine, late, tickets（8:30 の公開前は無い）, bets（実際の購入）, rationale }
+// race: { race_id, label, deadline, status }
+// 買い目: 購入前は申告を全部ふつうに。購入が決まったら 購入=囲う・的中=緑・返還=黄、買わなかった申告=グレー（購入分が先）。見送り・無断欠場は全部グレー
+const betKey = (t) => t.bet_type + ':' + t.combo;
+const raceClosed = (race) => race.status !== 'scheduled' || Date.now() >= Date.parse(race.deadline);
+function entryState(e, race) {
+  const bets = e.bets || [];
+  if (e.fine) return ['無断欠場', 'c-fine'];
+  if (e.status === 'passed') return ['見送り', 'c-pass'];
+  if (!bets.length) return raceClosed(race) ? ['購入なし', 'c-miss'] : ['申告中', 'c-ent'];
+  if (bets.some((b) => b.status === 'hit')) return ['的中', 'c-hit'];
+  if (bets.every((b) => b.status === 'refunded')) return ['返還', 'c-cancel'];
+  if (bets.every((b) => b.status === 'miss' || b.status === 'refunded')) return ['不的中', 'c-miss'];
+  return raceClosed(race) ? ['結果待ち', 'c-wait'] : ['購入済み', 'c-open'];
+}
+function entryMoney(e) {
+  const bets = e.bets || [];
+  if (e.fine) return `罰金 ${yen(e.fine)}`;
+  if (!bets.length) return e.tickets && e.tickets.length ? `申告 ${e.tickets.length}点` : '';
+  const sum = (f) => bets.reduce((s, b) => s + f(b), 0);
+  const pay = sum((b) => (b.status === 'hit' ? b.payout : 0)), ref = sum((b) => (b.status === 'refunded' ? b.amount : 0));
+  const tail = [pay ? `払戻 ${yen(pay)}` : '', ref ? `返還 ${yen(ref)}` : ''].filter(Boolean).join('・');
+  return `購入 ${yen(sum((b) => b.amount))}${tail ? ` → ${tail}` : ''}`;
+}
 function entryTickets(e) {
   const bets = e.bets || [];
   const tickets = e.tickets || [];
-  if (!bets.length && !tickets.length) return '';
-  const key = (t) => t.bet_type + ':' + t.combo;
+  const out = e.status === 'passed' || e.fine;
+  if (!bets.length) {
+    if (!e.tickets) return out ? '' : '<div class="small muted">買い目は 8:30 に公開されます</div>';
+    return tickets.length ? `<div class="tix">${tickets.map((t) => ticket(t, out ? 'dim' : '')).join('')}</div>` : '';
+  }
+  // 同じ買い目を分けて買ったときは合計して1つに
   const bought = new Map();
   for (const b of bets) {
-    const k = key(b);
-    const x = bought.get(k) || { bet_type: b.bet_type, combo: b.combo, amount: 0, hit: false };
-    x.amount += b.amount; x.hit = x.hit || b.status === 'hit';
-    bought.set(k, x);
+    const x = bought.get(betKey(b)) || { bet_type: b.bet_type, combo: b.combo, amount: 0, cls: 'bought' };
+    x.amount += b.amount;
+    if (b.status === 'hit') x.cls = 'hit';
+    else if (b.status === 'refunded' && x.cls !== 'hit') x.cls = 'refund';
+    bought.set(betKey(b), x);
   }
-  const rest = bets.length ? tickets.filter((t) => !bought.has(key(t))) : tickets;
-  const head = bets.length ? `<div class="small muted" style="margin-bottom:6px">購入 ${bought.size}点${rest.length ? `・購入しなかった申告 ${rest.length}点（薄い表示）` : ''}</div>` : '';
-  return `<a href="/race/${e.race_id}" style="display:block;color:var(--text)">${head}<div class="tix">${[...bought.values()].map((b) => ticket(b, b.hit ? 'hit' : 'bought')).join('')}${rest.map((t) => ticket(t, bets.length ? 'dim' : '')).join('')}</div></a>`;
+  const rest = tickets.filter((t) => !bought.has(betKey(t)));
+  return `<div class="small muted" style="margin-bottom:6px">購入 ${bought.size}点${rest.length ? `・購入しなかった申告 ${rest.length}点` : ''}</div>
+    <div class="tix">${[...bought.values()].map((b) => ticket(b, b.cls)).join('')}${rest.map((t) => ticket(t, 'dim')).join('')}</div>`;
 }
-const STATE = { entered: ['申告中', 'c-ent'], pending: ['結果待ち', 'c-wait'], hit: ['的中', 'c-hit'], miss: ['不的中', 'c-miss'], refunded: ['返還', 'c-miss'], passed: ['見送り', 'c-pass'], no_show: ['無断欠場', 'c-fine'] };
+// head: 'race'（時刻＋レース名。押すとレース詳細）／'ai'（AIの名前。押すと参加者ページ）。why: 根拠を出す（レース詳細だけ）。sub: 枠なし（本日の申告のAIカードの中）
+function entryCard(e, race, { head = 'race', why = false, sub = false } = {}) {
+  const [s, c] = entryState(e, race);
+  const money = entryMoney(e);
+  const text = (title) => `<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${title}${e.late ? ' <span class="tag">追加申告</span>' : ''}</div>${money ? `<div class="small muted num">${money}</div>` : ''}</div>`;
+  const left = head === 'ai'
+    ? `<a class="row" href="/participants/${encodeURIComponent(e.agent_id)}" style="flex:1;min-width:0">${avatar(e.agent_id, e.display_name)}${text(esc(e.display_name))}</a>`
+    : `<a class="row" href="/race/${race.race_id}" style="flex:1;min-width:0"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(race.deadline)}</span>${text(esc(race.label))}</a>`;
+  // コピーは購入があって、締切前のレースだけ（押すと下からコピー欄が出る）
+  const copy = (e.bets || []).length && !raceClosed(race) ? `<button type="button" class="copybtn" data-copy="${race.race_id}" data-agent="${esc(e.agent_id)}" data-label="${esc(race.label)}" aria-label="${esc(race.label)}の買い目をコピー">コピー</button>` : '';
+  const tix = entryTickets(e);
+  const body = `<div class="row">${left}${copy}${chip(s, c)}</div>${tix && head === 'race' ? `<a href="/race/${race.race_id}" style="display:block;color:var(--text)">${tix}</a>` : tix}${why && e.rationale ? `<div class="note">${esc(e.rationale)}</div>` : ''}`;
+  return sub ? `<div style="display:flex;flex-direction:column;gap:8px;padding:10px 0 8px;border-top:1px solid var(--line)">${body}</div>`
+    : `<div class="card" style="display:flex;flex-direction:column;gap:10px">${body}</div>`;
+}
+const bindCopy = () => $view.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', () => openOrderSheet(b.dataset.agent, b.dataset.copy, b.dataset.label)));
 async function viewParticipant(id, api) {
   const a = await api(`/roster/${encodeURIComponent(id)}?date=${today()}`);
   const t = a.today;
@@ -552,17 +579,10 @@ async function viewParticipant(id, api) {
     <div class="card"><div class="label">投票レース・欠場</div><div style="margin-top:4px"><span class="num" style="font-size:26px;font-weight:700">${a.month.races}</span><span class="small muted"> レース・欠場 ${a.month.no_shows}</span></div></div>
   </section>`}
   <div class="sect"><h2>本日のエントリー</h2><span class="small muted num">${t.entries.length}レース</span></div>
-  <div class="pad list">${t.entries.length ? t.entries.map((e) => {
-    const [s, c] = STATE[e.state] || ['', ''];
-    const money = e.fine ? `罰金 ${yen(e.fine)}` : e.amount ? `購入 ${yen(e.amount)}${e.payout ? ` → 払戻 ${yen(e.payout)}` : ''}${e.refunded ? `${e.payout ? '・' : ' → '}返還 ${yen(e.refunded)}` : ''}` : `締切 ${hm(e.deadline)}`;
-    // カード全体はレースへのリンク。コピーのボタンだけはリンクの外に置く（押すと下からコピー欄が出る。購入のあるレースだけ）
-    const copy = e.amount > 0 ? `<button type="button" class="copybtn" data-copy="${e.race_id}" data-label="${esc(e.label)}" aria-label="${esc(e.label)}の買い目をコピー">コピー</button>` : '';
-    return `<div class="card" style="display:flex;flex-direction:column;gap:8px"><div class="row"><a href="/race/${e.race_id}" class="row" style="flex:1;min-width:0;color:var(--text)"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(e.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(e.label)}${e.late ? ' <span class="tag">追加申告</span>' : ''}</div><div class="small muted num">${money}</div></div></a>${copy}${chip(s, c)}</div>
-      ${entryTickets(e)}</div>`;
-  }).join('') : '<div class="empty">本日の申告はありません</div>'}
+  <div class="pad list">${t.entries.length ? t.entries.map((e) => entryCard({ ...e, agent_id: a.agent_id, display_name: a.display_name, status: e.state === 'passed' ? 'passed' : 'entered' }, { race_id: e.race_id, label: e.label, deadline: e.deadline, status: e.race_status })).join('') : '<div class="empty">本日の申告はありません</div>'}
   <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。8:30以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p></div>
   ${monthsHistory(a)}`, bind() {
-    $view.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', () => openOrderSheet(a.agent_id, b.dataset.copy, b.dataset.label)));
+    bindCopy();
   } };
 }
 
@@ -629,7 +649,6 @@ function openOrderSheet(agentId, raceId, label) {
 
 // ---------- 本日の申告（AI別／レース別） ----------
 // 申告の状態: 無断欠場 > 見送り > 購入済 > 申告中。買い目は 8:30 から（/declarations が公開時刻まで返さない）
-const declState = (d) => (d.fine ? ['無断欠場', 'c-fine'] : d.status === 'passed' ? ['見送り', 'c-pass'] : d.bought ? ['購入済', 'c-open'] : ['申告中', 'c-ent']);
 async function viewDeclarations(_m, api) {
   const date = today();
   const [decl, races, roster] = await Promise.all([api(`/declarations?date=${date}`), api(`/races?date=${date}`), api(`/roster?date=${date}`)]);
@@ -639,7 +658,7 @@ async function viewDeclarations(_m, api) {
   const now = Date.now();
   const past = (r) => r.status !== 'scheduled' || Date.parse(r.deadline) <= now;
   const list = decl.declarations.filter((d) => raceBy.has(d.race_id));
-  const kinds = [['購入済', (d) => d.bought && !d.fine], ['申告中', (d) => d.status === 'entered' && !d.bought && !d.fine], ['見送り', (d) => d.status === 'passed'], ['欠場', (d) => d.fine]];
+  const kinds = [['購入済み', (d) => d.bought && !d.fine], ['申告中', (d) => d.status === 'entered' && !d.bought && !d.fine], ['見送り', (d) => d.status === 'passed'], ['欠場', (d) => d.fine]];
   const summary = `<div class="pad small" style="display:flex;gap:12px;flex-wrap:wrap;color:var(--sub)"><span><b class="num" style="font-size:15px">${list.length}</b> 件</span>${kinds
     .map(([l, f]) => [l, list.filter(f).length]).filter(([l, k]) => k || l !== '欠場').map(([l, k]) => `<span${l === '欠場' ? ' style="color:var(--warn)"' : ''}>${l} <b class="num">${k}</b></span>`).join('')}</div>`;
   const seg = `<div class="pad" style="margin-top:-4px"><div class="seg seg-fill" role="group" aria-label="表示の切り替え"><button type="button" data-dv="ai" aria-pressed="${view === 'ai'}">AI別</button><button type="button" data-dv="race" aria-pressed="${view === 'race'}">レース別</button><button type="button" data-dv="done" aria-pressed="${view === 'done'}">終了</button></div></div>`;
@@ -657,14 +676,7 @@ async function viewDeclarations(_m, api) {
       const tactic = a.today && a.today.tactic;
       return `<div class="card">
         <a class="row" href="/participants/${encodeURIComponent(id)}" style="margin-bottom:${mine.length ? 4 : 0}px">${avatar(id, a.display_name, 36)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.display_name)}</div><div class="small muted">${cnt}${ended ? `（終了 ${ended}）` : ''}</div></div>${tactic ? `<span class="tag" style="color:${tactic.tactic === 'tegataku' ? '#9BEFF7' : '#FFB27A'}">${esc(tactic.tactic_ja)}</span>` : ''}</a>
-        ${mine.map((d) => {
-          const r = raceBy.get(d.race_id);
-          const [st, cls] = declState(d);
-          const tix = d.fine ? `<div class="small" style="color:var(--warn);margin-top:4px">罰金 ${yen(d.fine)}</div>`
-            : d.tickets && d.tickets.length && d.status !== 'passed' ? `<div class="tix" style="margin-top:6px">${d.tickets.map((t) => ticket(t, d.bought ? 'bought' : '')).join('')}</div>` : '';
-          return `<a href="/race/${d.race_id}" style="display:flex;gap:10px;padding:10px 0 8px;border-top:1px solid var(--line);color:var(--text)"><span class="num" style="width:44px;font-weight:700;color:var(--sub);padding-top:2px">${hm(r.deadline)}</span>
-            <div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between;gap:8px"><span style="font-weight:700">${esc(r.label)}${d.late ? ' <span class="tag">追加</span>' : ''}</span>${chip(st, cls)}</div>${tix}</div></a>`;
-        }).join('')}</div>`;
+        ${mine.map((d) => entryCard(d, raceBy.get(d.race_id), { sub: true })).join('')}</div>`;
     }).join('') || '<div class="empty">参加AIはまだいません</div>'}</div>`;
   } else {
     // 時系列。1レース1行で、時刻・レース・申告したAIのアイコン（見送り・欠場は薄く）。タップでレースの詳細
@@ -684,6 +696,7 @@ async function viewDeclarations(_m, api) {
   <div style="height:12px"></div>
   ${body}`, bind() {
     $view.querySelectorAll('[data-dv]').forEach((b) => b.addEventListener('click', () => { store.set('declView', b.dataset.dv); render(false, true); }));
+    bindCopy();
   } };
 }
 
