@@ -32,7 +32,7 @@ export interface Env {
 }
 
 export const SITE_NAME = '天下一舟闘会';
-export const RULES_VERSION = '2026-11-09.1';
+export const RULES_VERSION = '2026-11-09.2';
 /** 1回の提出（1レース）に含められる舟券の枚数の上限 */
 export const MAX_TICKETS_PER_SUBMISSION = 60;
 

@@ -121,6 +121,16 @@ nav.tabs .unread[hidden]{display:none}
 @keyframes fadein{from{opacity:0}}@keyframes fadeout{to{opacity:0}}
 @keyframes slideup{from{transform:translateY(100%)}}@keyframes slidedown{to{transform:translateY(100%)}}
 @media (prefers-reduced-motion:reduce){.sheet-bg,.sheet,.sheet-bg.closing,.sheet-bg.closing .sheet{animation-duration:1ms}}
+.acts{display:flex;gap:6px;flex-shrink:0}.pill{display:inline-flex;align-items:center;gap:5px;min-height:32px;padding:0 12px;border-radius:999px;border:1px solid #2A3A58;background:var(--card);color:var(--sub);font:inherit;font-size:13px;font-weight:700;white-space:nowrap;cursor:pointer;text-decoration:none}.pill.pri{background:#16304A;border-color:#2E5E7E;color:var(--accent)}a.pill:hover{color:var(--text)}
+.lv-sheet{max-height:88vh;padding-bottom:calc(16px + env(safe-area-inset-bottom))}.lv-body{overflow-y:auto;margin:0 -4px;padding:0 4px;-webkit-overflow-scrolling:touch}
+.lv-tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px}.lv-tabs button,.lv-first button{min-height:40px;border:0;border-radius:12px;background:#0F1828;color:var(--muted);font:inherit;font-weight:700;cursor:pointer}.lv-tabs button[aria-pressed=true]{background:#16304A;color:var(--accent)}.lv-sub{margin-bottom:8px}.lv-sub button{min-height:34px;font-size:13px}
+.lv-bi{width:100%;border-collapse:collapse;font-size:13px}.lv-bi th,.lv-bi td{padding:8px 2px;border-bottom:1px solid var(--line);text-align:center}.lv-bi th{font-weight:400;color:var(--muted);font-size:11px}.lv-bi tr:last-child td{border-bottom:0}.lv-bi td.lv-l{text-align:left}
+.lv-best{color:var(--accent);font-weight:800}.lv-rk{font-size:10px;color:var(--muted);margin-left:2px;font-weight:400}.lv-part{display:inline-block;font-size:11px;padding:2px 6px;border-radius:6px;background:#3A2A12;color:var(--gold);margin:1px}
+.lv-st{display:grid;grid-template-columns:50px 24px 1fr 46px;align-items:center;gap:8px;padding:3px 0;white-space:nowrap}.lv-st b{text-align:right}.lv-bar{height:8px;border-radius:99px;background:var(--line);position:relative}.lv-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:var(--accent)}
+.lv-wx{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:10px}.lv-wx div{background:#0F1828;border-radius:10px;padding:8px 4px;text-align:center}.lv-wx b{display:block;font-size:15px}.lv-wx span{font-size:11px;color:var(--muted)}
+.lv-list{padding:2px 12px}.lv-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}.lv-row:last-child{border-bottom:0}.lv-row b{margin-left:auto;font-size:16px}.lv-r{width:26px;text-align:right;color:var(--muted);font-size:12px}.lv-pv{width:76px;text-align:right;font-size:11px;color:var(--muted);white-space:nowrap}.lv-combo{display:inline-flex;gap:2px}.lv-dn{color:var(--accent);font-size:11px;margin-left:2px}.lv-up{color:var(--dim);font-size:11px;margin-left:2px}
+.lv-first{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin-bottom:8px}.lv-first button{min-height:36px;display:flex;align-items:center;justify-content:center}.lv-first button[aria-pressed=true]{background:#16304A;box-shadow:inset 0 0 0 1px var(--accent)}
+.lv-mx{width:100%;border-collapse:separate;border-spacing:3px;font-size:12px}.lv-mx th{font-weight:400;color:var(--muted);padding:2px}.lv-mx td{background:#0F1828;border-radius:6px;text-align:center;padding:6px 2px}.lv-mx td.lv-k{background:none;color:var(--dim)}.lv-mx td.lv-g{box-shadow:inset 0 0 0 1.5px var(--gold);color:var(--gold);font-weight:800}
 .copybtn{flex:none;min-height:32px;padding:0 12px;border-radius:999px;border:0;background:var(--track);color:var(--text);font-weight:700;font-size:12px;cursor:pointer}
 .btn{min-height:50px;border-radius:16px;border:0;font-weight:700;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .btn.pri{background:var(--accent);color:var(--bg)}.btn.sec{background:var(--track);color:var(--text)}
@@ -590,7 +600,7 @@ async function viewRace(id, api) {
     if (segBtns) parts.push(segBtns);
     return parts.length > 1 || !settledOrOff ? `<div class="rbar${mini ? ' mini' : ''}"${mini ? '' : ' id="rbar"'}>${parts.join('')}</div>` : '';
   };
-  const entrantsHtml = `<div class="sect"><h2>出走表</h2><a class="small" href="${official}" target="_blank" rel="noopener">公式の出走表 ↗</a></div>
+  const entrantsHtml = `<div class="sect" style="align-items:center"><h2>出走表</h2><div class="acts"><button type="button" class="pill pri" id="liveBtn" aria-haspopup="dialog">直前・オッズ</button><a class="pill" href="${official}" target="_blank" rel="noopener" aria-label="公式サイトの出走表（別のサイトが開きます）">公式サイト${extIcon}</a></div></div>
   ${settledOrOff ? raceBar(false) : ''}<div class="pad" id="ents" data-st="${stView}" data-rv="${store.get('recentView') === 'loc' ? 'loc' : 'nat'}" style="margin-top:8px">${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 12px">${r.entrants.map((e) => {
     const pl = place.get(e.boat);
     const sc = courseOf.get(e.boat);
@@ -634,7 +644,6 @@ async function viewRace(id, api) {
   ${strip}
   ${resultHtml}
   ${entrantsHtml}
-  ${liveHtml(r)}
   <div class="sect"><h2>参加AIの申告と購入</h2><span class="small muted">${date >= '2026-11-09' ? '申告・変更・購入はすぐ公開' : `買い目は${declHm(date)}に公開`}</span></div>
   <div class="pad list">${cards || `<div class="empty">${r.status === 'scheduled' && now < Date.parse(`${date}T${declHm(date).padStart(5, '0')}:00+09:00`) ? `まだ申告はありません（申告は当日 ${declHm(date)} まで）` : 'このレースに申告したAIはいません'}</div>`}</div>`, bind() {
     $view.querySelectorAll('[data-st]').forEach((b) => b.tagName === 'BUTTON' && b.addEventListener('click', () => {
@@ -654,44 +663,79 @@ async function viewRace(id, api) {
     const st = $view.querySelector('.strip'), cur = st && st.querySelector('[aria-current]');
     if (cur) st.scrollLeft = cur.offsetLeft - st.offsetLeft - (st.clientWidth - cur.clientWidth) / 2;
     bindCopy();
+    const lb = $view.querySelector('#liveBtn');
+    if (lb) lb.addEventListener('click', () => openLiveSheet(r));
   } };
 }
 
-// ---------- 直前情報とオッズ（締切の15分前・10分前・7分前に公式サイトから取得。決定64） ----------
-function liveHtml(r) {
-  const bi = r.beforeinfo, odds = r.odds || [];
-  if (!bi && !odds.length) return '';
-  let out = '';
-  if (bi) {
-    const times = bi.boats.map((b) => b.exhibit_time).filter((t) => t != null);
-    const best = times.length ? Math.min(...times) : null;
-    const w = bi.weather;
-    const st = (bi.start_exhibition || []).map((x) => `<div>${boat(x.boat, 26)}<span class="num small" style="color:${/^F/.test(x.st || '') ? 'var(--warn)' : 'var(--sub)'};font-weight:700">${esc(x.st || '')}</span></div>`).join('');
-    out += `<div class="sect"><h2>直前情報</h2><span class="small muted num">${hm(bi.fetched_at)} 取得</span></div>
-    <section class="card" style="margin:0 var(--gx)"><table class="pay"><tbody>
-      <tr class="small muted"><td>枠</td><td>展示</td><td>チルト</td><td>部品交換</td></tr>
-      ${bi.boats.map((b) => `<tr><td>${boat(b.boat, 26)}</td><td class="num" style="font-weight:700;${b.exhibit_time != null && b.exhibit_time === best ? 'color:var(--accent)' : ''}">${b.exhibit_time != null ? b.exhibit_time.toFixed(2) : '—'}</td><td class="num">${b.tilt != null ? b.tilt.toFixed(1) : '—'}</td><td class="small">${b.parts && b.parts.length ? esc(b.parts.join('・')) : '<span class="muted">—</span>'}</td></tr>`).join('')}
-    </tbody></table>
-    ${st ? `<div class="small muted" style="margin-top:10px">スタート展示（1コースから）</div><div class="starts num">${st}</div>` : ''}
-    ${w ? `<div class="small muted" style="margin-top:8px">${[w.weather, w.wind_m != null ? `風 ${w.wind_m}m` : '', w.wave_cm != null ? `波 ${w.wave_cm}cm` : '', w.temperature != null ? `気温 ${w.temperature}℃` : ''].filter(Boolean).map(esc).join('・')}${w.as_of ? `（${esc(w.as_of)}）` : ''}</div>` : ''}</section>`;
+// ---------- 直前情報とオッズ（ボトムシート。決定64） ----------
+// 直前情報は締切の15分前ごろに1回。3連単オッズは全レース30分前、申告・購入のあるレースは10分前と7分前も（2026-11-09 管理者決定）
+const extIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>';
+const liveState = { tab: 'before', view: 'pop', first: 1 };
+// オッズの表記（公式と同じく、100倍未満は小数1桁、100倍以上は整数）
+const fmtOdds = (o) => (o >= 100 ? String(Math.round(o)) : o.toFixed(1));
+function beforeHtml(bi) {
+  if (!bi) return '<p class="small muted" style="margin:8px 4px">直前情報は、締切の15分前ごろ（展示の後）に表示します。</p>';
+  const times = bi.boats.map((b) => b.exhibit_time).filter((t) => t != null);
+  const order = [...times].sort((x, y) => x - y);
+  const best = order.length ? order[0] : null;
+  const rows = bi.boats.map((b) => `<tr><td>${boat(b.boat, 24)}</td><td class="num${b.exhibit_time != null && b.exhibit_time === best ? ' lv-best' : ''}">${b.exhibit_time != null ? b.exhibit_time.toFixed(2) + `<span class="lv-rk">${order.indexOf(b.exhibit_time) + 1}位</span>` : '—'}</td><td class="num">${b.tilt != null ? (b.tilt > 0 ? '+' : '') + b.tilt.toFixed(1) : '—'}</td><td class="num">${b.weight != null ? b.weight.toFixed(1) : '—'}${b.adjust_weight ? `<span class="lv-rk">+${b.adjust_weight}</span>` : ''}</td><td class="lv-l">${b.parts && b.parts.length ? b.parts.map((p) => `<span class="lv-part">${esc(p)}</span>`).join('') : '<span class="muted">—</span>'}</td></tr>`).join('');
+  const stv = (st) => { const m = /^(F)?\.?(\d+)/.exec(st || ''); return m ? { f: !!m[1], v: Number('0.' + m[2]) } : null; };
+  const st = (bi.start_exhibition || []).map((x) => {
+    const v = stv(x.st);
+    const w = !v ? 0 : v.f ? 100 : Math.max(6, 100 - v.v * 400);
+    return `<div class="lv-st"><span class="small muted">${x.course}コース</span>${boat(x.boat, 22)}<div class="lv-bar"><i style="width:${w}%${v && v.f ? ';background:var(--warn)' : ''}"></i></div><b class="num" style="${v && v.f ? 'color:var(--warn)' : ''}">${esc(x.st || '')}</b></div>`;
+  }).join('');
+  const w = bi.weather;
+  const wx = w ? `<div class="lv-wx">${[[w.weather || '—', '天候'], [w.wind_m != null ? `${w.wind_m}m` : '—', '風速'], [w.wave_cm != null ? `${w.wave_cm}cm` : '—', '波高'], [w.temperature != null ? `${w.temperature}℃` : '—', '気温']].map(([v, k]) => `<div><b class="num">${esc(String(v))}</b><span>${k}</span></div>`).join('')}</div>${w.as_of ? `<div class="small muted" style="margin-top:6px">水面気象は ${esc(w.as_of)}</div>` : ''}` : '';
+  return `<div class="small muted" style="margin:0 4px 6px">${hm(bi.fetched_at)} 取得</div>
+    <section class="card" style="padding:6px 12px 12px"><table class="lv-bi"><tr><th>枠</th><th>展示</th><th>チルト</th><th>体重</th><th>部品交換</th></tr>${rows}</table>
+    ${st ? `<div class="small muted" style="margin:12px 0 4px">スタート展示（進入とST。棒が長いほど速い）</div>${st}` : ''}${wx}</section>`;
+}
+function oddsHtml(odds) {
+  if (!odds.length) return '<p class="small muted" style="margin:8px 4px">3連単オッズは、締切の30分前から表示します（申告・購入のあるレースは10分前と7分前にも更新）。</p>';
+  const last = odds[odds.length - 1], prev = odds.length > 1 ? odds[odds.length - 2] : null;
+  const m = last.sanrentan || {};
+  const rank = Object.entries(m).filter((e) => e[1] != null).sort((a, b) => a[1] - b[1]);
+  const pop = new Map(rank.map(([c], i) => [c, i + 1]));
+  const mv = (c) => { const p = prev && prev.sanrentan ? prev.sanrentan[c] : null, o = m[c]; return p != null && o != null && p !== o ? (o < p ? '<span class="lv-dn">↓</span>' : '<span class="lv-up">↑</span>') : ''; };
+  const combo = (c) => `<span class="lv-combo">${c.split('-').map((x) => boat(Number(x), 22)).join('')}</span>`;
+  const head = `<div class="small muted num" style="margin:0 4px 8px">締切${last.minutes_before}分前（${hm(last.fetched_at)}）取得${prev ? `・↓↑ は${prev.minutes_before}分前からの変化` : ''}</div>
+    <div class="lv-tabs lv-sub"><button type="button" data-lv-view="pop" aria-pressed="${liveState.view === 'pop'}">人気順</button><button type="button" data-lv-view="mx" aria-pressed="${liveState.view === 'mx'}">1着別の表</button></div>`;
+  if (liveState.view === 'pop') {
+    return head + `<section class="card lv-list">${rank.map(([c, o], i) => `<div class="lv-row"><span class="lv-r num">${i + 1}</span>${combo(c)}<b class="num">${fmtOdds(o)}${mv(c)}</b>${prev && prev.sanrentan && prev.sanrentan[c] != null ? `<span class="lv-pv num">${prev.minutes_before}分前 ${fmtOdds(prev.sanrentan[c])}</span>` : '<span class="lv-pv"></span>'}</div>`).join('')}</section>`;
   }
-  if (odds.length) {
-    const last = odds[odds.length - 1], prev = odds.length > 1 ? odds[0] : null;
-    const top = (m, n) => Object.entries(m || {}).filter((e) => e[1] != null).sort((a, b) => a[1] - b[1]).slice(0, n);
-    const row = (type, n) => {
-      const t = top(last[type], n);
-      if (!t.length) return '';
-      return `<tr><td class="muted" style="width:56px;vertical-align:top">${BET_JA[type]}</td><td><div class="tix">${t.map(([c, o]) => {
-        const p = prev && prev[type] ? prev[type][c] : null;
-        const mv = p != null && p !== o ? (o < p ? '<span style="color:var(--accent)">↓</span>' : '<span class="muted">↑</span>') : '';
-        return `<span class="tk num" style="font-size:12px">${esc(c)} <b>${o}</b>${mv}</span>`;
-      }).join('')}</div></td></tr>`;
-    };
-    out += `<div class="sect"><h2>3連単オッズ（人気順）</h2><span class="small muted num">締切${last.minutes_before}分前・${hm(last.fetched_at)} 取得</span></div>
-    <section class="card" style="margin:0 var(--gx)"><table class="pay"><tbody>${row('sanrentan', 10)}</tbody></table>
-    <div class="small muted" style="padding-top:8px">${prev ? '↓↑ は締切10分前からの変化。' : ''}締切までにさらに動く参考値です。精算は公式の払戻金で行います。</div></section>`;
-  }
-  return out;
+  const f = liveState.first, others = [1, 2, 3, 4, 5, 6].filter((x) => x !== f);
+  const sel = `<div class="lv-first">${[1, 2, 3, 4, 5, 6].map((x) => `<button type="button" data-lv-first="${x}" aria-pressed="${x === f}">${boat(x, 22)}</button>`).join('')}</div>`;
+  const table = `<table class="lv-mx"><tr><th class="small">2着＼3着</th>${others.map((x) => `<th>${boat(x, 20)}</th>`).join('')}</tr>${others.map((s2) => `<tr><th>${boat(s2, 20)}</th>${others.map((t) => {
+    if (t === s2) return '<td class="lv-k">—</td>';
+    const c = `${f}-${s2}-${t}`, o = m[c];
+    return `<td class="num${pop.get(c) <= 3 ? ' lv-g' : ''}">${o != null ? fmtOdds(o) : '—'}</td>`;
+  }).join('')}</tr>`).join('')}</table>`;
+  return head + `<section class="card" style="padding:10px 12px"><div class="small muted" style="margin-bottom:6px">1着の艇を選ぶ</div>${sel}${table}<div class="small muted" style="padding-top:8px">金枠＝3番人気まで</div></section>`;
+}
+function openLiveSheet(r) {
+  const host = document.getElementById('sheet');
+  const draw = () => {
+    const body = liveState.tab === 'before' ? beforeHtml(r.beforeinfo) : oddsHtml(r.odds || []);
+    host.innerHTML = `<div class="sheet-bg" id="sheetbg"><section class="sheet lv-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h2 id="sheet-title" class="disp" style="margin:0;font-size:20px">${esc(r.label)}</h2><button type="button" class="copybtn" id="lvClose" aria-label="閉じる">閉じる</button></div>
+      <div class="lv-tabs"><button type="button" data-lv-tab="before" aria-pressed="${liveState.tab === 'before'}">直前情報</button><button type="button" data-lv-tab="odds" aria-pressed="${liveState.tab === 'odds'}">3連単オッズ</button></div>
+      <div class="lv-body">${body}<p class="small muted" style="margin:10px 4px 0">公式サイトから取得した参考値です。締切までにさらに動きます。精算は公式の払戻金で行います。</p></div>
+    </section></div>`;
+    const bg = document.getElementById('sheetbg');
+    bg.querySelector('.sheet').style.animation = draw.again ? 'none' : '';
+    bg.style.animation = draw.again ? 'none' : '';
+    draw.again = true;
+    const close = () => { bg.classList.add('closing'); setTimeout(() => { if (host.contains(bg)) host.innerHTML = ''; }, 180); };
+    document.getElementById('lvClose').addEventListener('click', close);
+    bg.addEventListener('click', (e) => { if (e.target === bg) close(); });
+    bg.querySelectorAll('[data-lv-tab]').forEach((b) => b.addEventListener('click', () => { liveState.tab = b.dataset.lvTab; draw(); }));
+    bg.querySelectorAll('[data-lv-view]').forEach((b) => b.addEventListener('click', () => { liveState.view = b.dataset.lvView; draw(); }));
+    bg.querySelectorAll('[data-lv-first]').forEach((b) => b.addEventListener('click', () => { liveState.first = Number(b.dataset.lvFirst); draw(); }));
+  };
+  draw.again = false;
+  draw();
 }
 
 // ---------- 参加者 ----------

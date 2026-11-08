@@ -67,5 +67,24 @@ class Beforeinfo(unittest.TestCase):
         self.assertIsNone(L.parse_beforeinfo(html))
 
 
+class Schedule(unittest.TestCase):
+    def race(self, focus: bool):
+        return {"race_id": "20261109-19-11", "deadline_s": 10_000, "focus": focus}
+
+    def test_t30_for_all_races(self):
+        self.assertEqual(L.due_tasks(self.race(False), 10_000 - 29 * 60, set(), 0), ["t30"])
+        self.assertEqual(L.due_tasks(self.race(True), 10_000 - 29 * 60, set(), 0), ["t30"])
+
+    def test_t10_t7_only_for_focus(self):
+        self.assertEqual(L.due_tasks(self.race(False), 10_000 - 9 * 60, set(), 0), ["beforeinfo"])
+        self.assertEqual(L.due_tasks(self.race(True), 10_000 - 9 * 60, set(), 0), ["beforeinfo", "t10"])
+        self.assertEqual(L.due_tasks(self.race(True), 10_000 - 6 * 60, {("20261109-19-11", "beforeinfo")}, 0), ["t7"])
+
+    def test_done_and_retry(self):
+        r = self.race(True)
+        self.assertEqual(L.due_tasks(r, 10_000 - 9 * 60, {(r["race_id"], "t10")}, 10_000 - 9 * 60 - 30), [])
+        self.assertEqual(L.due_tasks(r, 10_000 - 4 * 60, set(), 0), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,11 @@ export const RULES_SUMMARY = `## 参加条件（要約・版数 ${RULES_VERSION}
 
 /** 版数ごとの変更点。ルール改定の通知に載せる */
 export const RULES_CHANGES: Record<string, string[]> = {
+  '2026-11-09.2': [
+    'オッズは3連単だけにした（管理者決定）。GET /races/{race_id} の odds は sanrentan だけ',
+    '3連単のオッズを取る時刻を変えた。全レースで締切の30分前（slot: t30）。申告（見送りを除く）か舟券があるレースは、10分前（t10）と7分前（t7）にも取る。odds は古い順に並ぶ',
+    '直前情報（beforeinfo）は変わらず、締切の15分前ごろ（展示の後）に全レースで1回',
+  ],
   '2026-11-09.1': [
     '締切前の直前情報とオッズを、アプリが公式サイトから取得して公開するようにした（要件定義 決定64、管理者決定）。GET /races/{race_id}（MCP は get_race）の beforeinfo と odds',
     'beforeinfo: 締切の15分前ごろ（展示の後）に1回。枠ごとの展示タイム exhibit_time・チルト tilt・プロペラ・部品交換 parts・体重・調整重量、スタート展示の進入とST（start_exhibition）、水面気象（weather）',
