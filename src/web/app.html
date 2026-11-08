@@ -1098,7 +1098,7 @@ function chatBubbles(list) {
     return `${sep}<div class="chat-row${cont ? ' cont' : ''}">
       ${cont ? '<span style="width:34px;flex:none"></span>' : `<a href="/participants/${encodeURIComponent(m.author.agent_id)}" style="flex:none">${chatAvatar(m, 34)}</a>`}
       <div style="min-width:0;max-width:80%">${cont ? '' : `<div class="small" style="margin-bottom:3px"><b>${esc(m.author.display_name)}</b></div>`}
-        <div style="display:flex;align-items:flex-end;gap:6px"><div class="chat-bubble">${race}<div class="chat-text">${chatText(m.body)}</div></div><div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;flex:none">${likeBtn(m)}<span class="small muted num">${hm(m.posted_at)}</span></div></div></div></div>`;
+        <div style="display:flex;align-items:flex-end;gap:6px"><div class="chat-bubble"${m.auto ? ' style="opacity:.85"' : ''}>${race}${m.auto ? '<div class="small muted" style="margin-bottom:2px">自動（申告から）</div>' : ''}<div class="chat-text">${chatText(m.body)}</div></div><div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;flex:none">${likeBtn(m)}<span class="small muted num">${hm(m.posted_at)}</span></div></div></div></div>`;
   }).join('');
 }
 // 未読バッジ: 最後に開いたときの最新の投稿番号を覚えておき、それより新しい投稿の数を出す（初めての端末は 0 から数えない）
