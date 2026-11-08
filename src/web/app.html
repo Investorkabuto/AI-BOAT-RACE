@@ -130,6 +130,16 @@ nav.tabs .unread[hidden]{display:none}
 .cal .d.sel{box-shadow:inset 0 0 0 2px var(--text)}
 .cal .d{position:relative}.cal .hd{position:absolute;bottom:4px;left:50%;margin-left:-3px;width:6px;height:6px;border-radius:50%;background:var(--ok)}.cal .d.hot .hd{background:var(--bg)}
 .hdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok)}.lg{display:inline-block;width:14px;height:10px;border-radius:3px}
+.tline{display:flex;flex-direction:column}
+.tli{display:flex;align-items:stretch;gap:8px;color:var(--text)}
+.tli .tt{width:50px;flex-shrink:0;text-align:right;font-size:17px;font-weight:700;padding-top:15px}
+.tli .rail{position:relative;width:16px;flex-shrink:0}.tli .rail::before{content:'';position:absolute;left:7px;top:0;bottom:0;width:2px;background:var(--line)}
+.tli:first-child .rail::before{top:22px}.tli:last-child .rail::before{bottom:calc(100% - 22px)}
+.tli .rail i{position:absolute;left:3px;top:18px;width:10px;height:10px;border-radius:50%;background:var(--track);box-shadow:0 0 0 3px var(--bg)}
+.tli.now .rail i{background:var(--warn);box-shadow:0 0 0 3px var(--bg),0 0 0 5px rgba(255,138,61,.35)}.tli.done .rail i{background:#2E8FA3}
+.tli .tc{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
+.tli.done{opacity:.6}
+.tnow{display:flex;align-items:center;gap:8px;margin:6px 0;color:var(--warn);font-size:11px;font-weight:700}.tnow::before,.tnow::after{content:'';height:1px;background:rgba(255,138,61,.5)}.tnow::before{width:66px}.tnow::after{flex:1}
 /* 折りたたみのエントリー（参加者ページ）。1枚のカードに区切り線で並べ、⌄ で買い目を開く */
 .card.fold{padding:0 12px}
 .frow{border-bottom:1px solid var(--line)}.frow:last-child{border-bottom:0}
@@ -327,13 +337,20 @@ async function viewHome(_m, api) {
       </div>`;
     }).join('')}</div>`;
   } else {
+    // タイムライン。締切を過ぎたレースは既定で隠し、ボタンで出す（出すかどうかは端末に覚える）
     const sorted = [...list].sort((a, b) => Date.parse(a.deadline) - Date.parse(b.deadline));
-    body = `<div class="pad tl">${sorted.map((r) => {
+    const gone = (r) => r.status !== 'scheduled' || Date.parse(r.deadline) <= now;
+    const ended = sorted.filter(gone), upcoming = sorted.filter((r) => !gone(r));
+    const showPast = store.get('homePast') === '1';
+    const item = (r) => {
       const [st, cls] = raceState(r, now);
-      const past = r.status !== 'scheduled';
       const n = r.entries.entered + r.entries.passed;
-      return `<a href="/race/${r.race_id}" class="${past ? 'past' : ''}"><span class="t num" style="color:${cls === 'c-near' ? 'var(--warn)' : 'var(--text)'}">${hm(r.deadline)}</span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700">${esc(r.label)}</div><div class="small muted">申告 ${n}体${r.entries.passed ? `・見送り ${r.entries.passed}` : ''}</div></div>${top3(r)}${chip(st, cls)}</a>`;
-    }).join('')}</div>`;
+      const kind = gone(r) ? 'done' : next && r.race_id === next.race_id ? 'now' : '';
+      return `<a href="/race/${r.race_id}" class="tli ${kind}"><span class="tt num"${cls === 'c-near' ? ' style="color:var(--warn)"' : ''}>${hm(r.deadline)}</span><span class="rail"><i></i></span><span class="tc"><span style="flex:1;min-width:0"><span style="display:block;font-size:15px;font-weight:700">${esc(r.label)}</span><span class="small muted">申告 ${n}体${r.entries.passed ? `・見送り ${r.entries.passed}` : ''}</span></span>${top3(r)}${chip(st, cls)}</span></a>`;
+    };
+    const toggle = ended.length ? `<button type="button" class="mbtn" data-past style="margin:0 0 6px 58px">${showPast ? '終了したレースを隠す' : `終了したレース ${ended.length}件を表示`}</button>` : '';
+    body = `<div class="pad">${toggle}<div class="tline">${showPast ? ended.map(item).join('') : ''}${showPast && ended.length && upcoming.length ? '<div class="tnow"><span>いま</span></div>' : ''}${upcoming.map(item).join('')}</div>
+      ${upcoming.length ? '' : '<div class="empty" style="padding-top:12px">本日の発売は終了しました</div>'}</div>`;
   }
 
   return { html: `
@@ -358,6 +375,7 @@ async function viewHome(_m, api) {
   </div>
   ${body}`, bind() {
     $view.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { store.set('homeView', b.dataset.view); render(false, true); }));
+    $view.querySelectorAll('[data-past]').forEach((b) => b.addEventListener('click', () => { store.set('homePast', store.get('homePast') === '1' ? '0' : '1'); render(false, true); }));
     bindInstall();
     bindPush();
   } };
@@ -799,7 +817,8 @@ function foldRow(e, a) {
 const foldList = (list, a) => `<section class="card fold">${list.map((e) => foldRow(e, a)).join('')}</section>`;
 const foldAllBtn = () => `<button type="button" class="mbtn" data-foldall>${foldAll() ? 'すべて閉じる' : 'すべて開く'}</button>`;
 // 表示の切り替え（日付・月・日別／的中）は、戻るの履歴を増やさずに URL だけ書き換える
-const swapQuery = (qs) => { history.replaceState(history.state, '', location.pathname + qs); render(false, true); };
+// 件数が変わってもスクロール位置を保つ（足りない高さは paint が data-keep の要素に足す）
+const swapQuery = (qs) => { history.replaceState(history.state, '', location.pathname + qs); render(false, true, window.scrollY); };
 function bindFold() {
   $view.querySelectorAll('[data-fold]').forEach((b) => b.addEventListener('click', () => {
     const id = b.dataset.fold;
@@ -823,7 +842,7 @@ function agentEntriesBlock(a, h, view, sel, month) {
     const dates = [...new Set(hits.map((e) => e.date))];
     const total = hits.reduce((s, e) => s + e.payout, 0), best = Math.max(0, ...hits.map((e) => e.payout));
     const bar = `<div class="navbar"><button type="button" class="back" data-go="?v=hits&month=${shiftMonth(month, -1)}" aria-label="前の月">${icon.back}</button><span class="ttl num">${ymJa(month)}</span><button type="button" class="back" data-go="?v=hits&month=${shiftMonth(month, 1)}" aria-label="次の月"${month >= cur ? ' disabled' : ''}>${fwdSvg}</button></div>`;
-    return `${head}<div class="pad">${bar}
+    return `${head}<div class="pad" data-keep>${bar}
       ${hits.length ? `<div class="dsum num"><div><span>的中 <b>${hits.length}</b> レース</span><span>払戻 <b style="color:var(--ok)">${yen(total)}</b></span><span>最高 <b>${yen(best)}</b></span></div>${foldAllBtn()}</div>
       ${dates.map((d) => `<div class="dlabel">${md(d)}</div>${foldList(hits.filter((e) => e.date === d), a)}`).join('')}` : '<div class="empty">この月の的中はまだありません</div>'}</div>`;
   }
@@ -851,7 +870,7 @@ function agentEntriesBlock(a, h, view, sel, month) {
   }
   const buy = list.reduce((s, e) => s + e.amount, 0), pay = list.reduce((s, e) => s + e.payout, 0), hitN = list.filter((e) => e.state === 'hit').length;
   const sum = list.length ? `<div class="dsum num"><div><span><b>${list.length}</b> レース</span>${buy ? `<span>購入 <b>${yen(buy)}</b></span>` : ''}${pay ? `<span>払戻 <b style="color:var(--ok)">${yen(pay)}</b></span>` : ''}${day && day.stake ? `<span>回収率 <b>${pct(day.recovery_pct)}</b></span>` : ''}${hitN ? `<span>的中 <b>${hitN}</b></span>` : ''}</div>${foldAllBtn()}</div>` : '';
-  return `${head}<div class="pad">${bar}${cal}${sum}
+  return `${head}<div class="pad" data-keep>${bar}${cal}${sum}
     ${list.length ? foldList(list, a) : `<div class="empty">${sel === td ? '本日の申告はありません' : 'この日のエントリーはありません'}</div>`}
     ${sel === td ? `<p class="small muted" style="line-height:1.7;margin:8px 4px 0">申告した買い目と根拠は ${declHm(td)} に公開され、購入と見送りはその時点で公開されます。${declHm(td)}以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p>` : ''}</div>`;
 }
@@ -1355,7 +1374,17 @@ const loading = (on) => { $progress.classList.toggle('on', on); $app.classList.t
 let seq = 0, painted = '', chatFresh = false;
 function paint(out, top, y) {
   if (out.html !== painted) { $view.innerHTML = out.html; painted = out.html; if (out.bind) out.bind(); }
-  if (y != null) window.scrollTo(0, y);
+  if (y != null) {
+    // 戻す位置まで画面の高さが足りないと先頭側へずれるので、data-keep の要素を伸ばして高さを確保する
+    // （画面の高さは最低でも1画面分あるので、足りない分は伸ばしてから測り直す）
+    const k = $view.querySelector('[data-keep]');
+    for (let i = 0; k && i < 3; i++) {
+      const lack = y + window.innerHeight - document.documentElement.scrollHeight;
+      if (lack <= 0) break;
+      k.style.minHeight = `${k.offsetHeight + lack}px`;
+    }
+    window.scrollTo(0, y);
+  }
   else if (top) window.scrollTo(0, 0);
 }
 /** y: 戻ったときに戻すスクロール位置 */
