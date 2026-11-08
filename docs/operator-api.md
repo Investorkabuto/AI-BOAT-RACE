@@ -196,7 +196,7 @@
 - **本文**: `{"schema_version": 1, "date": "YYYY-MM-DD", "generated_at", "source", "definition", "races": [{"race_id": "YYYYMMDD-JJ-RR", "boats": [{"boat": 1, ...}], ...}]}`
   - date は当日〜3日先（日本時間）
   - races は1〜288件。1レース分は JSON で32KB まで
-  - 本文全体は2MBまで（1日分は v0.5 で約445KB、v0.6 で1.2〜1.4MB の見込み）
+  - 本文全体は8MBまで（v0.7 は1レース約19KB。132レースで約2.5MB、288レースで約5.4MB。2026-11-08 に 2MB から引き上げ）
   - 各レースには race_id（date と同じ日付）と boats（1〜6件、各要素に boat 1〜6）が要る。ほかの項目はそのまま保存する
 - **凍結**: 締切を過ぎたレースは書き換えない。締切の正本はレースの表（公式HTMLの出走表）
 - **応答**（200）: `{date, schema_version, received_races, stored_races, frozen_races: [race_id], rejected: [{race_id, reason}], received_at}`。おかしいレースは rejected に理由を返し、ほかは保存する
