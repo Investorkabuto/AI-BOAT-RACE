@@ -387,7 +387,7 @@ function detailBlock(f, c, frame) {
     const t3 = r20 && r20.r3 != null ? diffTile('3連率', pctF(r20.r3), all3 != null ? `通算 ${pctF(all3)}` : '', all3 != null ? r20.r3 - all3 : null, 15) : all3 != null ? diffTile('3連率', pctF(all3), '', null, 1) : '';
     motor = `<div><div class="dfh"><span>モーター <b class="num" style="font-size:14px">${esc(String(no))}</b>号</span></div><div class="dgr" style="margin-top:4px">${t2}${t3}</div></div>`;
   }
-  if (win || motor) out.push(`<div class="dpn wm"${win && motor ? '' : ' style="grid-template-columns:1fr"'}>${win ? `<div><div class="dfh"><span>勝率</span></div><div style="margin-top:4px">${win}</div></div>` : ''}${motor}</div>`);
+  if (win || motor) out.push(`<div class="dpn${win && motor ? ' wm' : ''}">${win ? `<div><div class="dfh"><span>勝率</span></div><div style="margin-top:4px">${win}</div></div>` : ''}${motor}</div>`);
   out.push(courseBars(f, frame));
   return out.join('');
 }
