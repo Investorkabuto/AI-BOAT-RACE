@@ -514,24 +514,31 @@ internalApi.post('/results', async (c) => {
 
 /**
  * 締切前の直前情報とオッズを取るレース（決定64）。その日の受付中のレースと締切（epoch 秒）。
- * scripts/boatrace_live.py が5分ごとに読み、締切の15分前・10分前・7分前に公式サイトから取得する
+ * scripts/boatrace_live.py が2分ごとに読み、直前情報は締切の15分前から、オッズは30分前（全レース）と10分前・7分前（focus のレースだけ）に公式サイトから取得する
  */
 internalApi.get('/live-targets', async (c) => {
   const date = c.req.query('date') ?? jstDate(Date.now());
   if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date must be YYYY-MM-DD');
   const rows = (
-    await c.env.DB.prepare("SELECT id, deadline_ms FROM races WHERE race_date = ? AND status = 'scheduled' AND deadline_ms > ? ORDER BY deadline_ms")
+    await c.env.DB.prepare(
+      `SELECT r.id, r.deadline_ms,
+         EXISTS (SELECT 1 FROM entries e WHERE e.race_id = r.id AND e.realm = 'live' AND e.status = 'entered')
+           OR EXISTS (SELECT 1 FROM bets b WHERE b.race_id = r.id AND b.realm = 'live' AND b.status != 'cancelled') AS focus
+       FROM races r WHERE r.race_date = ? AND r.status = 'scheduled' AND r.deadline_ms > ? ORDER BY r.deadline_ms`,
+    )
       .bind(date, Date.now())
-      .all<{ id: string; deadline_ms: number }>()
+      .all<{ id: string; deadline_ms: number; focus: number }>()
   ).results;
-  return c.json({ date, races: rows.map((r) => ({ race_id: r.id, deadline_s: Math.floor(r.deadline_ms / 1000) })) });
+  // focus: 申告（見送りを除く）か舟券があるレース。オッズを10分前・7分前にも取る（全レースは30分前だけ）
+  return c.json({ date, races: rows.map((r) => ({ race_id: r.id, deadline_s: Math.floor(r.deadline_ms / 1000), focus: r.focus === 1 })) });
 });
 
 /**
- * 直前情報（kind: "beforeinfo"）とオッズ（kind: "odds"、slot: "t10" | "t7"）の取り込み（決定64）。同じレース・slot は上書きする。
+ * 直前情報（kind: "beforeinfo"）とオッズ（kind: "odds"、slot: "t30" | "t10" | "t7"）の取り込み（決定64）。同じレース・slot は上書きする。
  * 締切を過ぎたレースの分は受け付けない（締切前の情報として公開するため）
  */
 internalApi.put('/live', async (c) => {
+  // オッズの slot: t30 / t10 / t7（ODDS_SLOTS）
   const b = await readJson(c);
   const id = typeof b.race_id === 'string' ? b.race_id : '';
   const race = await c.env.DB.prepare('SELECT deadline_ms FROM races WHERE id = ?').bind(id).first<{ deadline_ms: number }>();
@@ -556,7 +563,7 @@ internalApi.put('/live', async (c) => {
     if (!data) throw new ApiError(400, 'bad_request', 'invalid odds');
     const asOf = typeof raw.as_of === 'string' ? raw.as_of.slice(0, 20) : null;
     await c.env.DB.prepare(
-      `INSERT INTO race_odds (race_id, slot, fetched_at, as_of, data_json) VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO race_odds_v2 (race_id, slot, fetched_at, as_of, data_json) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (race_id, slot) DO UPDATE SET fetched_at = excluded.fetched_at, as_of = excluded.as_of, data_json = excluded.data_json`,
     ).bind(id, slot, at, asOf, JSON.stringify(data)).run();
     return c.json({ stored: true, kind: 'odds', slot, types: Object.keys(data) });

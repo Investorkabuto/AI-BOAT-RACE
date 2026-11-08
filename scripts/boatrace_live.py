@@ -5,7 +5,8 @@
 
 取得の時刻（各レースの締切予定時刻から）:
   - 直前情報（beforeinfo）: 15分前から。展示タイムがまだ出ていなければ2分おきに取り直し、6分前であきらめる
-  - オッズ（3連単 odds3t だけ。2026-11-09 管理者決定）: 10分前（slot "t10"）と7分前（slot "t7"）の2回。
+  - オッズ（3連単 odds3t だけ。2026-11-09 管理者決定）: 全レースで30分前（slot "t30"）。申告（見送りを除く）か舟券があるレース
+    （GET /internal/live-targets の focus）だけ、10分前（"t10"）と7分前（"t7"）にも取る。
     3連複・2連単/2連複の解析（parse_odds3f・parse_odds2tf）は、取得を広げるときのために残してある
 
 公式サイトの応答は1ページ10秒ほどかかるので、取得は並列（WORKERS 本）で行い、リクエストの開始は全体で MIN_GAP 秒以上あける。
@@ -43,9 +44,11 @@ MIN_GAP = 1.0
 BEFOREINFO_FROM = 15 * 60
 BEFOREINFO_UNTIL = 6 * 60
 BEFOREINFO_RETRY = 2 * 60
-ODDS_SLOTS = {"t10": (10 * 60, 8 * 60), "t7": (7 * 60, 5 * 60)}  # slot: (この秒数前から, この秒数前まで)
-# レース一覧を読み直す間隔（秒）。締切の変更・中止を拾う
-REFRESH_RACES = 5 * 60
+ODDS_SLOTS = {"t30": (30 * 60, 26 * 60), "t10": (10 * 60, 8 * 60), "t7": (7 * 60, 5 * 60)}  # slot: (この秒数前から, この秒数前まで)
+# 申告・購入のあるレース（focus）だけ取る枠
+FOCUS_SLOTS = {"t10", "t7"}
+# レース一覧を読み直す間隔（秒）。締切の変更・中止と、申告・購入の有無（focus）の変化を拾う
+REFRESH_RACES = 2 * 60
 TICK = 10
 
 
@@ -288,9 +291,23 @@ def send(race_id: str, kind: str, slot: str | None, data: dict) -> None:
 
 
 def load_races(date: str) -> list[dict]:
-    """その日の受付中のレース（race_id と締切の epoch 秒）"""
+    """その日の受付中のレース（race_id、締切の epoch 秒、申告・購入のあるレースか focus）"""
     r = api("GET", f"/internal/live-targets?date={date}")
     return r.get("races", [])
+
+
+def due_tasks(race: dict, now: float, done: set, last_beforeinfo_try: float) -> list[str]:
+    """今取るべきもの（"beforeinfo" と、オッズの slot）。race は live-targets の1件、now は epoch 秒"""
+    rid, left = race["race_id"], race["deadline_s"] - now
+    todo = []
+    if BEFOREINFO_UNTIL < left <= BEFOREINFO_FROM and (rid, "beforeinfo") not in done and now - last_beforeinfo_try >= BEFOREINFO_RETRY:
+        todo.append("beforeinfo")
+    for slot, (start, end) in ODDS_SLOTS.items():
+        if slot in FOCUS_SLOTS and not race.get("focus"):
+            continue
+        if end < left <= start and (rid, slot) not in done:
+            todo.append(slot)
+    return todo
 
 
 def run(until: dt.datetime) -> None:
@@ -338,14 +355,10 @@ def run(until: dt.datetime) -> None:
                 except Exception as e:
                     print(f"load races error: {e}", file=sys.stderr, flush=True)
             for r in races:
-                rid, left = r["race_id"], r["deadline_s"] - t
-                todo = []
-                if BEFOREINFO_UNTIL < left <= BEFOREINFO_FROM and (rid, "beforeinfo") not in done and t - tried.get(rid, 0) >= BEFOREINFO_RETRY:
-                    todo.append("beforeinfo")
+                rid = r["race_id"]
+                todo = due_tasks(r, t, done, tried.get(rid, 0))
+                if "beforeinfo" in todo:
                     tried[rid] = t
-                for slot, (start, end) in ODDS_SLOTS.items():
-                    if end < left <= start and (rid, slot) not in done:
-                        todo.append(slot)
                 for task in todo:
                     with lock:
                         if (rid, task) in busy:

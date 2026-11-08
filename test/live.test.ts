@@ -50,11 +50,20 @@ afterEach(() => vi.useRealTimers());
 describe('取り込み', () => {
   it('取るレースの一覧は、受付中で締切前のレースと締切（epoch 秒）', async () => {
     const r = await req('GET', '/internal/live-targets?date=2026-11-09');
-    expect(r.body.races).toEqual([{ race_id: R, deadline_s: Date.parse('2026-11-09T20:07:00+09:00') / 1000 }]);
+    expect(r.body.races).toEqual([{ race_id: R, deadline_s: Date.parse('2026-11-09T20:07:00+09:00') / 1000, focus: false }]);
+    // 申告（見送りを除く）があるレースは focus（10分前・7分前のオッズも取る）
+    db.raw.exec("INSERT INTO agents (id, realm, display_name, owner_name, api_key_hash, status, terms_agreed_at, created_at) VALUES ('a1', 'live', 'A', 'o', 'h', 'active', 'x', 'x')");
+    db.raw.exec(`INSERT INTO entries (realm, agent_id, race_id, race_date, status, declared_at) VALUES ('live', 'a1', '${R}', '2026-11-09', 'passed', 'x')`);
+    expect((await req('GET', '/internal/live-targets?date=2026-11-09')).body.races[0].focus).toBe(false);
+    db.raw.exec(`UPDATE entries SET status = 'entered'`);
+    expect((await req('GET', '/internal/live-targets?date=2026-11-09')).body.races[0].focus).toBe(true);
     expect((await req('GET', '/internal/live-targets', undefined, 'wrong')).status).toBe(401);
   });
 
-  it('直前情報とオッズ（10分前・7分前）を保存し、GET /races/{race_id} で公開する', async () => {
+  it('直前情報とオッズ（30分前・10分前・7分前）を保存し、GET /races/{race_id} で古い順に公開する', async () => {
+    vi.setSystemTime(new Date('2026-11-09T19:37:00+09:00'));
+    await req('PUT', '/internal/live', { race_id: R, kind: 'odds', slot: 't30', data: odds });
+    vi.setSystemTime(new Date('2026-11-09T20:00:00+09:00'));
     expect((await req('PUT', '/internal/live', { race_id: R, kind: 'beforeinfo', data: beforeinfo })).body.stored).toBe(true);
     expect((await req('PUT', '/internal/live', { race_id: R, kind: 'odds', slot: 't10', data: odds })).body.types).toEqual(['sanrentan']);
     vi.setSystemTime(new Date('2026-11-09T20:00:30+09:00'));
@@ -62,9 +71,9 @@ describe('取り込み', () => {
     const race = await req('GET', `/races/${R}`, undefined, null);
     expect(race.body.beforeinfo.boats[2]).toMatchObject({ boat: 3, exhibit_time: 6.73, parts: ['ピストン'] });
     expect(race.body.beforeinfo.weather).toMatchObject({ wind_m: 1, wave_cm: 1 });
-    expect(race.body.odds.map((o: any) => [o.slot, o.minutes_before, o.as_of])).toEqual([['t10', 10, '20:00'], ['t7', 7, '20:00']]);
-    expect(race.body.odds[0].sanrentan['1-2-3']).toBe(1.5);
-    expect(race.body.odds[0].sanrentan['1-2-4']).toBeNull();
+    expect(race.body.odds.map((o: any) => [o.slot, o.minutes_before])).toEqual([['t30', 30], ['t10', 10], ['t7', 7]]);
+    expect(race.body.odds[1].sanrentan['1-2-3']).toBe(1.5);
+    expect(race.body.odds[1].sanrentan['1-2-4']).toBeNull();
     expect(race.body.odds[0].nirenpuku).toBeUndefined(); // 3連単だけ
   });
 

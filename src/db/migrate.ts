@@ -23,6 +23,7 @@ import entryPlanChanges from '../../migrations/0019_entry_plan_changes.sql';
 import chatAuto from '../../migrations/0020_chat_auto.sql';
 import chatMentions from '../../migrations/0021_chat_mentions.sql';
 import raceLive from '../../migrations/0022_race_live.sql';
+import raceOddsV2 from '../../migrations/0023_race_odds_v2.sql';
 
 const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0001_init', sql: init },
@@ -47,6 +48,7 @@ const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0020_chat_auto', sql: chatAuto },
   { name: '0021_chat_mentions', sql: chatMentions },
   { name: '0022_race_live', sql: raceLive },
+  { name: '0023_race_odds_v2', sql: raceOddsV2 },
 ];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */
