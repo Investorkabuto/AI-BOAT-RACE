@@ -116,9 +116,10 @@ nav.tabs .unread[hidden]{display:none}
 .install{margin:10px var(--gx) 0;padding:10px 12px;border-radius:18px;border:1px dashed #2E4466;display:flex;align-items:center;gap:12px;color:var(--text);background:transparent;width:calc(100% - 2 * var(--gx));text-align:left;cursor:pointer}
 .sheet-bg{position:fixed;inset:0;background:rgba(3,6,12,.7);z-index:20;display:flex;align-items:flex-end;justify-content:center}
 .sheet{width:100%;max-width:640px;background:var(--card);border-radius:28px 28px 0 0;padding:22px 20px calc(26px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:14px}
-.sheet-bg{animation:fadein .2s ease-out}.sheet{animation:slideup .28s cubic-bezier(.2,.9,.3,1.15)}
-.sheet-bg.closing{animation:fadeout .18s ease-in forwards}.sheet-bg.closing .sheet{animation:slidedown .18s ease-in forwards}
-@keyframes fadein{from{opacity:0}}@keyframes fadeout{to{opacity:0}}
+/* 幕は色だけを暗くし（透明度を変えるとシートまで透けて「その場で現れる」ように見える）、シートは下から滑らせて、ゆっくり止める */
+.sheet{will-change:transform}.sheet-bg{animation:bgin .45s ease-out}.sheet{animation:slideup .45s cubic-bezier(.22,1,.36,1)}
+.sheet-bg.closing{animation:bgout .28s ease-in forwards}.sheet-bg.closing .sheet{animation:slidedown .28s cubic-bezier(.55,0,1,.45) forwards}
+@keyframes fadein{from{opacity:0}}@keyframes fadeout{to{opacity:0}}@keyframes bgin{from{background:rgba(3,6,12,0)}}@keyframes bgout{to{background:rgba(3,6,12,0)}}
 @keyframes slideup{from{transform:translateY(100%)}}@keyframes slidedown{to{transform:translateY(100%)}}
 @media (prefers-reduced-motion:reduce){.sheet-bg,.sheet,.sheet-bg.closing,.sheet-bg.closing .sheet{animation-duration:1ms}}
 .acts{display:flex;gap:6px;flex-shrink:0}.pill{display:inline-flex;align-items:center;gap:5px;min-height:32px;padding:0 12px;border-radius:999px;border:1px solid #2A3A58;background:var(--card);color:var(--sub);font:inherit;font-size:13px;font-weight:700;white-space:nowrap;cursor:pointer;text-decoration:none}.pill.pri{background:#16304A;border-color:#2E5E7E;color:var(--accent)}a.pill:hover{color:var(--text)}
@@ -729,7 +730,7 @@ function openLiveSheet(r) {
     bg.style.animation = draw.again ? 'none' : '';
     draw.again = true;
     if (y) bg.querySelector('.lv-body').scrollTop = y;
-    const close = () => { bg.classList.add('closing'); setTimeout(() => { if (host.contains(bg)) host.innerHTML = ''; }, 180); };
+    const close = () => { bg.classList.add('closing'); setTimeout(() => { if (host.contains(bg)) host.innerHTML = ''; }, 280); };
     document.getElementById('lvClose').addEventListener('click', close);
     bg.addEventListener('click', (e) => { if (e.target === bg) close(); });
     bg.querySelectorAll('[data-lv-tab]').forEach((b) => b.addEventListener('click', () => { liveState.tab = b.dataset.lvTab; draw(); }));
@@ -1032,7 +1033,7 @@ function openOrderSheet(agentId, raceId, label) {
     const bg = document.getElementById('sheetbg');
     if (!bg) return;
     bg.classList.add('closing');
-    setTimeout(() => { if (host.contains(bg)) host.innerHTML = ''; }, 180);
+    setTimeout(() => { if (host.contains(bg)) host.innerHTML = ''; }, 280);
   };
   const load = async () => {
     const n = ++my;
