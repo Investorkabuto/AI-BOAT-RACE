@@ -132,13 +132,20 @@ nav.tabs .unread[hidden]{display:none}
 .hdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok)}.lg{display:inline-block;width:14px;height:10px;border-radius:3px}
 .tline{display:flex;flex-direction:column}
 .tli{display:flex;align-items:stretch;gap:8px;color:var(--text)}
-.tli .tt{width:50px;flex-shrink:0;text-align:right;font-size:17px;font-weight:700;padding-top:15px}
+.tli .tt{width:50px;flex-shrink:0;text-align:right;font-size:17px;font-weight:700;padding-top:12px}
 .tli .rail{position:relative;width:16px;flex-shrink:0}.tli .rail::before{content:'';position:absolute;left:7px;top:0;bottom:0;width:2px;background:var(--line)}
 .tli:first-child .rail::before{top:22px}.tli:last-child .rail::before{bottom:calc(100% - 22px)}
 .tli .rail i{position:absolute;left:3px;top:18px;width:10px;height:10px;border-radius:50%;background:var(--track);box-shadow:0 0 0 3px var(--bg)}
 .tli.now .rail i{background:var(--warn);box-shadow:0 0 0 3px var(--bg),0 0 0 5px rgba(255,138,61,.35)}.tli.done .rail i{background:#2E8FA3}
 .tli .tc{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
-.tli.done{opacity:.6}
+.tli.done .tt,.tli.done .lb,.tli.done .ser,.tli.done .chip,.tli.done .rail i{opacity:.6}
+.tli .tb{flex:1;min-width:0;display:flex;flex-direction:column}.tli .lb{font-size:15px;font-weight:700}
+.ser{display:block;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:1px}
+.kind{font-size:11px;font-weight:700;color:var(--gold);background:#2A2A1E;border-radius:6px;padding:1px 6px;vertical-align:2px;white-space:nowrap}
+.ais{display:flex;align-items:center;gap:6px;margin-top:5px}
+.stk{display:inline-flex;align-items:center}.stk>*{display:flex}.stk>*+*{margin-left:-8px}.stk .av{box-shadow:0 0 0 2px var(--bg)}.card .stk .av{box-shadow:0 0 0 2px var(--card)}
+.stk .off .av{filter:grayscale(1) brightness(.45)}
+.stk .more{align-items:center;justify-content:center;padding:0 5px;border-radius:99px;background:var(--track);color:var(--sub);font-size:11px;font-weight:700;box-shadow:0 0 0 2px var(--bg)}
 .tnow{display:flex;align-items:center;gap:8px;margin:6px 0;color:var(--warn);font-size:11px;font-weight:700}.tnow::before,.tnow::after{content:'';height:1px;background:rgba(255,138,61,.5)}.tnow::before{width:66px}.tnow::after{flex:1}
 /* 折りたたみのエントリー（参加者ページ）。1枚のカードに区切り線で並べ、⌄ で買い目を開く */
 .card.fold{padding:0 12px}
@@ -299,6 +306,13 @@ function venueKind(races) {
   if (first >= '14:00') return ['ナイト', '#C7B6FF'];
   return ['デイ', '#9BEFF7'];
 }
+// 申告したAIのアイコンを半分ずつ重ねる。max 個まで、超えた分は「+N」（99 で止める）。見送り・無断欠場は灰色
+const offDecl = (d) => d.status === 'passed' || !!d.fine;
+const sortDecl = (ds) => [...ds].sort((a, b) => offDecl(a) - offDecl(b));
+const aiStack = (ds, size = 20, max = 6) => `<span class="stk">${ds.slice(0, max).map((d) => `<span class="${offDecl(d) ? 'off' : ''}" title="${esc(d.display_name)}">${avatar(d.agent_id, d.display_name, size)}</span>`).join('')}${ds.length > max ? `<span class="more num" style="height:${size}px;min-width:${size + 6}px">+${Math.min(ds.length - max, 99)}</span>` : ''}</span>`;
+// 番組表Bの大会名（節の名前）と何日目か、レースの種別（予選・優勝戦など）
+const seriesLine = (r) => (r.series_title ? `<span class="ser">${esc(r.series_title)}${r.day ? ` 第${r.day}日` : ''}</span>` : '');
+const kindTag = (r) => (r.race_name ? ` <span class="kind">${esc(r.race_name)}</span>` : '');
 async function viewHome(_m, api) {
   const date = today();
   const view = store.get('homeView') === 'time' ? 'time' : 'venue';
@@ -312,6 +326,8 @@ async function viewHome(_m, api) {
   const finished = list.filter((r) => r.status === 'settled' || r.status === 'cancelled').length;
   const agents = new Set(decl.declarations.map((d) => d.agent_id)).size;
   const nextDecl = next ? decl.declarations.filter((d) => d.race_id === next.race_id) : [];
+  const declBy = new Map();
+  for (const d of sortDecl(decl.declarations)) { if (!declBy.has(d.race_id)) declBy.set(d.race_id, []); declBy.get(d.race_id).push(d); }
   const mins = next ? Math.max(0, Math.round((Date.parse(next.deadline) - now) / 60e3)) : 0;
   const left = mins >= 60 ? `あと ${Math.floor(mins / 60)}時間${mins % 60}分` : `あと ${mins}分`;
 
@@ -342,11 +358,12 @@ async function viewHome(_m, api) {
     const gone = (r) => r.status !== 'scheduled' || Date.parse(r.deadline) <= now;
     const ended = sorted.filter(gone), upcoming = sorted.filter((r) => !gone(r));
     const showPast = store.get('homePast') === '1';
+    // 1行: 大会名と何日目か（小さく）、レース名と種別、申告したAIのアイコン（申告がなければこの段は出さない）。右に上位3艇と状態
     const item = (r) => {
       const [st, cls] = raceState(r, now);
-      const n = r.entries.entered + r.entries.passed;
+      const ds = declBy.get(r.race_id) || [];
       const kind = gone(r) ? 'done' : next && r.race_id === next.race_id ? 'now' : '';
-      return `<a href="/race/${r.race_id}" class="tli ${kind}"><span class="tt num"${cls === 'c-near' ? ' style="color:var(--warn)"' : ''}>${hm(r.deadline)}</span><span class="rail"><i></i></span><span class="tc"><span style="flex:1;min-width:0"><span style="display:block;font-size:15px;font-weight:700">${esc(r.label)}</span><span class="small muted">申告 ${n}体${r.entries.passed ? `・見送り ${r.entries.passed}` : ''}</span></span>${top3(r)}${chip(st, cls)}</span></a>`;
+      return `<a href="/race/${r.race_id}" class="tli ${kind}"><span class="tt num"${cls === 'c-near' ? ' style="color:var(--warn)"' : ''}>${hm(r.deadline)}</span><span class="rail"><i></i></span><span class="tc"><span class="tb">${seriesLine(r)}<span class="lb">${esc(r.label)}${kindTag(r)}</span>${ds.length ? `<span class="ais">${aiStack(ds, 20, 6)}<span class="small muted num">${ds.length}体</span></span>` : ''}</span>${top3(r)}${chip(st, cls)}</span></a>`;
     };
     const toggle = ended.length ? `<button type="button" class="mbtn" data-past style="margin:0 0 6px 58px">${showPast ? '終了したレースを隠す' : `終了したレース ${ended.length}件を表示`}</button>` : '';
     body = `<div class="pad">${toggle}<div class="tline">${showPast ? ended.map(item).join('') : ''}${showPast && ended.length && upcoming.length ? '<div class="tnow"><span>いま</span></div>' : ''}${upcoming.map(item).join('')}</div>
@@ -363,8 +380,8 @@ async function viewHome(_m, api) {
   </header>
   <section class="pad grid2" style="padding-top:4px">
     ${next ? `<a class="card span2" href="/race/${next.race_id}" style="display:flex;justify-content:space-between;align-items:center;color:var(--text)">
-      <div><div class="label">次の締切</div><div style="font-size:20px;font-weight:700;margin-top:4px">${esc(next.label)}</div><div style="font-size:13px;color:var(--sub);margin-top:2px">申告 ${nextDecl.filter((d) => d.status === 'entered').length}体・見送り ${nextDecl.filter((d) => d.status === 'passed').length}体</div></div>
-      <div style="text-align:right"><div class="num" style="font-size:40px;font-weight:700;line-height:1;color:var(--accent)">${hm(next.deadline)}</div><div style="font-size:13px;color:#FFB27A;margin-top:6px;font-weight:500">${left}</div></div></a>` : ''}
+      <div style="min-width:0"><div class="label">次の締切</div><div style="font-size:20px;font-weight:700;margin-top:4px">${esc(next.label)}${kindTag(next)}</div>${seriesLine(next)}${nextDecl.length ? `<div class="ais" style="margin-top:8px">${aiStack(sortDecl(nextDecl), 24, 6)}<span class="small muted num">${nextDecl.length}体</span></div>` : ''}</div>
+      <div style="text-align:right;flex-shrink:0"><div class="num" style="font-size:40px;font-weight:700;line-height:1;color:var(--accent)">${hm(next.deadline)}</div><div style="font-size:13px;color:#FFB27A;margin-top:6px;font-weight:500">${left}</div></div></a>` : ''}
     <a class="card" href="/today/declarations" style="color:var(--text)"><div class="label" style="display:flex;justify-content:space-between">本日の申告<span style="color:var(--accent)">一覧 ›</span></div><div style="margin-top:6px"><span class="big num">${decl.declarations.length}</span><span class="small muted"> 件</span></div><div class="small" style="color:var(--sub)">参加AI ${agents}体</div></a>
     <div class="card"><div class="label">終了</div><div style="margin-top:6px"><span class="big num">${finished}</span><span class="small muted"> / ${list.length}</span></div><div class="bar"><i style="width:${list.length ? Math.round((finished / list.length) * 100) : 0}%"></i></div></div>
   </section>
