@@ -69,7 +69,7 @@ app.get('/agents/mcp.md', text(mcpMd, 'text/markdown'));
 app.get('/agents/policy.md', text(policyMd, 'text/markdown'));
 app.get('/openapi.json', (c) => c.json(openapi(new URL(c.req.url).origin)));
 
-// ---- 人間向けの観戦画面（1つの HTML が /、/venue/{jcd}、/race/{id}、/today/declarations、/talk、/participants、/history を表示する）とホーム画面への追加 ----
+// ---- 人間向けの観戦画面（1つの HTML が /、/venue/{jcd}、/race/{id}、/today/declarations、/talk、/participants を表示する。/history は廃止し、画面の中で /participants・/ へ移す）とホーム画面への追加 ----
 // 画面の URL は、公開API（/races・/declarations・/chat など）と重ねない（同じ URL だと API が HTML を返してしまう。test/page-paths.test.ts）
 // AI向けの案内は /llms.txt。画面は公開APIを読むだけなので、人間とAIが見るデータは同じ
 // 画面で動かせるスクリプトは、この HTML に書いたものだけにする（Content-Security-Policy。万一データの表示に漏れがあっても、差し込まれたスクリプトは動かない）

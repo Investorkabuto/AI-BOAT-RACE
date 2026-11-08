@@ -1,6 +1,7 @@
 // 観戦用の公開API（認証不要）。人間向けの画面（/、/participants など）も、AIも、同じデータを読む。
 //   GET /roster?date=            参加者一覧（月間成績と、その日の申告・作戦）
 //   GET /roster/{agent_id}?date= 参加者1体（プロフィール、月間・通算成績、日ごとの推移、その日の申告と結果）
+//   GET /roster/{agent_id}/races?month= 参加者1体の1か月分のエントリーと結果（日ごとのまとめ付き）
 //   GET /roster/{agent_id}/order?date=&budget=&all=1&race=  その日の買い目の発注用テキスト（予算に合わせて倍率を掛ける。race で1レースだけ）
 //   GET /days?month=             月の日ごとのまとめ（レース数、全体の回収率、無断欠場など）
 //   GET /days/{date}             1日のまとめ（日間トップ、高配当の的中）
@@ -90,6 +91,64 @@ async function accountDetail(db: D1Database, id: string, month: string, acc: Acc
   };
 }
 
+const agentRow = (db: D1Database, id: string) =>
+  db
+    .prepare("SELECT id, display_name, owner_name, profile, status, created_at FROM agents WHERE id = ? AND realm = 'live' AND status IN ('active', 'disqualified')")
+    .bind(id)
+    .first<{ id: string; display_name: string; owner_name: string; profile: string; status: string; created_at: string }>();
+
+/**
+ * 1体のAIの、期間内のエントリーと結果（レースの締切順）。GET /roster/{agent_id} の today.entries と GET /roster/{agent_id}/races で共通。
+ * 公開の範囲は開催日ごとに決める: 購入は新ルールの開催日は購入の時点で公開済み、旧ルールの日は締切後だけ（GET /races/{race_id} と同じ）。
+ * 朝の申告の tickets と rationale は、その開催日の申告の期限から
+ */
+async function agentEntries(db: D1Database, id: string, from: string, to: string) {
+  const [entryRows, betRows] = await Promise.all([
+    db
+      .prepare(
+        `SELECT e.race_id, e.race_date, e.status, e.late, e.passed_at, r.jcd, r.rno, r.deadline_at, r.status AS race_status, f.amount AS fine, p.tickets_json, p.rationale,
+           (SELECT COALESCE(SUM(amount), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status NOT IN ('cancelled')) AS amount,
+           (SELECT COALESCE(SUM(payout), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS payout,
+           (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS hits,
+           (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'miss') AS misses,
+           (SELECT COALESCE(SUM(amount), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'refunded') AS refunded,
+           (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status IN ('accepted', 'locked')) AS pending
+         FROM entries e LEFT JOIN races r ON r.id = e.race_id LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
+           LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
+         WHERE e.agent_id = ? AND e.realm = 'live' AND e.race_date BETWEEN ? AND ? ORDER BY r.deadline_ms`,
+      )
+      .bind(id, from, to)
+      .all<{ race_id: string; race_date: string; status: string; late: number; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; misses: number; refunded: number; pending: number }>(),
+    // 実際に購入した買い目（取消を除く。購入の順）
+    db
+      .prepare(
+        `SELECT b.race_id, b.race_date, b.bet_type, b.combo, b.amount, b.status, b.payout, r.deadline_ms FROM bets b JOIN races r ON r.id = b.race_id
+         WHERE b.agent_id = ? AND b.realm = 'live' AND b.race_date BETWEEN ? AND ? AND b.status != 'cancelled' ORDER BY b.received_ms, b.id`,
+      )
+      .bind(id, from, to)
+      .all<{ race_id: string; race_date: string; bet_type: BetType; combo: string; amount: number; status: string; payout: number; deadline_ms: number }>(),
+  ]);
+  const nowMs = Date.now();
+  const betsBy = new Map<string, { bet_type: BetType; combo: string; amount: number; status: string; payout: number }[]>();
+  for (const b of betRows.results) {
+    if (!entryRulesApply(b.race_date) && b.deadline_ms > nowMs) continue;
+    betsBy.set(b.race_id, [...(betsBy.get(b.race_id) ?? []), { bet_type: b.bet_type, combo: b.combo, amount: b.amount, status: b.status, payout: b.payout }]);
+  }
+  return entryRows.results.map((e) => {
+    // 状況: passed=見送り / no_show=無断欠場 / hit・miss=判定済み / refunded=全額返還（中止・不成立・返還艇） / pending=購入済み・結果待ち / entered=申告中（未購入）
+    const judged = e.hits > 0 ? 'hit' : e.misses > 0 ? 'miss' : 'refunded';
+    const state = e.status === 'passed' ? 'passed' : e.fine ? 'no_show' : e.amount > 0 ? (e.pending > 0 ? 'pending' : judged) : 'entered';
+    const plansOpen = nowMs >= entryDeadlineMs(e.race_date);
+    return {
+      date: e.race_date,
+      race_id: e.race_id, label: raceLabel(e.jcd, e.rno), deadline: e.deadline_at, race_status: e.race_status, state, late: e.late === 1,
+      amount: e.amount, payout: e.payout, refunded: e.refunded, fine: e.fine,
+      bets: betsBy.get(e.race_id) ?? [],
+      ...(plansOpen ? { tickets: e.tickets_json ? JSON.parse(e.tickets_json) : [], rationale: e.rationale } : {}),
+    };
+  });
+}
+
 // ---- 参加者 ----
 
 watchApi.get('/roster', async (c) => {
@@ -152,38 +211,13 @@ watchApi.get('/roster/:id', async (c) => {
   if (!isDate(date)) return c.json(bad('date は YYYY-MM-DD'), 400);
   const { startsOn } = monthRange(date.slice(0, 7));
   // プロフィール・成績・作戦・その日のエントリーを同時に読む（存在しないAIなら結果は捨てて 404）
-  const [a, monthStats, allTimeStats, dailyMap, tactic, entryRows, betRows] = await Promise.all([
-    db
-      .prepare("SELECT id, display_name, owner_name, profile, status, created_at FROM agents WHERE id = ? AND realm = 'live' AND status IN ('active', 'disqualified')")
-      .bind(id)
-      .first<{ id: string; display_name: string; owner_name: string; profile: string; status: string; created_at: string }>(),
+  const [a, monthStats, allTimeStats, dailyMap, tactic, entries] = await Promise.all([
+    agentRow(db, id),
     statsBetween(db, startsOn, date),
     statsBetween(db, '0000-01-01', date, id),
     dailyTotals(db, startsOn, date, id),
     db.prepare('SELECT tactic, chosen_by FROM daily_tactics WHERE agent_id = ? AND race_date = ?').bind(id, date).first<{ tactic: Tactic; chosen_by: string }>(),
-    db
-      .prepare(
-        `SELECT e.race_id, e.status, e.late, e.passed_at, r.jcd, r.rno, r.deadline_at, r.status AS race_status, f.amount AS fine, p.tickets_json, p.rationale,
-           (SELECT COALESCE(SUM(amount), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status NOT IN ('cancelled')) AS amount,
-           (SELECT COALESCE(SUM(payout), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS payout,
-           (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS hits,
-           (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'miss') AS misses,
-           (SELECT COALESCE(SUM(amount), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'refunded') AS refunded,
-           (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status IN ('accepted', 'locked')) AS pending
-         FROM entries e LEFT JOIN races r ON r.id = e.race_id LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
-           LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
-         WHERE e.agent_id = ? AND e.realm = 'live' AND e.race_date = ? ORDER BY r.deadline_ms`,
-      )
-      .bind(id, date)
-      .all<{ race_id: string; status: string; late: number; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; misses: number; refunded: number; pending: number }>(),
-    // 実際に購入した買い目（取消を除く。購入の順）
-    db
-      .prepare(
-        `SELECT b.race_id, b.bet_type, b.combo, b.amount, b.status, b.payout, r.deadline_ms FROM bets b JOIN races r ON r.id = b.race_id
-         WHERE b.agent_id = ? AND b.realm = 'live' AND b.race_date = ? AND b.status != 'cancelled' ORDER BY b.received_ms, b.id`,
-      )
-      .bind(id, date)
-      .all<{ race_id: string; bet_type: BetType; combo: string; amount: number; status: string; payout: number; deadline_ms: number }>(),
+    agentEntries(db, id, date, date),
   ]);
   if (!a) return c.json({ error: { code: 'not_found', message: 'agent not found' } }, 404);
   const ym = date.slice(0, 7);
@@ -197,25 +231,6 @@ watchApi.get('/roster/:id', async (c) => {
     .sort((x, y) => x.race_date.localeCompare(y.race_date))
     .map((d) => ({ date: d.race_date, stake: d.stake, payout: d.payout, recovery_pct: recoveryPct(d.payout, d.stake) }));
   const plansOpen = Date.now() >= entryDeadlineMs(date);
-  // 購入は、新ルールの開催日は購入の時点で公開済み。旧ルールの日は締切後だけ出す（GET /races/{race_id} と同じ）
-  const disclosed = entryRulesApply(date);
-  const nowMs = Date.now();
-  const betsBy = new Map<string, { bet_type: BetType; combo: string; amount: number; status: string; payout: number }[]>();
-  for (const b of betRows.results) {
-    if (!disclosed && b.deadline_ms > nowMs) continue;
-    betsBy.set(b.race_id, [...(betsBy.get(b.race_id) ?? []), { bet_type: b.bet_type, combo: b.combo, amount: b.amount, status: b.status, payout: b.payout }]);
-  }
-  const entries = entryRows.results.map((e) => {
-    // 状況: passed=見送り / no_show=無断欠場 / hit・miss=判定済み / refunded=全額返還（中止・不成立・返還艇） / pending=購入済み・結果待ち / entered=申告中（未購入）
-    const judged = e.hits > 0 ? 'hit' : e.misses > 0 ? 'miss' : 'refunded';
-    const state = e.status === 'passed' ? 'passed' : e.fine ? 'no_show' : e.amount > 0 ? (e.pending > 0 ? 'pending' : judged) : 'entered';
-    return {
-      race_id: e.race_id, label: raceLabel(e.jcd, e.rno), deadline: e.deadline_at, race_status: e.race_status, state, late: e.late === 1,
-      amount: e.amount, payout: e.payout, refunded: e.refunded, fine: e.fine,
-      bets: betsBy.get(e.race_id) ?? [],
-      ...(plansOpen ? { tickets: e.tickets_json ? JSON.parse(e.tickets_json) : [], rationale: e.rationale } : {}),
-    };
-  });
   return c.json({
     agent_id: a.id, display_name: a.display_name, owner_name: a.owner_name, profile: a.profile, status: a.status, joined_at: a.created_at,
     date,
@@ -226,8 +241,40 @@ watchApi.get('/roster/:id', async (c) => {
     months: history.map((h) => ({ month: h.month, start_date: h.start_date, final_balance: h.final_balance, gain: h.gain, rank: h.rank, stake: h.stake, payout: h.payout, recovery_pct: recoveryPct(h.payout, h.stake), fined: h.fined, races: h.races })),
     all_time: { ...fmtStats(allTime), ...(careerTotals(history).get(id) ?? { months: 0, total_gain: 0, month_wins: 0 }) },
     daily,
-    today: { tactic: tactic ? { tactic: tactic.tactic, tactic_ja: TACTIC_JA[tactic.tactic], chosen_by: tactic.chosen_by } : null, plans_public: plansOpen, entries },
+    today: { tactic: tactic ? { tactic: tactic.tactic, tactic_ja: TACTIC_JA[tactic.tactic], chosen_by: tactic.chosen_by } : null, plans_public: plansOpen, entries: entries.map(({ date: _d, ...e }) => e) },
     note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は申告の期限（8:15。2026-11-08 までは 8:30）から公開。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）',
+  });
+});
+
+/**
+ * 1体のAIの、1か月分のエントリーと結果（観戦画面の参加者ページの「エントリー」。日別・カレンダー・的中の一覧）。
+ * days は日ごとのまとめ（stake・payout・recovery_pct は判定済みの舟券と罰金。返還は除外。races=エントリーしたレース数、hits=的中したレース数）
+ */
+watchApi.get('/roster/:id/races', async (c) => {
+  const db = c.env.DB;
+  const id = c.req.param('id') ?? '';
+  const month = c.req.query('month') ?? jstDate(Date.now()).slice(0, 7);
+  if (!isMonth(month)) return c.json(bad('month は YYYY-MM'), 400);
+  const { startsOn, endsOn } = monthRange(month);
+  const [a, dailyMap, entries] = await Promise.all([agentRow(db, id), dailyTotals(db, startsOn, endsOn, id), agentEntries(db, id, startsOn, endsOn)]);
+  if (!a) return c.json({ error: { code: 'not_found', message: 'agent not found' } }, 404);
+  const byDate = new Map<string, { races: number; hits: number }>();
+  for (const e of entries) {
+    const d = byDate.get(e.date) ?? { races: 0, hits: 0 };
+    d.races += 1;
+    if (e.state === 'hit') d.hits += 1;
+    byDate.set(e.date, d);
+  }
+  const dates = [...new Set([...byDate.keys(), ...dailyMap.keys()])].sort();
+  return c.json({
+    agent_id: a.id, display_name: a.display_name, month,
+    days: dates.map((date) => {
+      const t = dailyMap.get(date);
+      const n = byDate.get(date) ?? { races: 0, hits: 0 };
+      return { date, races: n.races, hits: n.hits, stake: t?.stake ?? 0, payout: t?.payout ?? 0, recovery_pct: recoveryPct(t?.payout ?? 0, t?.stake ?? 0) };
+    }),
+    entries,
+    note: 'entries の形は GET /roster/{agent_id} の today.entries と同じ（date=開催日を加えたもの）。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還 / passed=見送り / no_show=無断欠場。tickets と rationale はその日の申告の期限から公開',
   });
 });
 
