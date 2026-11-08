@@ -82,6 +82,31 @@ describe('受け取り', () => {
     expect(got.received.races).toBe(2);
   });
 
+  it('v0.6 の期間別・モーター・直近10走は届いたものだけ載せ、調子を5段階で付ける（決定59）', async () => {
+    const t = await issue();
+    const w = (win: number, avg_st: number, starts: number) => ({ win_rate: win, r2: 0.45, r3: 62.5, avg_st, starts, st_starts: starts, by_course: { '1': { avg_st, starts: 12 }, '7': { avg_st: 0.1, starts: 1 } } });
+    const rich = {
+      ...race('20261108-10-05'),
+      boats: [
+        { ...boat(1), windows: { '2y': w(6.6, 0.16, 400), '1y': w(6.85, 0.15, 200), '6m': w(7.1, 0.14, 100), '50r': w(7.4, 0.13, 50), '9z': w(1, 1, 1) }, motor: { all: { r2: 52.0, r3: 70.2, starts: 160 }, '20r': { r2: 49.1, r3: 63, starts: 20 } }, recent10: [1, 2, 'F', 'L0', 7, 'x', 3] },
+        { ...boat(2), windows: { '1y': w(5.1, 0.16, 200), '50r': w(4.6, 0.172, 50) } },
+        { ...boat(3), windows: { '1y': w(5.0, 0.16, 200), '50r': w(5.05, 0.158, 10) } }, // 直近の出走が少ない
+        boat(4),
+      ],
+    };
+    await req('POST', '/feed/card-supplements', t, payload('2026-11-08', [rich]));
+    const view = (await (await req('GET', '/view/races/20261108-10-05/supplement')).json()) as { supplement: { boats: Record<string, any>[] } };
+    const [b1, b2, b3, b4] = view.supplement.boats as [Record<string, any>, Record<string, any>, Record<string, any>, Record<string, any>];
+    expect(Object.keys(b1.windows)).toEqual(['2y', '1y', '6m', '50r']);
+    expect(b1.windows['50r']).toEqual({ win: 7.4, r2: 45, r3: 62.5, avg_st: 0.13, starts: 50, st_starts: 50, by_course: { '1': { avg_st: 0.13, starts: 12 } } });
+    expect(b1.motor).toEqual({ all: { r2: 52, r3: 70.2, starts: 160 }, r20: { r2: 49.1, r3: 63, starts: 20 } });
+    expect(b1.recent10).toEqual(['1', '2', 'F', 'L0', '3']);
+    expect(b1.form).toMatchObject({ level: 5, label: '絶好調' });
+    expect(b2.form).toMatchObject({ level: 1, label: '不調' });
+    expect(b3).not.toHaveProperty('form');
+    expect(b4).toEqual({ boat: 4, motor_no: 14, m2: 33.3, avg_st: 0.161, st_starts: 823, avg_st_by_course: { '1': { avg_st: 0.153, starts: 164 } } });
+  });
+
   it('逃げ切り率は判定できるレースだけ出す', async () => {
     const t = await issue();
     await req('POST', '/feed/card-supplements', t, payload('2026-11-08', [{ ...race('20261108-10-04'), prediction: { pred_nige: 0.7, judgeable: false } }]));
