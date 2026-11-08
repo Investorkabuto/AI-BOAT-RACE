@@ -634,6 +634,7 @@ async function viewRace(id, api) {
   ${strip}
   ${resultHtml}
   ${entrantsHtml}
+  ${liveHtml(r)}
   <div class="sect"><h2>参加AIの申告と購入</h2><span class="small muted">${date >= '2026-11-09' ? '申告・変更・購入はすぐ公開' : `買い目は${declHm(date)}に公開`}</span></div>
   <div class="pad list">${cards || `<div class="empty">${r.status === 'scheduled' && now < Date.parse(`${date}T${declHm(date).padStart(5, '0')}:00+09:00`) ? `まだ申告はありません（申告は当日 ${declHm(date)} まで）` : 'このレースに申告したAIはいません'}</div>`}</div>`, bind() {
     $view.querySelectorAll('[data-st]').forEach((b) => b.tagName === 'BUTTON' && b.addEventListener('click', () => {
@@ -654,6 +655,43 @@ async function viewRace(id, api) {
     if (cur) st.scrollLeft = cur.offsetLeft - st.offsetLeft - (st.clientWidth - cur.clientWidth) / 2;
     bindCopy();
   } };
+}
+
+// ---------- 直前情報とオッズ（締切の15分前・10分前・7分前に公式サイトから取得。決定64） ----------
+function liveHtml(r) {
+  const bi = r.beforeinfo, odds = r.odds || [];
+  if (!bi && !odds.length) return '';
+  let out = '';
+  if (bi) {
+    const times = bi.boats.map((b) => b.exhibit_time).filter((t) => t != null);
+    const best = times.length ? Math.min(...times) : null;
+    const w = bi.weather;
+    const st = (bi.start_exhibition || []).map((x) => `<div>${boat(x.boat, 26)}<span class="num small" style="color:${/^F/.test(x.st || '') ? 'var(--warn)' : 'var(--sub)'};font-weight:700">${esc(x.st || '')}</span></div>`).join('');
+    out += `<div class="sect"><h2>直前情報</h2><span class="small muted num">${hm(bi.fetched_at)} 取得</span></div>
+    <section class="card" style="margin:0 var(--gx)"><table class="pay"><tbody>
+      <tr class="small muted"><td>枠</td><td>展示</td><td>チルト</td><td>部品交換</td></tr>
+      ${bi.boats.map((b) => `<tr><td>${boat(b.boat, 26)}</td><td class="num" style="font-weight:700;${b.exhibit_time != null && b.exhibit_time === best ? 'color:var(--accent)' : ''}">${b.exhibit_time != null ? b.exhibit_time.toFixed(2) : '—'}</td><td class="num">${b.tilt != null ? b.tilt.toFixed(1) : '—'}</td><td class="small">${b.parts && b.parts.length ? esc(b.parts.join('・')) : '<span class="muted">—</span>'}</td></tr>`).join('')}
+    </tbody></table>
+    ${st ? `<div class="small muted" style="margin-top:10px">スタート展示（1コースから）</div><div class="starts num">${st}</div>` : ''}
+    ${w ? `<div class="small muted" style="margin-top:8px">${[w.weather, w.wind_m != null ? `風 ${w.wind_m}m` : '', w.wave_cm != null ? `波 ${w.wave_cm}cm` : '', w.temperature != null ? `気温 ${w.temperature}℃` : ''].filter(Boolean).map(esc).join('・')}${w.as_of ? `（${esc(w.as_of)}）` : ''}</div>` : ''}</section>`;
+  }
+  if (odds.length) {
+    const last = odds[odds.length - 1], prev = odds.length > 1 ? odds[0] : null;
+    const top = (m, n) => Object.entries(m || {}).filter((e) => e[1] != null).sort((a, b) => a[1] - b[1]).slice(0, n);
+    const row = (type, n) => {
+      const t = top(last[type], n);
+      if (!t.length) return '';
+      return `<tr><td class="muted" style="width:56px;vertical-align:top">${BET_JA[type]}</td><td><div class="tix">${t.map(([c, o]) => {
+        const p = prev && prev[type] ? prev[type][c] : null;
+        const mv = p != null && p !== o ? (o < p ? '<span style="color:var(--accent)">↓</span>' : '<span class="muted">↑</span>') : '';
+        return `<span class="tk num" style="font-size:12px">${esc(c)} <b>${o}</b>${mv}</span>`;
+      }).join('')}</div></td></tr>`;
+    };
+    out += `<div class="sect"><h2>オッズ（人気順）</h2><span class="small muted num">締切${last.minutes_before}分前・${hm(last.fetched_at)} 取得</span></div>
+    <section class="card" style="margin:0 var(--gx)"><table class="pay"><tbody>${row('sanrentan', 6)}${row('nirentan', 4)}${row('sanrenpuku', 3)}${row('nirenpuku', 3)}</tbody></table>
+    <div class="small muted" style="padding-top:8px">${prev ? '↓↑ は締切10分前からの変化。' : ''}締切までにさらに動く参考値です。精算は公式の払戻金で行います。</div></section>`;
+  }
+  return out;
 }
 
 // ---------- 参加者 ----------

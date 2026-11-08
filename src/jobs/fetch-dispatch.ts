@@ -6,6 +6,8 @@
 //  - 全レースの結果: 毎朝 6:00 に前日分をまとめて保存する（公開・振り返り用。要件定義 §6）
 //  - 過去分（B・K から過去のレースを作る）: 毎晩 2:00 に、直近から1年前まで（2026-11-05 管理者決定。容量を見て延ばす）、取り込み済みでない日を新しい順に（要件定義 v1.1・v1.2）
 //  - 競走成績（K）: 当日の 21:30・23:20 と、翌朝 6:30 に前日分（展示タイム・進入・ST・天候・決まり手・払戻金。要件定義 v1.0 系統3）
+//  - 締切前の直前情報とオッズ（GitHub Actions の Fetch live、live.yml）: 1日3回、約5時間ずつ動かし続ける（LIVE_SLOTS。決定64）。
+//    結果の取得（boatrace.yml）とは別のワークフローなので、互いに待たない
 // 取り込みは何度実行しても安全なので、GitHub 側の schedule が動いて二重になっても問題ない。
 import type { Env } from '../env';
 import { addDays, jstDate, jstIso, jstToMs } from '../lib/time';
@@ -36,6 +38,18 @@ export const RECORD_SLOTS = [
 ] as const;
 // 過去分（B と K から過去のレースを作る）の毎晩の起動は 2026-11-07 にやめた（管理者決定。過去データと統計はもち側が持つ）。
 // 取り込み済みの分は jobs/purge.ts が消す。スクリプトの history は手動の起動だけで使える
+/** 締切前の直前情報とオッズを取るワークフロー */
+export const LIVE_WORKFLOW = 'live.yml';
+/**
+ * 直前情報とオッズの取得を起動する時刻と、そのランが終わる時刻（日本時間 HH:MM）。GitHub Actions の1ジョブは6時間までなので3つに分ける。
+ * 起動が遅れても、終わる時刻の10分前までは起動する（1回目は 8:15 の申告の期限より前、最初の締切の15分前に間に合うように）
+ */
+export const LIVE_SLOTS = [
+  { at: '07:50', until: '13:00' },
+  { at: '12:55', until: '18:00' },
+  { at: '17:55', until: '23:40' },
+] as const;
+
 /** 出走表の起動は、その時刻からこの時間内だけ行う（デプロイ直後などに夜になってから起動しないように） */
 export const SLOT_WINDOW_MS = 2 * 60 * 60 * 1000;
 /** 結果の取得の最短間隔 */
@@ -65,8 +79,10 @@ export const resultWantedArgs = (nowMs: number) => [addDays(jstDate(nowMs), -RES
 export interface Dispatch {
   /** 起動済みの記録に使うキー（app_state.key） */
   key: string;
-  command: 'schedule' | 'cards' | 'records' | 'history' | 'results' | 'results-all';
+  command: 'schedule' | 'cards' | 'records' | 'history' | 'results' | 'results-all' | 'live';
   date?: string;
+  /** live だけ: ランを終える時刻（日本時間 HH:MM） */
+  until?: string;
 }
 
 /** 今起動すべき取得の一覧（DB にも GitHub にも触らない。テスト用に分けてある） */
@@ -99,6 +115,12 @@ export function dueDispatches(p: { nowMs: number; done: ReadonlySet<string>; las
     const key = `fetch:results-all:${today}`;
     if (p.nowMs >= at && p.nowMs < at + SLOT_WINDOW_MS && !p.done.has(key)) out.push({ key, command: 'results-all', date: addDays(today, -1) });
   }
+  for (const slot of LIVE_SLOTS) {
+    const [h, m] = slot.at.split(':').map(Number) as [number, number];
+    const [uh, um] = slot.until.split(':').map(Number) as [number, number];
+    const key = `fetch:live:${today}:${slot.at}`;
+    if (p.nowMs >= jstToMs(today, h, m) && p.nowMs < jstToMs(today, uh, um) - 10 * 60 * 1000 && !p.done.has(key)) out.push({ key, command: 'live', until: slot.until });
+  }
   if (p.pendingResults > 0 && p.nowMs - p.lastResultsMs >= RESULTS_INTERVAL_MS) out.push({ key: 'fetch:results', command: 'results' });
   return out;
 }
@@ -114,9 +136,10 @@ async function setState(db: D1Database, key: string, value: string, nowMs: numbe
 
 /** GitHub の workflow_dispatch を呼ぶ。成功なら null、失敗なら理由 */
 async function runWorkflow(env: Env, d: Dispatch): Promise<string | null> {
-  const inputs: Record<string, string> = { command: d.command };
-  if (d.date) inputs.date = d.date;
-  const r = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/${FETCH_WORKFLOW}/dispatches`, {
+  const live = d.command === 'live';
+  const inputs: Record<string, string> = live ? { until: d.until ?? '23:40' } : { command: d.command };
+  if (d.date && !live) inputs.date = d.date;
+  const r = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/${live ? LIVE_WORKFLOW : FETCH_WORKFLOW}/dispatches`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'ai-boat-race-worker', 'Content-Type': 'application/json' },
     body: JSON.stringify({ ref: env.FETCH_WORKFLOW_REF || 'main', inputs }),
@@ -153,7 +176,7 @@ export async function dispatchFetches(env: Env, nowMs: number): Promise<string[]
     log.push(`fetch dispatched: ${d.command}${d.date ? ` ${d.date}` : ''}`);
   }
   // 古い出走表・番組表の起動記録を消す（3日より前）
-  await db.prepare("DELETE FROM app_state WHERE key >= 'fetch:' AND key < 'fetch;' AND (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:cards:%' OR key LIKE 'fetch:records:%' OR key LIKE 'fetch:history:%' OR key LIKE 'fetch:results-all:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
+  await db.prepare("DELETE FROM app_state WHERE key >= 'fetch:' AND key < 'fetch;' AND (key LIKE 'fetch:schedule:%' OR key LIKE 'fetch:cards:%' OR key LIKE 'fetch:records:%' OR key LIKE 'fetch:history:%' OR key LIKE 'fetch:results-all:%' OR key LIKE 'fetch:live:%') AND updated_at < ?").bind(jstIso(nowMs - 3 * 24 * 60 * 60 * 1000)).run();
   return log;
 }
 
