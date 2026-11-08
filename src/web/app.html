@@ -145,7 +145,7 @@ nav.tabs .unread[hidden]{display:none}
 #ents[data-st=all] .dt,#ents[data-st=detail] .bs{display:none}#ents[data-st=detail] .ent{align-items:flex-start}#ents[data-st=detail] .ent>.boat,#ents[data-st=detail] .ent>span:first-child{margin-top:2px}
 .fmr{display:flex;align-items:center;gap:10px;margin-top:8px}.r10{display:flex;gap:2px;flex:1;min-width:0}.r10 span{flex:1;height:20px;border-radius:4px;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;background:#0F1828;color:var(--dim)}.r10 .f1{background:var(--accent);color:var(--bg)}.r10 .f2{background:#2E8FA3;color:#fff}.r10 .f3{background:var(--track);color:var(--text)}.fm{display:inline-flex;align-items:center;gap:3px;font-size:14px;font-weight:700;white-space:nowrap}
 .dgr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:10px}.dfh{display:flex;justify-content:space-between;align-items:baseline;gap:4px;font-size:12px;color:var(--muted)}.dfh b{font-size:16px;color:var(--text)}.dbar{position:relative;height:10px;background:#0F1828;border-radius:5px;margin-top:3px}.dbar i{position:absolute;top:2px;height:6px;border-radius:3px}.dbar i.z{left:50%;top:-2px;width:2px;height:14px;background:var(--dim);border-radius:0}.dft{display:block;font-size:11px;text-align:center;margin-top:3px;color:var(--muted)}
-.dpn{background:#0F1828;border-radius:14px;padding:10px 12px;margin-top:10px}.dpn .dbar{background:var(--card)}.dpn .dgr{margin-top:8px}.dpn>.dfh{font-size:12px}
+.dpn{background:#0F1828;border-radius:14px;padding:10px 12px;margin-top:10px}.dpn .dbar{background:var(--card)}.dpn .dgr{margin-top:8px}.dpn>.dfh{font-size:12px}.dpn.wm{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:12px}.dpn.wm>div+div{border-left:1px solid var(--line);padding-left:12px}.dpn.wm .dgr{gap:8px}.dpn.wm .dfh{flex-direction:column;align-items:stretch;gap:1px}.dpn.wm .dfh span{white-space:nowrap}.dpn.wm .dfh b{text-align:right}
 .cst{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin-top:8px;align-items:end}.cst>div{display:flex;flex-direction:column;align-items:center;gap:3px;border-radius:8px;padding:4px 0 2px}.cst .me{background:var(--card2)}.cst .bars{display:flex;align-items:flex-end;gap:2px;height:56px}.cst .bars i{width:7px;border-radius:2px 2px 0 0}.cst .few{opacity:.3}.cst small{font-size:10px;color:var(--muted)}.clg{display:flex;gap:8px;font-size:10px;color:var(--muted)}.clg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px;vertical-align:-1px}
 .starts{display:flex;gap:6px;margin-top:12px}.starts div{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px}
 table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{padding:9px 0;border-bottom:1px solid var(--line)}table.pay td:last-child{text-align:right}
@@ -337,7 +337,7 @@ async function viewHome(_m, api) {
 }
 const top3 = (r) => (r.result && r.result.top3 && r.result.top3.length ? `<span style="display:flex;gap:3px">${r.result.top3.map((b) => boat(b, 22)).join('')}</span>` : '');
 const surname = (n) => Array.from(String(n || '').split(' ')[0]).slice(0, 4).join('');
-/** 出走表の詳細（決定59）: 調子・直近10走・勝率と平均ST（直近50走と1年）・モーター・コース別ST。f はもちのフィード、c は番組表B */
+/** 出走表の詳細（決定59）: 調子・直近10走・勝率（直近50走と1年）とモーター・コース別ST。f はもちのフィード、c は番組表B */
 const stFmt = (v) => (v == null ? '—' : Number(v).toFixed(3).replace(/^0\./, '.'));
 const pctF = (v) => (v == null ? '—' : `${Number(v).toFixed(1)}%`);
 const WIN4 = [['2y', '2年', '#2B4560'], ['1y', '1年', '#3B6F92'], ['6m', '半年', '#47A3C2'], ['50r', '50走', 'var(--accent)']];
@@ -374,23 +374,20 @@ function detailBlock(f, c, frame) {
   const out = [];
   // 調子と直近10走
   if (f.form || f.recent10) out.push(`<div class="fmr">${f.recent10 ? `<span class="r10 num">${f.recent10.map((p) => `<span class="${/^[123]$/.test(p) ? `f${p}` : ''}">${esc(p)}</span>`).join('')}</span>` : '<span style="flex:1"></span>'}${f.form ? formMark(f.form) : ''}</div>`);
-  // 勝率と平均ST: 大きい数字は直近50走、比べる相手は直近1年
+  // 勝率（直近50走と1年）とモーター（番号、2連率・3連率の直近20走と通算）を同じ行に。通算2連率は番組表Bの公式の値、3連率と直近20走はもちの集計
   const w = f.windows || {}, a = w['1y'], b = w['50r'];
-  const tiles = [];
-  if (b && b.win != null) tiles.push(diffTile('勝率', b.win.toFixed(2), a && a.win != null ? `1年 ${a.win.toFixed(2)}` : '', a && a.win != null ? b.win - a.win : null, 0.6));
-  if (b && b.avg_st != null) tiles.push(diffTile('平均ST', stFmt(b.avg_st), a && a.avg_st != null ? `1年 ${stFmt(a.avg_st)}` : '', a && a.avg_st != null ? a.avg_st - b.avg_st : null, 0.025));
-  else if (f.avg_st != null) tiles.push(diffTile('平均ST', stFmt(f.avg_st), f.st_starts != null ? `${Number(f.st_starts)}走` : '', null, 1));
-  if (tiles.length) out.push(`<div class="dgr">${tiles.join('')}</div>`);
-  // モーター: 通算2連率は番組表Bの公式の値。3連率と直近20走はもちの集計
+  const win = b && b.win != null ? diffTile('', b.win.toFixed(2), a && a.win != null ? `1年 ${a.win.toFixed(2)}` : '', a && a.win != null ? b.win - a.win : null, 0.6) : '';
   const no = f.motor_no != null ? f.motor_no : c && c.motor_no;
   const off2 = c && c.motor_2r != null ? c.motor_2r : f.m2;
   const m = f.motor || {}, r20 = m.r20, all = m.all;
+  let motor = '';
   if (no != null) {
     const t2 = r20 && r20.r2 != null ? diffTile('2連率', pctF(r20.r2), off2 != null ? `通算 ${pctF(off2)}` : '', off2 != null ? r20.r2 - off2 : null, 15) : diffTile('2連率', pctF(off2), '', null, 1);
     const all3 = all && all.r3 != null ? all.r3 : null;
     const t3 = r20 && r20.r3 != null ? diffTile('3連率', pctF(r20.r3), all3 != null ? `通算 ${pctF(all3)}` : '', all3 != null ? r20.r3 - all3 : null, 15) : all3 != null ? diffTile('3連率', pctF(all3), '', null, 1) : '';
-    out.push(`<div class="dpn"><div class="dfh"><span>モーター <b class="num" style="font-size:15px">${esc(String(no))}</b>号</span></div><div class="dgr">${t2}${t3}</div></div>`);
+    motor = `<div><div class="dfh"><span>モーター <b class="num" style="font-size:14px">${esc(String(no))}</b>号</span></div><div class="dgr" style="margin-top:4px">${t2}${t3}</div></div>`;
   }
+  if (win || motor) out.push(`<div class="dpn wm"${win && motor ? '' : ' style="grid-template-columns:1fr"'}>${win ? `<div><div class="dfh"><span>勝率</span></div><div style="margin-top:4px">${win}</div></div>` : ''}${motor}</div>`);
   out.push(courseBars(f, frame));
   return out.join('');
 }
