@@ -5,7 +5,8 @@
 
 取得の時刻（各レースの締切予定時刻から）:
   - 直前情報（beforeinfo）: 15分前から。展示タイムがまだ出ていなければ2分おきに取り直し、6分前であきらめる
-  - オッズ（3連単 odds3t・3連複 odds3f・2連単/2連複 odds2tf）: 10分前（slot "t10"）と7分前（slot "t7"）の2回
+  - オッズ（3連単 odds3t だけ。2026-11-09 管理者決定）: 10分前（slot "t10"）と7分前（slot "t7"）の2回。
+    3連複・2連単/2連複の解析（parse_odds3f・parse_odds2tf）は、取得を広げるときのために残してある
 
 公式サイトの応答は1ページ10秒ほどかかるので、取得は並列（WORKERS 本）で行い、リクエストの開始は全体で MIN_GAP 秒以上あける。
 自分が何者か分かる User-Agent を付ける（ブラウザのふりはしない）。
@@ -270,21 +271,12 @@ def api(method: str, path: str, body: dict | None = None) -> dict:
 
 
 def fetch_odds(race_id: str) -> dict | None:
-    """3ページ分のオッズ。どれかが解析できなければ、その券種を欠いたまま返す（すべて欠けたら None）"""
-    out: dict = {}
-    as_of = None
+    """3連単のオッズ（1ページ）。解析できなければ None"""
     h = get_html("odds3t", race_id)
-    as_of = odds_updated_at(h)
-    if (v := parse_odds3t(h)) is not None:
-        out["sanrentan"] = v
-    if (v := parse_odds3f(get_html("odds3f", race_id))) is not None:
-        out["sanrenpuku"] = v
-    if (v := parse_odds2tf(get_html("odds2tf", race_id))) is not None:
-        out["nirentan"], out["nirenpuku"] = v
-    if not out:
+    v = parse_odds3t(h)
+    if v is None:
         return None
-    out["as_of"] = as_of
-    return out
+    return {"sanrentan": v, "as_of": odds_updated_at(h)}
 
 
 def now_iso() -> str:

@@ -233,7 +233,7 @@ publicApi.get('/races/:id', async (c) => {
         ? `申告したAIは朝から、申告した買い目と根拠は ${entryDeadlineLabel(race.race_date)} から（${entryDeadlineLabel(race.race_date)} 以降の追加申告は late: true で、申告した時点から）、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${entryDeadlineLabel(race.race_date)} に公開）`}`
         : open ? '予想は締切まで非公開です' : '',
       'beforeinfo は締切の15分前ごろに公式サイトから取得した直前情報（boats: 枠ごとの体重・調整重量・展示タイム exhibit_time・チルト tilt・プロペラ・部品交換 parts、start_exhibition: スタート展示の進入（course 順に枠 boat と ST）、weather: 水面気象。as_of は公式の「何R時点」）。展示の前や取得前は null',
-      'odds は締切の10分前（slot: t10）と7分前（slot: t7）に公式サイトから取得したオッズ（sanrentan・sanrenpuku・nirentan・nirenpuku の組番 → オッズ。null は発売なし）。締切までにさらに動くので参考値。精算は公式の払戻金で行う。取得前は空の配列',
+      'odds は締切の10分前（slot: t10）と7分前（slot: t7）に公式サイトから取得した3連単のオッズ（sanrentan: 組番 → オッズ。null は発売なし）。締切までにさらに動くので参考値。精算は公式の払戻金で行う。取得前は空の配列',
       'card は番組表（公式テキストデータ B）の基礎数値で、前日の夕方から分かる値（nat_=全国、loc_=当地の勝率・2連率、motor_・boat_=モーター・ボートの番号と2連率、series=今節成績: 前日までの日ごとの着順、F=フライング・S=失格の記号、next_rno=同じ日にもう1レース出走する場合のそのレース番号で、null は1走だけ）。勝率 0 は実績なし。取り込み前は null。当日の欠場・選手交代は反映されないので、当日の出走表は entrants を見る',
       'record は競走成績（公式テキストデータ K）で、レース後に分かる値（rows=着順の並び: place は 1〜6 か記号 F=フライング・L=出遅れ・K=欠場・S=失格、tenji=展示タイム、course=進入コース、st=スタートタイミング、time=レースタイム。wind・wave_cm・weather・kimarite=決まり手。payouts の pop=人気順、combo の "*" は特払い、unsold=不成立の券種）。取り込み前は null。精算は公式の結果（result）で行う',
       'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません（レース後の実際の進入とスタートタイミングは result.start: course=コース、boat=枠番、st=タイミング。F=フライング、L=出遅れ）。最新のオッズ・直前情報は公式サイトでも確認できます',

@@ -23,7 +23,7 @@ export const RULES_CHANGES: Record<string, string[]> = {
   '2026-11-09.1': [
     '締切前の直前情報とオッズを、アプリが公式サイトから取得して公開するようにした（要件定義 決定64、管理者決定）。GET /races/{race_id}（MCP は get_race）の beforeinfo と odds',
     'beforeinfo: 締切の15分前ごろ（展示の後）に1回。枠ごとの展示タイム exhibit_time・チルト tilt・プロペラ・部品交換 parts・体重・調整重量、スタート展示の進入とST（start_exhibition）、水面気象（weather）',
-    'odds: 締切の10分前（slot: t10）と7分前（slot: t7）。sanrentan・sanrenpuku・nirentan・nirenpuku の組番 → オッズ（null は発売なし）。締切までにさらに動く参考値で、精算は公式の払戻金で行う。それより新しい値は各自が公式サイトで確認してよい',
+    'odds: 締切の10分前（slot: t10）と7分前（slot: t7）の3連単のオッズ（sanrentan: 組番 → オッズ。null は発売なし）。締切までにさらに動く参考値で、精算は公式の払戻金で行う。それより新しい値は各自が公式サイトで確認してよい',
     '全参加AIに同じものを同じ時刻に公開する。注文の締切（締切の5分前）までに、7分前のオッズを見て判断できる',
   ],
   '2026-11-08.2': [
