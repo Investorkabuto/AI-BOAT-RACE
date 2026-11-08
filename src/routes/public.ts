@@ -11,6 +11,7 @@ import { entrantsOf } from '../lib/cards';
 import { unpackUnsold } from '../lib/records';
 import { BOAT_COLS, dayIdRange, payoutsFromRows, racersFromBoats, recordRowsFromBoats, type BoatRow } from '../db/boats';
 import { checkStored } from '../lib/crosscheck';
+import { ODDS_SLOTS, type OddsSlot } from '../lib/live';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
 import { accountStandings, careerTotals, monthClosed, monthResults } from '../db/account';
 
@@ -131,7 +132,7 @@ publicApi.get('/races/:id', async (c) => {
   const id = c.req.param('id') ?? '';
   const db = c.env.DB;
   // レース・結果・申告・購入・選手を1回の往復でまとめて読む。購入は公開前なら下で捨てる
-  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ, boatsQ, payoutsQ] = await db.batch([
+  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ, boatsQ, payoutsQ, beforeQ, oddsQ] = await db.batch([
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
     db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json, unsold_json, fetched_at FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
@@ -153,6 +154,9 @@ publicApi.get('/races/:id', async (c) => {
     // 基礎数値と競走成績の艇・払戻金の正本（v1.3 決定51）
     db.prepare(`SELECT ${BOAT_COLS} FROM race_boats WHERE race_id = ? ORDER BY boat`).bind(id),
     db.prepare('SELECT bet_type, combo, payout, pop FROM race_payouts WHERE race_id = ? ORDER BY rowid').bind(id),
+    // 締切前の直前情報とオッズ（決定64）
+    db.prepare('SELECT fetched_at, data_json FROM race_beforeinfo WHERE race_id = ?').bind(id),
+    db.prepare("SELECT slot, fetched_at, as_of, data_json FROM race_odds WHERE race_id = ? ORDER BY CASE slot WHEN 't10' THEN 1 ELSE 2 END").bind(id),
   ]);
   const recordMeta = recordQ!.results[0] as { weather: string | null; wind_dir: string | null; wind_m: number | null; wave_cm: number | null; kimarite: string | null; unsold: string; fetched_at: string } | undefined;
   const boats = boatsQ!.results as BoatRow[];
@@ -203,6 +207,14 @@ publicApi.get('/races/:id', async (c) => {
       })(),
     },
     entries,
+    // 締切前の直前情報（締切の15分前ごろ、展示の後に1回）とオッズ（締切の10分前と7分前）。公式サイトから取得した参考値（決定64）
+    beforeinfo: (() => {
+      const r = beforeQ!.results[0] as { fetched_at: string; data_json: string } | undefined;
+      return r ? { fetched_at: r.fetched_at, ...JSON.parse(r.data_json) } : null;
+    })(),
+    odds: (oddsQ!.results as { slot: OddsSlot; fetched_at: string; as_of: string | null; data_json: string }[]).map((o) => ({
+      slot: o.slot, minutes_before: ODDS_SLOTS[o.slot], fetched_at: o.fetched_at, as_of: o.as_of, ...JSON.parse(o.data_json),
+    })),
     // 競走成績（公式テキストデータ K）。レースが終わった日の夜から。着順・展示タイム・進入コース・ST・天候・風・波・決まり手・払戻金
     record: recordRow
       ? {
@@ -220,9 +232,11 @@ publicApi.get('/races/:id', async (c) => {
         : newRules
         ? `申告したAIは朝から、申告した買い目と根拠は ${entryDeadlineLabel(race.race_date)} から（${entryDeadlineLabel(race.race_date)} 以降の追加申告は late: true で、申告した時点から）、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${entryDeadlineLabel(race.race_date)} に公開）`}`
         : open ? '予想は締切まで非公開です' : '',
+      'beforeinfo は締切の15分前ごろに公式サイトから取得した直前情報（boats: 枠ごとの体重・調整重量・展示タイム exhibit_time・チルト tilt・プロペラ・部品交換 parts、start_exhibition: スタート展示の進入（course 順に枠 boat と ST）、weather: 水面気象。as_of は公式の「何R時点」）。展示の前や取得前は null',
+      'odds は締切の10分前（slot: t10）と7分前（slot: t7）に公式サイトから取得したオッズ（sanrentan・sanrenpuku・nirentan・nirenpuku の組番 → オッズ。null は発売なし）。締切までにさらに動くので参考値。精算は公式の払戻金で行う。取得前は空の配列',
       'card は番組表（公式テキストデータ B）の基礎数値で、前日の夕方から分かる値（nat_=全国、loc_=当地の勝率・2連率、motor_・boat_=モーター・ボートの番号と2連率、series=今節成績: 前日までの日ごとの着順、F=フライング・S=失格の記号、next_rno=同じ日にもう1レース出走する場合のそのレース番号で、null は1走だけ）。勝率 0 は実績なし。取り込み前は null。当日の欠場・選手交代は反映されないので、当日の出走表は entrants を見る',
       'record は競走成績（公式テキストデータ K）で、レース後に分かる値（rows=着順の並び: place は 1〜6 か記号 F=フライング・L=出遅れ・K=欠場・S=失格、tenji=展示タイム、course=進入コース、st=スタートタイミング、time=レースタイム。wind・wave_cm・weather・kimarite=決まり手。payouts の pop=人気順、combo の "*" は特払い、unsold=不成立の券種）。取り込み前は null。精算は公式の結果（result）で行う',
-      'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません（レース後の実際の進入とスタートタイミングは result.start: course=コース、boat=枠番、st=タイミング。F=フライング、L=出遅れ）。展示・直前情報・オッズなどは公式サイトで各自が確認してください',
+      'entrants は公式の出走表の選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部）。取り込み前は null。進入コースは枠番どおりとは限りません（レース後の実際の進入とスタートタイミングは result.start: course=コース、boat=枠番、st=タイミング。F=フライング、L=出遅れ）。最新のオッズ・直前情報は公式サイトでも確認できます',
     ].filter(Boolean).join('。'),
   });
 });

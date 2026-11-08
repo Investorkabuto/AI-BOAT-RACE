@@ -3,8 +3,10 @@ import { dueDispatches } from '../src/jobs/fetch-dispatch';
 
 const at = (iso: string) => Date.parse(iso);
 const none = new Set<string>();
-const due = (nowIso: string, done: Iterable<string> = none, extra: { lastResultsMs?: number; pendingResults?: number } = {}) =>
+const all = (nowIso: string, done: Iterable<string> = none, extra: { lastResultsMs?: number; pendingResults?: number } = {}) =>
   dueDispatches({ nowMs: at(nowIso), done: new Set(done), lastResultsMs: extra.lastResultsMs ?? 0, pendingResults: extra.pendingResults ?? 0 });
+// 直前情報とオッズ（live）は下の専用のテストで見る
+const due = (...a: Parameters<typeof all>) => all(...a).filter((d) => d.command !== 'live');
 
 // 当日朝の番組表（B）と、前日分の競走成績（K）の確認は済んでいるものとして、出走表（HTML）だけを見たいテスト用
 const CARDS_0700 = 'fetch:cards:2026-11-05:07:00';
@@ -87,5 +89,20 @@ describe('dueDispatches（競走成績 K の取得）', () => {
     expect(due('2026-11-06T00:10:00+09:00')).toEqual([]);
     const d = due('2026-11-06T06:32:00+09:00', ['fetch:results-all:2026-11-06']);
     expect(d).toEqual([{ key: 'fetch:records:2026-11-05:06:30', command: 'records', date: '2026-11-05' }]);
+  });
+});
+
+describe('直前情報とオッズ（live）の起動', () => {
+  const live = (nowIso: string, done: Iterable<string> = none) => all(nowIso, done).filter((d) => d.command === 'live');
+  it('7:50・12:55・17:55 に、終わる時刻を付けて1回ずつ起動する', () => {
+    expect(live('2026-11-09T07:45:00+09:00')).toEqual([]);
+    expect(live('2026-11-09T07:51:00+09:00')).toEqual([{ key: 'fetch:live:2026-11-09:07:50', command: 'live', until: '13:00' }]);
+    expect(live('2026-11-09T07:56:00+09:00', ['fetch:live:2026-11-09:07:50'])).toEqual([]);
+    expect(live('2026-11-09T12:56:00+09:00', ['fetch:live:2026-11-09:07:50'])).toEqual([{ key: 'fetch:live:2026-11-09:12:55', command: 'live', until: '18:00' }]);
+    expect(live('2026-11-09T17:56:00+09:00', ['fetch:live:2026-11-09:07:50', 'fetch:live:2026-11-09:12:55'])).toEqual([{ key: 'fetch:live:2026-11-09:17:55', command: 'live', until: '23:40' }]);
+  });
+  it('起動が遅れても、終わる時刻の10分前までは起動する。それを過ぎたら起動しない', () => {
+    expect(live('2026-11-09T12:45:00+09:00')).toMatchObject([{ until: '13:00' }]);
+    expect(live('2026-11-09T12:51:00+09:00')).toEqual([]);
   });
 });

@@ -13,6 +13,7 @@ import { boatsFromCard, boatsFromRecord, payoutsFromRecord } from '../db/boats';
 import { fetchDispatchError, RESULT_WANTED_SQL, resultWantedArgs } from '../jobs/fetch-dispatch';
 import { waiveFinesForCancelled } from '../jobs/settlement';
 import { markAggDirty } from '../jobs/aggregate';
+import { normalizeBeforeInfo, normalizeOdds, ODDS_SLOTS } from '../lib/live';
 
 export const internalApi = new Hono<{ Bindings: Env }>();
 
@@ -509,4 +510,56 @@ internalApi.post('/results', async (c) => {
   const waived = cancelled.length ? await waiveFinesForCancelled(c.env.DB, cancelled, Date.now()) : 0;
   if (rejected.length) console.log(`results rejected: ${JSON.stringify(rejected).slice(0, 1000)}`);
   return c.json({ upserted: accepted.length, starts: startsCount, fines_waived: waived, rejected });
+});
+
+/**
+ * 締切前の直前情報とオッズを取るレース（決定64）。その日の受付中のレースと締切（epoch 秒）。
+ * scripts/boatrace_live.py が5分ごとに読み、締切の15分前・10分前・7分前に公式サイトから取得する
+ */
+internalApi.get('/live-targets', async (c) => {
+  const date = c.req.query('date') ?? jstDate(Date.now());
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date must be YYYY-MM-DD');
+  const rows = (
+    await c.env.DB.prepare("SELECT id, deadline_ms FROM races WHERE race_date = ? AND status = 'scheduled' AND deadline_ms > ? ORDER BY deadline_ms")
+      .bind(date, Date.now())
+      .all<{ id: string; deadline_ms: number }>()
+  ).results;
+  return c.json({ date, races: rows.map((r) => ({ race_id: r.id, deadline_s: Math.floor(r.deadline_ms / 1000) })) });
+});
+
+/**
+ * 直前情報（kind: "beforeinfo"）とオッズ（kind: "odds"、slot: "t10" | "t7"）の取り込み（決定64）。同じレース・slot は上書きする。
+ * 締切を過ぎたレースの分は受け付けない（締切前の情報として公開するため）
+ */
+internalApi.put('/live', async (c) => {
+  const b = await readJson(c);
+  const id = typeof b.race_id === 'string' ? b.race_id : '';
+  const race = await c.env.DB.prepare('SELECT deadline_ms FROM races WHERE id = ?').bind(id).first<{ deadline_ms: number }>();
+  if (!race) throw new ApiError(404, 'not_found', `unknown race: ${id}`);
+  const now = Date.now();
+  if (now >= race.deadline_ms) return c.json({ stored: false, reason: 'after_deadline' });
+  const at = jstIso(now);
+  if (b.kind === 'beforeinfo') {
+    const data = normalizeBeforeInfo(b.data);
+    if (!data) throw new ApiError(400, 'bad_request', 'invalid beforeinfo');
+    await c.env.DB.prepare(
+      `INSERT INTO race_beforeinfo (race_id, fetched_at, data_json) VALUES (?, ?, ?)
+       ON CONFLICT (race_id) DO UPDATE SET fetched_at = excluded.fetched_at, data_json = excluded.data_json`,
+    ).bind(id, at, JSON.stringify(data)).run();
+    return c.json({ stored: true, kind: 'beforeinfo' });
+  }
+  if (b.kind === 'odds') {
+    const slot = b.slot;
+    if (typeof slot !== 'string' || !(slot in ODDS_SLOTS)) throw new ApiError(400, 'bad_request', `slot must be one of ${Object.keys(ODDS_SLOTS).join(', ')}`);
+    const raw = (b.data && typeof b.data === 'object' ? b.data : {}) as Record<string, unknown>;
+    const data = normalizeOdds(raw);
+    if (!data) throw new ApiError(400, 'bad_request', 'invalid odds');
+    const asOf = typeof raw.as_of === 'string' ? raw.as_of.slice(0, 20) : null;
+    await c.env.DB.prepare(
+      `INSERT INTO race_odds (race_id, slot, fetched_at, as_of, data_json) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (race_id, slot) DO UPDATE SET fetched_at = excluded.fetched_at, as_of = excluded.as_of, data_json = excluded.data_json`,
+    ).bind(id, slot, at, asOf, JSON.stringify(data)).run();
+    return c.json({ stored: true, kind: 'odds', slot, types: Object.keys(data) });
+  }
+  throw new ApiError(400, 'bad_request', 'kind must be beforeinfo or odds');
 });
