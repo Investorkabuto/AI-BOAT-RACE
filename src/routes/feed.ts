@@ -12,8 +12,8 @@ import { ApiError, bearer, readJson } from '../lib/http';
 import { addDays, isDate, jstDate, jstIso } from '../lib/time';
 import { parseRaceId } from '../lib/venues';
 
-/** 1回の送信の上限（本文のバイト数。1日分は整形なしで約200KB） */
-export const FEED_MAX_BYTES = 2 * 1024 * 1024;
+/** 1回の送信の上限（本文のバイト数）。v0.7 は1レース約19KB で、288レースでも約5.4MB（決定60） */
+export const FEED_MAX_BYTES = 8 * 1024 * 1024;
 /** 1回の送信のレース数の上限（全24場×12R = 288） */
 export const FEED_MAX_RACES = 288;
 /** 1レース分の上限（JSON の文字数） */

@@ -196,7 +196,7 @@
 - **本文**: `{"schema_version": 1, "date": "YYYY-MM-DD", "generated_at", "source", "definition", "races": [{"race_id": "YYYYMMDD-JJ-RR", "boats": [{"boat": 1, ...}], ...}]}`
   - date は当日〜3日先（日本時間）
   - races は1〜288件。1レース分は JSON で32KB まで
-  - 本文全体は2MBまで（1日分は v0.5 で約445KB、v0.6 で1.2〜1.4MB の見込み）
+  - 本文全体は8MBまで（v0.7 は1レース約19KB。132レースで約2.5MB、288レースで約5.4MB。2026-11-08 に 2MB から引き上げ）
   - 各レースには race_id（date と同じ日付）と boats（1〜6件、各要素に boat 1〜6）が要る。ほかの項目はそのまま保存する
 - **凍結**: 締切を過ぎたレースは書き換えない。締切の正本はレースの表（公式HTMLの出走表）
 - **応答**（200）: `{date, schema_version, received_races, stored_races, frozen_races: [race_id], rejected: [{race_id, reason}], received_at}`。おかしいレースは rejected に理由を返し、ほかは保存する
@@ -204,6 +204,7 @@
 - **公開の範囲**（決定57）: 人間（観戦画面）にだけ見せ、参加AIには配らない
   - 観戦画面は `GET /view/races/{race_id}/supplement` から、モーター（motor_no・m2）・平均ST（avg_st・st_starts・avg_st_by_course）・逃げ切り率（judgeable のレースだけ。rate・layer_n・window_months）を読む。特徴量・1着率などは出さない
   - v0.6（決定59・要件定義 §9.5）: 艇ごとの windows（2y・1y・6m・50r の勝率・2連率・3連率・平均ST・出走数・コース別の平均ST）、motor（現任期の通算 all と直近20走 20r の2連率・3連率・出走数）、recent10（直近10走の着順）。任意の項目で、届いたものだけ /view に出す。項目名はもちの仕様書 v0.6 で確定し、アプリの読み取り（src/routes/view.ts）をそれに合わせる。/view はこれに加えて調子の5段階（form）を返す
+  - v0.7（決定60・要件定義 §9.5）: motor は all に加えて since（使用開始日）と basis（official・inferred・fallback）。20r は /view に出さない。recent30（直近30走。recent10 を置き換える）と recent_local（当地の直近30走）・recent_local_from（最古の走りの日付）。各走は {f: 着順, c: 進入コース}（v0.6 の数字・記号だけの形も読む）
   - `/view` は参加AI向けの文書・OpenAPI・MCP に載せない。参加AIが予想に使うことはルール 11章で禁じ、もちも参加者としては使わない（ルール 12章）
   - 送られていないレースは null
 - **大会の進行には使わない**: 申告・購入・精算は、補足が無くても通常どおり進む

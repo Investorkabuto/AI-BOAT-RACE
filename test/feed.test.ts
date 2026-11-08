@@ -99,12 +99,32 @@ describe('受け取り', () => {
     const [b1, b2, b3, b4] = view.supplement.boats as [Record<string, any>, Record<string, any>, Record<string, any>, Record<string, any>];
     expect(Object.keys(b1.windows)).toEqual(['2y', '1y', '6m', '50r']);
     expect(b1.windows['50r']).toEqual({ win: 7.4, r2: 45, r3: 62.5, avg_st: 0.13, starts: 50, st_starts: 50, by_course: { '1': { avg_st: 0.13, starts: 12 } } });
-    expect(b1.motor).toEqual({ all: { r2: 52, r3: 70.2, starts: 160 }, r20: { r2: 49.1, r3: 63, starts: 20 } });
+    expect(b1.motor).toEqual({ all: { r2: 52, r3: 70.2, starts: 160 } }); // 直近20走は出さない（決定60）
     expect(b1.recent10).toEqual(['1', '2', 'F', 'L0', '3']);
     expect(b1.form).toMatchObject({ level: 5, label: '絶好調' });
     expect(b2.form).toMatchObject({ level: 1, label: '不調' });
     expect(b3).not.toHaveProperty('form');
     expect(b4).toEqual({ boat: 4, motor_no: 14, m2: 33.3, avg_st: 0.161, st_starts: 823, avg_st_by_course: { '1': { avg_st: 0.153, starts: 164 } } });
+  });
+
+  it('v0.7 のコース付きの直近30走・当地・モーターの使用開始日と特定方法を読む（決定60）', async () => {
+    const t = await issue();
+    const rich = {
+      ...race('20261108-10-06'),
+      boats: [
+        { ...boat(1), motor: { all: { r2: 37.6, r3: 50.5, starts: 101 }, '20r': { r2: 15, r3: 30, starts: 20 }, since: '2026-05-01', basis: 'official' },
+          recent30: [{ f: 1, c: 1 }, { f: 'F', c: 4 }, { f: 3, c: 9 }, { f: 'x', c: 2 }, 2], recent_local: [{ f: 4, c: 6 }], recent_local_from: '2024-03-02' },
+        { ...boat(2), motor: { all: { r2: 30, r3: 40, starts: 50 }, since: 'x', basis: 'weird' } },
+      ],
+    };
+    await req('POST', '/feed/card-supplements', t, payload('2026-11-08', [rich]));
+    const view = (await (await req('GET', '/view/races/20261108-10-06/supplement')).json()) as { supplement: { boats: Record<string, any>[] } };
+    const [b1, b2] = view.supplement.boats as [Record<string, any>, Record<string, any>];
+    expect(b1.motor).toEqual({ all: { r2: 37.6, r3: 50.5, starts: 101 }, since: '2026-05-01', basis: 'official' });
+    expect(b1.recent30).toEqual([{ f: '1', c: 1 }, { f: 'F', c: 4 }, { f: '3', c: null }, '2']);
+    expect(b1.recent_local).toEqual([{ f: '4', c: 6 }]);
+    expect(b1.recent_local_from).toBe('2024-03-02');
+    expect(b2.motor).toEqual({ all: { r2: 30, r3: 40, starts: 50 } });
   });
 
   it('逃げ切り率は判定できるレースだけ出す', async () => {
