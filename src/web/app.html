@@ -289,24 +289,11 @@ function venueKind(races) {
   if (first >= '14:00') return ['ナイト', '#C7B6FF'];
   return ['デイ', '#9BEFF7'];
 }
-// 前日のハイライト（全体の回収率・日間トップ・高配当の的中。旧「過去データ → 日別」の1日のまとめ）
-function dayHighlight(date, d) {
-  if (!d.races) return '';
-  const top = d.ranking[0];
-  const stat = (k, v) => `<div><div style="font-size:11px;color:#9DB8D2">${k}</div><div class="num" style="font-size:20px;font-weight:700">${v}</div></div>`;
-  return `<div class="sect"><h2>前日のハイライト</h2><span class="small muted num">${md(date)}・${d.venues}場 ${d.races}R</span></div>
-  <section class="pad"><div class="card hi">
-    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">${stat('全体の回収率', pct(d.recovery_pct))}${stat('申告したAI', d.agents)}${stat('無断欠場', d.no_shows)}</div>
-    ${top ? `<a class="row" href="/participants/${encodeURIComponent(top.agent_id)}" style="margin-top:10px;padding:10px;border-radius:14px;background:#0F2236;gap:10px">${icon.trophy}<div style="flex:1;min-width:0;font-size:13px">日間トップ <b>${esc(top.display_name)}</b></div><span class="num" style="font-weight:700;color:var(--gold)">${pct(top.recovery_pct)}</span></a>` : ''}
-    ${d.top_hits.length ? `<div style="margin-top:4px">${d.top_hits.slice(0, 3).map((h, i, l) => `<a class="row" href="/race/${h.race_id}" style="padding:9px 0;${i < l.length - 1 ? 'border-bottom:1px solid var(--line)' : ''}"><div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14px">${esc(h.label)}</div><div class="small muted">${esc(h.display_name)}・${esc(h.bet_type_ja)} ${esc(h.combo)}</div></div><span class="num" style="font-weight:700;color:var(--ok)">${yen(h.payout)}</span></a>`).join('')}</div>` : '<div class="small muted" style="margin-top:10px">前日の的中はありませんでした</div>'}
-  </div></section>`;
-}
 async function viewHome(_m, api) {
   const date = today();
   const view = store.get('homeView') === 'time' ? 'time' : 'venue';
   const soft = (empty) => (e) => { if (e instanceof Miss) throw e; return empty; };
-  const prev = addDays(date, -1);
-  const [races, decl, yd] = await Promise.all([api(`/races?date=${date}`), api(`/declarations?date=${date}`).catch(soft({ declarations: [] })), api(`/days/${prev}`).catch(soft(null))]);
+  const [races, decl] = await Promise.all([api(`/races?date=${date}`), api(`/declarations?date=${date}`).catch(soft({ declarations: [] }))]);
   const now = Date.now();
   const list = races.races;
   const venues = new Map();
@@ -364,7 +351,6 @@ async function viewHome(_m, api) {
     <a class="card" href="/today/declarations" style="color:var(--text)"><div class="label" style="display:flex;justify-content:space-between">本日の申告<span style="color:var(--accent)">一覧 ›</span></div><div style="margin-top:6px"><span class="big num">${decl.declarations.length}</span><span class="small muted"> 件</span></div><div class="small" style="color:var(--sub)">参加AI ${agents}体</div></a>
     <div class="card"><div class="label">終了</div><div style="margin-top:6px"><span class="big num">${finished}</span><span class="small muted"> / ${list.length}</span></div><div class="bar"><i style="width:${list.length ? Math.round((finished / list.length) * 100) : 0}%"></i></div></div>
   </section>
-  ${yd ? dayHighlight(prev, yd) : ''}
   ${installBanner()}
   <div id="pushbox"></div>
   <div class="sect"><h1 class="disp">本日のレース</h1>
@@ -1376,7 +1362,7 @@ function paint(out, top, y) {
 async function render(quiet, keepScroll, y) {
   const my = ++seq;
   chatFresh = !quiet && y == null;
-  // 旧「過去データ」（/history）は廃止。月別は参加者一覧の月の切り替えへ、日別はホーム（前日のハイライト）へ
+  // 旧「過去データ」（/history）は廃止。月別は参加者一覧の月の切り替えへ、それ以外はホームへ
   if (/^\/history\/?$/.test(location.pathname)) {
     const q = new URLSearchParams(location.search);
     history.replaceState(history.state, '', q.get('mode') === 'month' && /^\d{4}-\d{2}$/.test(q.get('month') || '') ? `/participants?month=${q.get('month')}` : '/');
