@@ -57,6 +57,9 @@ header.top{padding:calc(24px + env(safe-area-inset-top)) 20px 10px;display:flex;
 .seg{display:flex;padding:4px;border-radius:999px;background:var(--card)}
 .seg button{min-height:36px;padding:0 14px;border:0;border-radius:999px;background:transparent;color:var(--muted);font-weight:700;font-size:13px;cursor:pointer}
 .seg button[aria-pressed=true]{background:var(--accent);color:var(--bg)}
+.rbar{display:flex;align-items:center;gap:12px;background:var(--card);border-radius:20px;padding:10px 12px;margin:8px 16px 0}.rbar>div{display:flex;flex-direction:column;min-width:0}.rbar .k{font-size:11px;color:var(--muted);white-space:nowrap}.rbar .v{font-size:26px;font-weight:700;line-height:1.15}.rbar .dl{color:var(--accent)}.rbar .s{font-size:11px;color:var(--sub);white-space:nowrap}.rbar .s.near{color:var(--warn);font-weight:700}.rbar .sep{width:1px;align-self:stretch;background:var(--line);flex-shrink:0}.rbar .ng{flex:1}.rbar .seg{flex-direction:column;border-radius:14px;background:#0F1828;padding:3px;gap:3px;margin-left:auto}.rbar .seg button{border-radius:10px;min-height:32px}
+.rbar.mini{margin:6px 0 0;padding:6px 6px 6px 12px;border-radius:16px;gap:10px}.rbar.mini>div{flex-direction:row;align-items:baseline;gap:5px}.rbar.mini .v{font-size:19px}.rbar.mini .sep{align-self:center;height:22px}.rbar.mini .seg{flex-direction:row;border-radius:999px;gap:0}.rbar.mini .seg button{border-radius:999px;min-height:30px;padding:0 10px;font-size:12px}
+.rsticky{position:fixed;top:0;left:50%;transform:translate(-50%,-110%);width:100%;max-width:640px;box-sizing:border-box;z-index:30;background:var(--bg);box-shadow:0 8px 20px rgba(0,0,0,.45);padding:calc(6px + env(safe-area-inset-top)) 12px 10px;transition:transform .18s ease;visibility:hidden}.rsticky.on{transform:translate(-50%,0);visibility:visible}.rsticky .rh{display:flex;align-items:center;gap:6px}.rsticky .rh a{display:flex;width:36px;height:36px;align-items:center;justify-content:center;color:var(--text)}.rsticky .rh b{flex:1;font-size:15px}
 .seg-fill button{flex:1;white-space:nowrap}
 .list{display:flex;flex-direction:column;gap:10px}
 a.row,div.row{display:flex;align-items:center;gap:12px;color:var(--text)}
@@ -181,6 +184,13 @@ const sgnPct = (p) => (p == null ? '—' : (p > 0 ? '+' : '') + p.toFixed(1) + '
 const gainColor = (n) => (n > 0 ? 'var(--accent)' : n < 0 ? 'var(--warn)' : 'var(--sub)');
 const exhaustedTag = (acc) => (acc && acc.exhausted ? '<span class="tag" style="color:var(--warn)">資金枯渇</span>' : '');
 const hm = (iso) => (iso ? iso.slice(11, 16) : '');
+/** 締切までの残り（あと27分・あと1時間5分）。過ぎたら「締切」 */
+const leftText = (iso) => {
+  const ms = Date.parse(iso) - Date.now();
+  if (!(ms > 0)) return '締切';
+  const m = Math.ceil(ms / 60e3);
+  return m >= 60 ? `あと${Math.floor(m / 60)}時間${m % 60 ? `${m % 60}分` : ''}` : `あと${m}分`;
+};
 // 朝の申告の期限（買い目の確定・公開の時刻）。2026-11-09 の申告分から 8:15（決定58。src/lib/entries.ts の ENTRY_DEADLINES と合わせる）
 const declHm = (d) => (d >= '2026-11-09' ? '8:15' : '8:30');
 const jstNow = () => new Date(Date.now() + 9 * 3600e3);
@@ -461,9 +471,27 @@ async function viewRace(id, api) {
   const hasNew = [...supp.values()].some((b) => b.windows || b.motor || b.recent10);
   // 全体: 選手の基本情報（今までどおり）。詳細: モーターと平均ST（集計値。全体とコース別）
   const stView = store.get('stView') === 'detail' ? 'detail' : 'all';
-  const stSeg = (hasSt || hasMotor || nige || hasNew) && r.entrants && r.entrants.length ? `<div class="pad" style="margin:-2px 0 8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span></span><div class="seg" role="group" aria-label="出走表の表示"><button type="button" data-st="all" aria-pressed="${stView === 'all'}">全体</button><button type="button" data-st="detail" aria-pressed="${stView === 'detail'}">詳細</button></div></div>` : '';
+  // 締切・逃げ切り率・全体/詳細の切り替えを1行に（L1）。スクロールで見えなくなったら上に小さく固定する（L2）
+  const hasEnts = !!(r.entrants && r.entrants.length);
+  const segBtns = (hasSt || hasMotor || nige || hasNew) && hasEnts ? `<div class="seg" role="group" aria-label="出走表の表示"><button type="button" data-st="all" aria-pressed="${stView === 'all'}">全体</button><button type="button" data-st="detail" aria-pressed="${stView === 'detail'}">詳細</button></div>` : '';
+  const nigeOn = !!(nige && hasEnts);
+  const settledOrOff = !!(r.result && (r.result.status === 'official' || r.result.status === 'cancelled'));
+  const raceBar = (mini) => {
+    const parts = [];
+    if (!settledOrOff) {
+      const ms = Date.parse(r.deadline) - Date.now();
+      parts.push(`<div><span class="k">締切</span><b class="v dl num">${hm(r.deadline)}</b><span class="s num${ms > 0 && ms < 10 * 60e3 ? ' near' : ''}">${esc(leftText(r.deadline))}</span></div>`);
+    }
+    if (nigeOn) {
+      if (parts.length) parts.push('<i class="sep"></i>');
+      const sub = [nige.layer_n != null ? `${Number(nige.layer_n).toLocaleString()}R` : '', nige.window_months != null ? `${nige.window_months}か月` : ''].filter(Boolean).join('・');
+      parts.push(`<div class="ng"><span class="k">${mini ? '逃げ' : '1号艇 逃げ切り'}</span><b class="v num">${Math.round(nige.rate * 100)}%</b>${!mini && sub ? `<span class="s num" style="color:var(--muted)">${sub}</span>` : ''}</div>`);
+    } else parts.push('<span style="flex:1"></span>');
+    if (segBtns) parts.push(segBtns);
+    return parts.length > 1 || !settledOrOff ? `<div class="rbar${mini ? ' mini' : ''}"${mini ? '' : ' id="rbar"'}>${parts.join('')}</div>` : '';
+  };
   const entrantsHtml = `<div class="sect"><h2>出走表</h2><a class="small" href="${official}" target="_blank" rel="noopener">公式の出走表 ↗</a></div>
-  ${stSeg}<div class="pad" id="ents" data-st="${stView}">${nige && r.entrants && r.entrants.length ? `<div class="dt"><div class="card" style="margin-bottom:8px;display:flex;align-items:center;gap:12px">${boat(1, 30)}<div style="flex:1;min-width:0"><div class="small muted">1号艇の逃げ切り率</div><div class="small muted num" style="margin-top:2px">${[nige.layer_n != null ? `同じ条件 ${Number(nige.layer_n).toLocaleString()}レース` : '', nige.window_months != null ? `直近${nige.window_months}か月` : ''].filter(Boolean).join('・')}</div></div><b class="num" style="font-size:26px;color:var(--accent)">${Math.round(nige.rate * 100)}%</b></div></div>` : ''}${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
+  ${settledOrOff ? raceBar(false) : ''}<div class="pad" id="ents" data-st="${stView}" style="margin-top:8px">${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
     const pl = place.get(e.boat);
     const sc = courseOf.get(e.boat);
     const right = (refunded.has(e.boat) ? chip('返還', 'c-cancel') : pl ? `<span class="num" style="font-weight:700;font-size:15px;color:${pl === 1 ? 'var(--gold)' : pl <= 3 ? 'var(--text)' : 'var(--muted)'}">${pl}着</span>` : '')
@@ -489,7 +517,7 @@ async function viewRace(id, api) {
   } else if (res && res.status === 'cancelled') {
     resultHtml = `<div class="card" style="margin:8px 16px 0">このレースは中止・不成立になりました。舟券はすべて返還です。</div>`;
   } else {
-    resultHtml = `<div class="card" style="margin:8px 16px 0;display:flex;justify-content:space-between;align-items:center"><span class="label">締切</span><span class="num" style="font-size:28px;font-weight:700;color:var(--accent)">${hm(r.deadline)}</span></div>`;
+    resultHtml = raceBar(false);
   }
   // AIごとの申告と購入
   const by = new Map();
@@ -502,6 +530,7 @@ async function viewRace(id, api) {
   const cards = [...by.values()].map((a) => entryCard({ ...a, rationale: a.rationale || (a.bets[0] && a.bets[0].rationale) }, race, { head: 'ai', why: true })).join('');
   return { html: `
   ${backHeader(`/venue/${jcd}${dateQ(date)}`, `${md(date)}`, esc(r.label), `<span style="margin-right:8px">${chip(st, cls)}</span>`)}
+  <div class="rsticky" id="rsticky"><div class="rh"><a href="/venue/${jcd}${dateQ(date)}" aria-label="戻る">${icon.back}</a><b>${esc(r.label)}</b>${chip(st, cls)}</div>${raceBar(true)}</div>
   ${strip}
   ${resultHtml}
   ${entrantsHtml}
@@ -510,8 +539,15 @@ async function viewRace(id, api) {
     $view.querySelectorAll('[data-st]').forEach((b) => b.tagName === 'BUTTON' && b.addEventListener('click', () => {
       store.set('stView', b.dataset.st);
       $view.querySelector('#ents').dataset.st = b.dataset.st;
-      $view.querySelectorAll('button[data-st]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      $view.querySelectorAll('button[data-st]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.st === b.dataset.st)));
     }));
+    // 1行バーが画面の上に消えたら、小さな固定バーを出す
+    if (window.rbarObs) window.rbarObs.disconnect();
+    const bar = $view.querySelector('#rbar'), sticky = $view.querySelector('#rsticky');
+    if (bar && sticky && 'IntersectionObserver' in window) {
+      window.rbarObs = new IntersectionObserver(([en]) => sticky.classList.toggle('on', !en.isIntersecting && en.boundingClientRect.top < 0));
+      window.rbarObs.observe(bar);
+    }
     const st = $view.querySelector('.strip'), cur = st && st.querySelector('[aria-current]');
     if (cur) st.scrollLeft = cur.offsetLeft - st.offsetLeft - (st.clientWidth - cur.clientWidth) / 2;
     bindCopy();
