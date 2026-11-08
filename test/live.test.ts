@@ -56,7 +56,7 @@ describe('取り込み', () => {
 
   it('直前情報とオッズ（10分前・7分前）を保存し、GET /races/{race_id} で公開する', async () => {
     expect((await req('PUT', '/internal/live', { race_id: R, kind: 'beforeinfo', data: beforeinfo })).body.stored).toBe(true);
-    expect((await req('PUT', '/internal/live', { race_id: R, kind: 'odds', slot: 't10', data: odds })).body.types).toEqual(['sanrentan', 'sanrenpuku', 'nirentan', 'nirenpuku']);
+    expect((await req('PUT', '/internal/live', { race_id: R, kind: 'odds', slot: 't10', data: odds })).body.types).toEqual(['sanrentan']);
     vi.setSystemTime(new Date('2026-11-09T20:00:30+09:00'));
     await req('PUT', '/internal/live', { race_id: R, kind: 'odds', slot: 't7', data: odds });
     const race = await req('GET', `/races/${R}`, undefined, null);
@@ -65,7 +65,7 @@ describe('取り込み', () => {
     expect(race.body.odds.map((o: any) => [o.slot, o.minutes_before, o.as_of])).toEqual([['t10', 10, '20:00'], ['t7', 7, '20:00']]);
     expect(race.body.odds[0].sanrentan['1-2-3']).toBe(1.5);
     expect(race.body.odds[0].sanrentan['1-2-4']).toBeNull();
-    expect(Object.keys(race.body.odds[0].nirenpuku)).toHaveLength(15);
+    expect(race.body.odds[0].nirenpuku).toBeUndefined(); // 3連単だけ
   });
 
   it('締切を過ぎた分は保存しない。形の違うものは 400', async () => {
@@ -77,10 +77,11 @@ describe('取り込み', () => {
 });
 
 describe('オッズの正規化', () => {
-  it('組の数が合う券種だけ残し、組番を正規化する。人気順の上位は発売なしを除く', () => {
-    const o = normalizeOdds({ sanrenpuku: Object.fromEntries(Object.entries(odds.sanrenpuku).map(([k, v]) => [k.split('=').reverse().join('-'), v])), nirentan: { '1-2': 3 } });
-    expect(Object.keys(o!)).toEqual(['sanrenpuku']);
-    expect(o!.sanrenpuku!['1=2=3']).toBe(1.5);
+  it('3連単だけを、120組そろったときに残す。人気順の上位は発売なしを除く', () => {
+    const o = normalizeOdds({ sanrentan: Object.fromEntries(Object.entries(odds.sanrentan).map(([k, v]) => [k.replace(/-/g, ''), v])), sanrenpuku: odds.sanrenpuku });
+    expect(Object.keys(o!)).toEqual(['sanrentan']);
+    expect(o!.sanrentan!['1-2-3']).toBe(1.5);
+    expect(normalizeOdds({ sanrentan: { '1-2-3': 2 } })).toBeNull();
     expect(topOdds({ '1-2': 5, '2-1': null, '1-3': 2 }, 2)).toEqual([{ combo: '1-3', odds: 2 }, { combo: '1-2', odds: 5 }]);
   });
 });

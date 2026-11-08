@@ -6,8 +6,8 @@ export const ODDS_SLOTS = { t10: 10, t7: 7 } as const;
 export type OddsSlot = keyof typeof ODDS_SLOTS;
 /** 直前情報を取りはじめる時刻（締切の何分前か） */
 export const BEFOREINFO_MIN = 15;
-/** 取り込むオッズの券種と、組の数 */
-export const ODDS_TYPES: Partial<Record<BetType, number>> = { sanrentan: 120, sanrenpuku: 20, nirentan: 30, nirenpuku: 15 };
+/** 取り込むオッズの券種と、組の数（3連単だけ。2026-11-09 管理者決定。広げるときはここに足す） */
+export const ODDS_TYPES: Partial<Record<BetType, number>> = { sanrentan: 120 };
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const numOrNull = (v: unknown, lo: number, hi: number) => (isNum(v) && v >= lo && v <= hi ? v : null);

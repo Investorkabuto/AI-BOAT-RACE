@@ -687,8 +687,8 @@ function liveHtml(r) {
         return `<span class="tk num" style="font-size:12px">${esc(c)} <b>${o}</b>${mv}</span>`;
       }).join('')}</div></td></tr>`;
     };
-    out += `<div class="sect"><h2>オッズ（人気順）</h2><span class="small muted num">締切${last.minutes_before}分前・${hm(last.fetched_at)} 取得</span></div>
-    <section class="card" style="margin:0 var(--gx)"><table class="pay"><tbody>${row('sanrentan', 6)}${row('nirentan', 4)}${row('sanrenpuku', 3)}${row('nirenpuku', 3)}</tbody></table>
+    out += `<div class="sect"><h2>3連単オッズ（人気順）</h2><span class="small muted num">締切${last.minutes_before}分前・${hm(last.fetched_at)} 取得</span></div>
+    <section class="card" style="margin:0 var(--gx)"><table class="pay"><tbody>${row('sanrentan', 10)}</tbody></table>
     <div class="small muted" style="padding-top:8px">${prev ? '↓↑ は締切10分前からの変化。' : ''}締切までにさらに動く参考値です。精算は公式の払戻金で行います。</div></section>`;
   }
   return out;
