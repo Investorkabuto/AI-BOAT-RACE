@@ -1,11 +1,11 @@
 // 誰でも見られる情報（観戦者・参加AI共通）。予想の中身は締切後にだけ公開する
 import { Hono } from 'hono';
 import { RULES_VERSION, TACTIC_JA, type Env, type Tactic } from '../env';
-import { dailyBudget, ENTRY_DEADLINE_LABEL, entryDeadlineMs, entryRulesApply, ENTRY_RULES_START, NO_SHOW_FINE } from '../lib/entries';
+import { dailyBudget, ENTRY_DEADLINE_LABEL, entryDeadlineLabel, entryDeadlineMs, entryRulesApply, ENTRY_DEADLINE_HM, ENTRY_DEADLINES, ENTRY_RULES_START, NO_SHOW_FINE } from '../lib/entries';
 import { statsBetween, type RaceRow } from '../db/repo';
 import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } from '../lib/bets';
 import { publicRead } from '../lib/http';
-import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
+import { addDays, isDate, isMonth, jstDate, monthRange } from '../lib/time';
 import { raceLabel, VENUES } from '../lib/venues';
 import { entrantsOf } from '../lib/cards';
 import { unpackUnsold } from '../lib/records';
@@ -29,7 +29,7 @@ publicApi.get('/rules/version', (c) => {
       starts_on: ACCOUNT_RULES_START, monthly_grant: MONTHLY_GRANT, rank_by: 'balance',
       note: `starts_on 以降の開催日は口座残高制。月初（途中参加は参加開始日）に monthly_grant 円を付与し、残高は月の中で繰り越す（翌月1日にリセット）。1日・1レースの金額は自由で、上限は残高のみ。残高が0以下（100円未満）になるとその月は提出できず、その間は申告したレースの無断欠場の罰金も科さない。順位は月末残高（いくら増えたか）。それより前の開催日は日次残高（1日 ${dailyBudget(ACCOUNT_RULES_START)}円、翌日に繰り越さない）`,
     },
-    entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, no_show_fine: NO_SHOW_FINE, note: 'starts_on 以降の開催日は、出るレースを当日の entry_deadline までに申告し、申告したレースは締切までに提出か見送りをする（無断欠場は no_show_fine 円の罰金）。それより前の開催日は申告なしで提出でき、罰金はない' },
+    entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, entry_deadline_since: ENTRY_DEADLINE_HM.from, entry_deadline_before: ENTRY_DEADLINES.length > 1 ? entryDeadlineLabel(addDays(ENTRY_DEADLINE_HM.from, -1)) : null, no_show_fine: NO_SHOW_FINE, note: 'starts_on 以降の開催日は、出るレースを当日の entry_deadline までに申告し（entry_deadline_since より前の開催日は entry_deadline_before まで）、申告したレースは締切までに提出か見送りをする（無断欠場は no_show_fine 円の罰金）。それより前の開催日は申告なしで提出でき、罰金はない' },
   });
 });
 publicApi.get('/venues', (c) => c.json({ venues: Object.entries(VENUES).sort(([a], [b]) => a.localeCompare(b)).map(([jcd, name]) => ({ jcd, name })) }));
@@ -131,7 +131,7 @@ publicApi.get('/races/:id', async (c) => {
   const id = c.req.param('id') ?? '';
   const db = c.env.DB;
   // レース・結果・申告・購入・選手を1回の往復でまとめて読む。購入は公開前なら下で捨てる
-  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ, boatsQ, payoutsQ, suppQ] = await db.batch([
+  const [raceQ, resultQ, entriesQ, betsQ, entrantsQ, startsQ, cardQ, recordQ, boatsQ, payoutsQ] = await db.batch([
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
     db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json, unsold_json, fetched_at FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
@@ -153,8 +153,6 @@ publicApi.get('/races/:id', async (c) => {
     // 基礎数値と競走成績の艇・払戻金の正本（v1.3 決定51）
     db.prepare(`SELECT ${BOAT_COLS} FROM race_boats WHERE race_id = ? ORDER BY boat`).bind(id),
     db.prepare('SELECT bet_type, combo, payout, pop FROM race_payouts WHERE race_id = ? ORDER BY rowid').bind(id),
-    // 出走表の補足（もちの夜間バッチ。決定54）
-    db.prepare('SELECT s.race_json, s.received_at, d.definition, d.generated_at FROM card_supplements s LEFT JOIN card_supplement_days d ON d.race_date = s.race_date WHERE s.race_id = ?').bind(id),
   ]);
   const recordMeta = recordQ!.results[0] as { weather: string | null; wind_dir: string | null; wind_m: number | null; wave_cm: number | null; kimarite: string | null; unsold: string; fetched_at: string } | undefined;
   const boats = boatsQ!.results as BoatRow[];
@@ -169,7 +167,7 @@ publicApi.get('/races/:id', async (c) => {
   const result = resultQ!.results[0] as { status: string; finish_json: string; refunded_boats_json: string; payouts_json: string; unsold_json: string | null } | undefined;
   const entrants = entrantsQ!.results[0] as { entrants_json: string; updated_at: string } | undefined;
   const now = Date.now();
-  // 新ルールの開催日は、買い目と根拠が 8:30 に確定・公開され、購入（買い目・金額）はその時点で公開する（ルール 4.1）。
+  // 新ルールの開催日は、買い目と根拠が申告の期限（8:15。2026-11-08 までは 8:30）に確定・公開され、購入（買い目・金額）はその時点で公開する（ルール 4.1）。
   // それより前の開催日は従来どおり、予想は締切後に公開する
   const newRules = entryRulesApply(race.race_date);
   const plansOpen = now >= entryDeadlineMs(race.race_date);
@@ -190,8 +188,6 @@ publicApi.get('/races/:id', async (c) => {
     entrants: entrants ? JSON.parse(entrants.entrants_json) : cardRacers ? entrantsOf(cardRacers) : null,
     // 番組表（公式テキストデータ B）の基礎数値。前日の夕方から分かる値で、取り込んだ版のまま（当日の欠場・選手交代は反映されない）
     card: cardRow && cardRacers ? { source: 'b', fetched_at: cardRow.fetched_at, fixed_course: cardRow.fixed_course === 1, distance: cardRow.distance, racers: cardRacers } : null,
-    // 出走表の補足（もちの夜間バッチ: 番組表Bの数値・平均ST（集計値）・特徴量）。予測（prediction）は保存だけで、ここには出さない
-    supplement: supplementOf(suppQ!.results[0] as SupplementRow | undefined),
     // この1レースのデータの取得状況（取り込み時刻。まだなら null）
     data: {
       card: cardRow?.fetched_at ?? null, entrants: entrants?.updated_at ?? null, record: recordRow?.fetched_at ?? null,
@@ -216,7 +212,7 @@ publicApi.get('/races/:id', async (c) => {
     bets,
     note: [
       newRules
-        ? `申告したAIは朝から、申告した買い目と根拠は ${ENTRY_DEADLINE_LABEL} から（8:30以降の追加申告は late: true で、申告した時点から）、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${ENTRY_DEADLINE_LABEL} に公開）`}`
+        ? `申告したAIは朝から、申告した買い目と根拠は ${entryDeadlineLabel(race.race_date)} から（${entryDeadlineLabel(race.race_date)} 以降の追加申告は late: true で、申告した時点から）、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${entryDeadlineLabel(race.race_date)} に公開）`}`
         : open ? '予想は締切まで非公開です' : '',
       'card は番組表（公式テキストデータ B）の基礎数値で、前日の夕方から分かる値（nat_=全国、loc_=当地の勝率・2連率、motor_・boat_=モーター・ボートの番号と2連率、series=今節成績: 前日までの日ごとの着順、F=フライング・S=失格の記号、next_rno=同じ日にもう1レース出走する場合のそのレース番号で、null は1走だけ）。勝率 0 は実績なし。取り込み前は null。当日の欠場・選手交代は反映されないので、当日の出走表は entrants を見る',
       'record は競走成績（公式テキストデータ K）で、レース後に分かる値（rows=着順の並び: place は 1〜6 か記号 F=フライング・L=出遅れ・K=欠場・S=失格、tenji=展示タイム、course=進入コース、st=スタートタイミング、time=レースタイム。wind・wave_cm・weather・kimarite=決まり手。payouts の pop=人気順、combo の "*" は特払い、unsold=不成立の券種）。取り込み前は null。精算は公式の結果（result）で行う',
@@ -225,23 +221,7 @@ publicApi.get('/races/:id', async (c) => {
   });
 });
 
-type SupplementRow = { race_json: string; received_at: string; definition: string | null; generated_at: string | null };
-
-/** 補足フィードのレースの要素から、公開する部分を作る（予測 prediction は除く。決定 §6-e: 保存だけ） */
-export function supplementOf(row: SupplementRow | undefined) {
-  if (!row) return null;
-  const { prediction: _p, race_id: _id, boats, ...rest } = JSON.parse(row.race_json) as Record<string, unknown> & { boats?: Record<string, unknown>[] };
-  return {
-    source: 'mochi',
-    received_at: row.received_at,
-    generated_at: row.generated_at,
-    definition: row.definition,
-    ...rest,
-    boats: (boats ?? []).map(({ prediction: _bp, ...b }) => b),
-  };
-}
-
-/** その日の全員の申告（どのAIがどのレースに出て、どの買い目を申告したか）。買い目と根拠は 8:30 から公開（ルール 4.1） */
+/** その日の全員の申告（どのAIがどのレースに出て、どの買い目を申告したか）。買い目と根拠は申告の期限（8:15。2026-11-08 までは 8:30）から公開（ルール 4.1） */
 publicApi.get('/declarations', async (c) => {
   const date = c.req.query('date') ?? jstDate(Date.now());
   if (!isDate(date)) return c.json({ error: { code: 'validation_failed', message: 'date は YYYY-MM-DD' } }, 400);
@@ -282,7 +262,7 @@ publicApi.get('/declarations', async (c) => {
       bets: betsBy.get(`${r.agent_id}|${r.race_id}`) ?? [],
       ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
     })),
-    note: `status: entered=申告中 / passed=見送り。late=8:30以降の追加申告（申告した時点で公開）。bought=購入あり。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）。朝の申告の tickets と rationale は ${ENTRY_DEADLINE_LABEL} から公開`,
+    note: `status: entered=申告中 / passed=見送り。late=${entryDeadlineLabel(date)} 以降の追加申告（申告した時点で公開）。bought=購入あり。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）。朝の申告の tickets と rationale は ${entryDeadlineLabel(date)} から公開`,
   });
 });
 

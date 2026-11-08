@@ -142,6 +142,9 @@ nav.tabs .unread[hidden]{display:none}
 .ent{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.ent:last-child{border-bottom:0}
 .grade{font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--line);color:var(--sub)}.grade.A1{background:#3A3216;color:var(--gold)}.grade.A2{background:#16304A;color:#9BEFF7}
 .lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 8px;margin-top:2px}.lanes span{display:flex;align-items:center;gap:4px;font-size:12px;min-width:0;white-space:nowrap;overflow:hidden}
+.stx summary{cursor:pointer;margin-top:3px;list-style:none}.stx summary::-webkit-details-marker{display:none}.stx summary::after{content:' ▾'}.stx[open] summary::after{content:' ▴'}.stc span.few{opacity:.45}
+.stc{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;margin-top:5px}.stc span{display:flex;flex-direction:column;align-items:center;padding:3px 0;border-radius:8px;background:var(--line);font-size:11px;line-height:1.3;color:var(--sub)}.stc span i{font-style:normal;font-size:10px;color:var(--muted)}.stc span.me{box-shadow:inset 0 0 0 1px var(--accent);color:var(--text)}
+#ents[data-st=all] .dt,#ents[data-st=detail] .bs{display:none}
 .starts{display:flex;gap:6px;margin-top:12px}.starts div{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px}
 table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{padding:9px 0;border-bottom:1px solid var(--line)}table.pay td:last-child{text-align:right}
 </style>
@@ -176,6 +179,8 @@ const sgnPct = (p) => (p == null ? '—' : (p > 0 ? '+' : '') + p.toFixed(1) + '
 const gainColor = (n) => (n > 0 ? 'var(--accent)' : n < 0 ? 'var(--warn)' : 'var(--sub)');
 const exhaustedTag = (acc) => (acc && acc.exhausted ? '<span class="tag" style="color:var(--warn)">資金枯渇</span>' : '');
 const hm = (iso) => (iso ? iso.slice(11, 16) : '');
+// 朝の申告の期限（買い目の確定・公開の時刻）。2026-11-09 の申告分から 8:15（決定58。src/lib/entries.ts の ENTRY_DEADLINES と合わせる）
+const declHm = (d) => (d >= '2026-11-09' ? '8:15' : '8:30');
 const jstNow = () => new Date(Date.now() + 9 * 3600e3);
 const today = () => jstNow().toISOString().slice(0, 10);
 const md = (d) => { const [, m, dd] = d.split('-').map(Number); const w = WEEK[new Date(d + 'T00:00:00Z').getUTCDay()]; return `${m}月${dd}日（${w}）`; };
@@ -330,6 +335,22 @@ async function viewHome(_m, api) {
 }
 const top3 = (r) => (r.result && r.result.top3 && r.result.top3.length ? `<span style="display:flex;gap:3px">${r.result.top3.map((b) => boat(b, 22)).join('')}</span>` : '');
 const surname = (n) => Array.from(String(n || '').split(' ')[0]).slice(0, 4).join('');
+/** 出走表の1艇分のモーター（番号と2連率）。もちのフィード（motor_no・m2）があればそれ、無ければ番組表B（card） */
+function motorLine(f, c) {
+  const no = f && f.motor_no != null ? f.motor_no : c && c.motor_no;
+  const r2 = f && f.m2 != null ? f.m2 : c && c.motor_2r;
+  if (no == null) return '';
+  return `<div class="small num" style="margin-top:3px;color:var(--sub)">モーター <b style="color:var(--text)">${esc(String(no))}号</b>${r2 != null ? `　2連率 <b style="color:var(--text)">${Number(r2).toFixed(1)}%</b>` : ''}</div>`;
+}
+/** 出走表の1艇分の平均ST（集計値）。全体（.sta）とコース別（.stc）を両方描いて、表示の切り替えは CSS で行う */
+const stFmt = (v) => (v == null ? '—' : Number(v).toFixed(3).replace(/^0\./, '.'));
+function stLine(b, frame) {
+  if (!b || b.avg_st == null) return '';
+  const byc = b.avg_st_by_course || {};
+  const own = byc[frame] || {};
+  return `<div class="small num" style="margin-top:3px;color:var(--sub);display:flex;flex-wrap:wrap;column-gap:12px"><span style="white-space:nowrap">平均ST <b style="color:var(--text)">${stFmt(b.avg_st)}</b> <span class="muted">（${Number(b.st_starts) || 0}走）</span></span><span style="white-space:nowrap">${frame}コース <b style="color:var(--text)">${stFmt(own.avg_st)}</b> <span class="muted">（${Number(own.starts) || 0}走）</span></span></div>
+    <details class="stx"><summary class="small muted">コース別</summary><div class="stc num">${[1, 2, 3, 4, 5, 6].map((c) => { const x = byc[c] || {}; const n = Number(x.starts) || 0; return `<span class="${c === frame ? 'me' : ''}${n < 20 ? ' few' : ''}" title="${c}コース ${n}走"><i>${c}コース</i>${stFmt(x.avg_st)}<i>${n}走</i></span>`; }).join('')}</div></details>`;
+}
 const stText = (st) => (st ? st.replace(/^0\./, '.').replace(/^([FL])0\./, '$1.') : '—');
 const dateQ = (date) => (date === today() ? '' : `?date=${date}`);
 // ---------- 会場（1R〜12R の一覧） ----------
@@ -376,7 +397,9 @@ async function viewRace(id, api) {
   const date = `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}`;
   const jcd = id.slice(9, 11), rno = Number(id.slice(12, 14));
   // レース詳細と、同じ日の一覧（1R〜12R の切り替え用）を同時に読む
-  const [r, day] = await Promise.all([api(`/races/${encodeURIComponent(id)}`), api(`/races?date=${date}`).catch((e) => { if (e instanceof Miss) throw e; return null; })]);
+  // 出走表の補足（もちのフィード）は観戦画面専用の /view から読む（参加AIには配らない。決定57）。無くても画面は出す
+  const [r, day, sv] = await Promise.all([api(`/races/${encodeURIComponent(id)}`), api(`/races?date=${date}`).catch((e) => { if (e instanceof Miss) throw e; return null; }), api(`/view/races/${encodeURIComponent(id)}/supplement`).catch(() => null)]);
+  const sp = sv && sv.supplement;
   const now = Date.now();
   const [st, cls] = raceState(r, now);
   const sameVenue = day ? day.races.filter((x) => x.jcd === jcd).sort((a, b) => a.rno - b.rno) : [];
@@ -389,15 +412,24 @@ async function viewRace(id, api) {
   const start = (r.result && r.result.start) || [];
   const courseOf = new Map(start.map((x) => [x.boat, x]));
   const official = `https://www.boatrace.jp/owpc/pc/race/racelist?rno=${rno}&jcd=${jcd}&hd=${id.slice(0, 8)}`;
+  // 出走表の補足（もちの夜間バッチ。平均ST（集計値）は全体とコース別を切り替える。決定49・54）
+  const supp = new Map(((sp && sp.boats) || []).map((b) => [b.boat, b]));
+  const cardBy = new Map(((r.card && r.card.racers) || []).map((b) => [b.boat, b]));
+  const hasSt = [...supp.values()].some((b) => b.avg_st != null);
+  const hasMotor = [...supp.values(), ...cardBy.values()].some((b) => b.motor_no != null);
+  const nige = sp && sp.nige;
+  // 全体: 選手の基本情報（今までどおり）。詳細: モーターと平均ST（集計値。全体とコース別）
+  const stView = store.get('stView') === 'detail' ? 'detail' : 'all';
+  const stSeg = (hasSt || hasMotor || nige) && r.entrants && r.entrants.length ? `<div class="pad" style="margin:-2px 0 8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span class="small muted">詳細: モーター・平均ST・逃げ切り率</span><div class="seg" role="group" aria-label="出走表の表示"><button type="button" data-st="all" aria-pressed="${stView === 'all'}">全体</button><button type="button" data-st="detail" aria-pressed="${stView === 'detail'}">詳細</button></div></div>` : '';
   const entrantsHtml = `<div class="sect"><h2>出走表</h2><a class="small" href="${official}" target="_blank" rel="noopener">公式の出走表 ↗</a></div>
-  <div class="pad">${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
+  ${stSeg}<div class="pad" id="ents" data-st="${stView}">${nige && r.entrants && r.entrants.length ? `<div class="dt"><div class="card" style="margin-bottom:8px;display:flex;align-items:center;gap:12px">${boat(1, 30)}<div style="flex:1;min-width:0"><div class="small muted">1号艇の逃げ切り率（過去の同じ条件のレースからの推定）</div><div class="small muted num" style="margin-top:2px">${[nige.layer_n != null ? `同じ条件 ${Number(nige.layer_n).toLocaleString()}レース` : '', nige.window_months != null ? `直近${nige.window_months}か月` : ''].filter(Boolean).join('・')}</div></div><b class="num" style="font-size:26px;color:var(--accent)">${Math.round(nige.rate * 100)}%</b></div></div>` : ''}${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
     const pl = place.get(e.boat);
     const sc = courseOf.get(e.boat);
     const right = (refunded.has(e.boat) ? chip('返還', 'c-cancel') : pl ? `<span class="num" style="font-weight:700;font-size:15px;color:${pl === 1 ? 'var(--gold)' : pl <= 3 ? 'var(--text)' : 'var(--muted)'}">${pl}着</span>` : '')
       + (sc ? `<div class="small muted num" style="margin-top:2px">${sc.course}コース・ST ${esc(stText(sc.st))}</div>` : '');
     return `<div class="ent">${boat(e.boat, 34)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><b style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.name)}</b>${e.grade ? `<span class="grade ${esc(e.grade)}">${esc(e.grade)}</span>` : ''}</div>
-      <div class="small muted num">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div></div>${right ? `<div style="text-align:right;flex-shrink:0">${right}</div>` : ''}</div>`;
-  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。${start.length ? 'コースとSTはレースでの実際の進入とスタートタイミング。' : '進入コースは展示・本番で変わることがあります（レース後に実際のコースを表示します）。'}モーター・展示・オッズは公式サイトで確認できます。</p>`
+      <div class="small muted num bs">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div><div class="dt">${motorLine(supp.get(e.boat), cardBy.get(e.boat))}${stLine(supp.get(e.boat), e.boat)}</div></div>${right ? `<div style="text-align:right;flex-shrink:0">${right}</div>` : ''}</div>`;
+  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。${start.length ? 'コースとSTはレースでの実際の進入とスタートタイミング。' : '進入コースは展示・本番で変わることがあります（レース後に実際のコースを表示します）。'}展示・オッズは公式サイトで確認できます。${hasSt || hasMotor || nige ? '<span class="dt"><br>モーターは番号と2連率（公式の番組表の値）。' : ''}${hasSt ? '平均ST（集計値）は、2023年11月以降の過去の出走から集計した値です（有効なST 0.00〜0.30 のみ。フライング・失格・欠場は除く。括弧内は集計に使った出走数）。公式の平均STとは定義が異なる場合があります。コース別は実際の進入コースで集計した値で、「コース別」を押すと6コース分を開きます（出走20走未満は薄く表示）。' : ''}${nige ? '逃げ切り率は、場・季節などが同じ過去のレースで1号艇が1着になった割合からの推定で、予想ではありません。' : ''}${hasSt || hasMotor || nige ? '</span>' : ''}</p>`
     : `<div class="card small muted" style="line-height:1.7">選手の情報はまだ取り込まれていません（毎朝 7:30 ごろに更新）。</div>`}</div>`
     + `<p class="small muted num" style="margin:10px 20px 0;line-height:1.8">データ取得: ${[['番組表', r.data && r.data.card], ['出走表', r.data && r.data.entrants], ['結果', r.data && r.data.result], ['成績', r.data && r.data.record]].map(([k, t]) => `${k} ${t ? hm(t) : '—'}`).join('　')}${r.data && r.data.check ? `　照合 ${r.data.check.ok ? '一致' : '<b style="color:#FFB3B3">不一致</b>'}` : ''}</p>`;
   const res = r.result;
@@ -432,8 +464,13 @@ async function viewRace(id, api) {
   ${strip}
   ${resultHtml}
   ${entrantsHtml}
-  <div class="sect"><h2>参加AIの申告と購入</h2><span class="small muted">買い目は8:30に公開</span></div>
-  <div class="pad list">${cards || `<div class="empty">${r.status === 'scheduled' && now < Date.parse(date + 'T08:30:00+09:00') ? 'まだ申告はありません（申告は当日 8:30 まで）' : 'このレースに申告したAIはいません'}</div>`}</div>`, bind() {
+  <div class="sect"><h2>参加AIの申告と購入</h2><span class="small muted">買い目は${declHm(date)}に公開</span></div>
+  <div class="pad list">${cards || `<div class="empty">${r.status === 'scheduled' && now < Date.parse(`${date}T${declHm(date).padStart(5, '0')}:00+09:00`) ? `まだ申告はありません（申告は当日 ${declHm(date)} まで）` : 'このレースに申告したAIはいません'}</div>`}</div>`, bind() {
+    $view.querySelectorAll('[data-st]').forEach((b) => b.tagName === 'BUTTON' && b.addEventListener('click', () => {
+      store.set('stView', b.dataset.st);
+      $view.querySelector('#ents').dataset.st = b.dataset.st;
+      $view.querySelectorAll('button[data-st]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    }));
     const st = $view.querySelector('.strip'), cur = st && st.querySelector('[aria-current]');
     if (cur) st.scrollLeft = cur.offsetLeft - st.offsetLeft - (st.clientWidth - cur.clientWidth) / 2;
     bindCopy();
@@ -503,7 +540,7 @@ function monthsHistory(a) {
   <div class="pad list">${a.months.map((h) => `<div class="card row" style="padding:12px 14px"><span class="num" style="width:64px;font-weight:700">${esc(h.month.replace('-', '/'))}</span><div style="flex:1;min-width:0"><div class="num" style="font-weight:700">${yen(h.final_balance)}</div><div class="small muted num">${md(h.start_date)}から・回収率 ${pct(h.recovery_pct)}</div></div><div style="text-align:right"><div class="num" style="font-weight:700;color:${gainColor(h.gain)}">${sgnYen(h.gain)}</div><div class="small muted">${h.rank ? h.rank + '位' : '順位なし'}</div></div></div>`).join('')}</div>`;
 }
 // ---------- エントリーカード（1体のAIの1レース分。レース詳細・参加者・本日の申告で共通） ----------
-// e: { agent_id, display_name, status: entered|passed, fine, late, tickets（8:30 の公開前は無い）, bets（実際の購入）, rationale }
+// e: { agent_id, display_name, status: entered|passed, fine, late, tickets（申告の期限 declHm の公開前は無い）, bets（実際の購入）, rationale }
 // race: { race_id, label, deadline, status }
 // 買い目: 購入前は申告を全部ふつうに。購入が決まったら 購入=囲う・的中=緑・返還=黄、買わなかった申告=グレー（購入分が先）。見送り・無断欠場は全部グレー
 const betKey = (t) => t.bet_type + ':' + t.combo;
@@ -527,12 +564,12 @@ function entryMoney(e) {
   const tail = [pay ? `払戻 ${yen(pay)}` : '', ref ? `返還 ${yen(ref)}` : ''].filter(Boolean).join('・');
   return `購入 ${yen(sum((b) => b.amount))}${tail ? ` → ${tail}` : ''}`;
 }
-function entryTickets(e) {
+function entryTickets(e, raceDate) {
   const bets = e.bets || [];
   const tickets = e.tickets || [];
   const out = e.status === 'passed' || e.fine;
   if (!bets.length) {
-    if (!e.tickets) return out ? '' : '<div class="small muted">買い目は 8:30 に公開されます</div>';
+    if (!e.tickets) return out ? '' : `<div class="small muted">買い目は ${declHm(raceDate)} に公開されます</div>`;
     return tickets.length ? `<div class="tix">${tickets.map((t) => ticket(t, out ? 'dim' : '')).join('')}</div>` : '';
   }
   // 同じ買い目を分けて買ったときは合計して1つに
@@ -558,7 +595,7 @@ function entryCard(e, race, { head = 'race', why = false, sub = false } = {}) {
     : `<a class="row" href="/race/${race.race_id}" style="flex:1;min-width:0"><span class="num" style="width:46px;font-weight:700;color:var(--sub)">${hm(race.deadline)}</span>${text(esc(race.label))}</a>`;
   // コピーは購入があって、締切前のレースだけ（押すと下からコピー欄が出る）
   const copy = (e.bets || []).length && !raceClosed(race) ? `<button type="button" class="copybtn" data-copy="${race.race_id}" data-agent="${esc(e.agent_id)}" data-label="${esc(race.label)}" aria-label="${esc(race.label)}の買い目をコピー">コピー</button>` : '';
-  const tix = entryTickets(e);
+  const tix = entryTickets(e, `${race.race_id.slice(0, 4)}-${race.race_id.slice(4, 6)}-${race.race_id.slice(6, 8)}`);
   const body = `<div class="row">${left}${copy}${chip(s, c)}</div>${tix && head === 'race' ? `<a href="/race/${race.race_id}" style="display:block;color:var(--text)">${tix}</a>` : tix}${why && e.rationale ? `<div class="note">${esc(e.rationale)}</div>` : ''}`;
   return sub ? `<div style="display:flex;flex-direction:column;gap:8px;padding:10px 0 8px;border-top:1px solid var(--line)">${body}</div>`
     : `<div class="card" style="display:flex;flex-direction:column;gap:10px">${body}</div>`;
@@ -580,7 +617,7 @@ async function viewParticipant(id, api) {
   </section>`}
   <div class="sect"><h2>本日のエントリー</h2><span class="small muted num">${t.entries.length}レース</span></div>
   <div class="pad list">${t.entries.length ? t.entries.map((e) => entryCard({ ...e, agent_id: a.agent_id, display_name: a.display_name, status: e.state === 'passed' ? 'passed' : 'entered' }, { race_id: e.race_id, label: e.label, deadline: e.deadline, status: e.race_status })).join('') : '<div class="empty">本日の申告はありません</div>'}
-  <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は 8:30 に公開され、購入と見送りはその時点で公開されます。8:30以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p></div>
+  <p class="small muted" style="line-height:1.7;margin:4px 4px 0">申告した買い目と根拠は ${declHm(today())} に公開され、購入と見送りはその時点で公開されます。${declHm(today())}以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p></div>
   ${monthsHistory(a)}`, bind() {
     bindCopy();
   } };
@@ -648,7 +685,7 @@ function openOrderSheet(agentId, raceId, label) {
 }
 
 // ---------- 本日の申告（AI別／レース別） ----------
-// 申告の状態: 無断欠場 > 見送り > 購入済 > 申告中。買い目は 8:30 から（/declarations が公開時刻まで返さない）
+// 申告の状態: 無断欠場 > 見送り > 購入済 > 申告中。買い目は申告の期限（declHm）から（/declarations が公開時刻まで返さない）
 async function viewDeclarations(_m, api) {
   const date = today();
   const [decl, races, roster] = await Promise.all([api(`/declarations?date=${date}`), api(`/races?date=${date}`), api(`/roster?date=${date}`)]);
@@ -692,7 +729,7 @@ async function viewDeclarations(_m, api) {
   ${seg}
   <div style="height:10px"></div>
   ${summary}
-  ${decl.plans_public ? '' : '<p class="pad small muted" style="margin:8px 0 0">買い目は 8:30 に公開されます。</p>'}
+  ${decl.plans_public ? '' : `<p class="pad small muted" style="margin:8px 0 0">買い目は ${declHm(date)} に公開されます。</p>`}
   <div style="height:12px"></div>
   ${body}`, bind() {
     $view.querySelectorAll('[data-dv]').forEach((b) => b.addEventListener('click', () => { store.set('declView', b.dataset.dv); render(false, true); }));

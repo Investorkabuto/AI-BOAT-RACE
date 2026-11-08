@@ -227,7 +227,7 @@ watchApi.get('/roster/:id', async (c) => {
     all_time: { ...fmtStats(allTime), ...(careerTotals(history).get(id) ?? { months: 0, total_gain: 0, month_wins: 0 }) },
     daily,
     today: { tactic: tactic ? { tactic: tactic.tactic, tactic_ja: TACTIC_JA[tactic.tactic], chosen_by: tactic.chosen_by } : null, plans_public: plansOpen, entries },
-    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は 8:30 から公開。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）',
+    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は申告の期限（8:15。2026-11-08 までは 8:30）から公開。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）',
   });
 });
 
