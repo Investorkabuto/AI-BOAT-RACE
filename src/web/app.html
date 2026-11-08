@@ -123,7 +123,7 @@ nav.tabs .unread[hidden]{display:none}
 @media (prefers-reduced-motion:reduce){.sheet-bg,.sheet,.sheet-bg.closing,.sheet-bg.closing .sheet{animation-duration:1ms}}
 .acts{display:flex;gap:6px;flex-shrink:0}.pill{display:inline-flex;align-items:center;gap:5px;min-height:32px;padding:0 12px;border-radius:999px;border:1px solid #2A3A58;background:var(--card);color:var(--sub);font:inherit;font-size:13px;font-weight:700;white-space:nowrap;cursor:pointer;text-decoration:none}.pill.pri{background:#16304A;border-color:#2E5E7E;color:var(--accent)}a.pill:hover{color:var(--text)}
 .lv-sheet{max-height:88vh;padding-bottom:calc(16px + env(safe-area-inset-bottom))}.lv-body{overflow-y:auto;margin:0 -4px;padding:0 4px;-webkit-overflow-scrolling:touch}
-.lv-tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px}.lv-tabs button,.lv-first button{min-height:40px;border:0;border-radius:12px;background:#0F1828;color:var(--muted);font:inherit;font-weight:700;cursor:pointer}.lv-tabs button[aria-pressed=true]{background:#16304A;color:var(--accent)}.lv-sub{margin-bottom:8px}.lv-sub button{min-height:34px;font-size:13px}
+.lv-tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px}.lv-tabs button,.lv-first button{min-height:40px;border:0;border-radius:12px;background:#0F1828;color:var(--muted);font:inherit;font-weight:700;cursor:pointer}.lv-tabs button[aria-pressed=true]{background:#16304A;color:var(--accent)}.lv-h{font-weight:700;font-size:14px;margin:12px 4px 6px}
 .lv-bi{width:100%;border-collapse:collapse;font-size:13px}.lv-bi th,.lv-bi td{padding:8px 2px;border-bottom:1px solid var(--line);text-align:center}.lv-bi th{font-weight:400;color:var(--muted);font-size:11px}.lv-bi tr:last-child td{border-bottom:0}.lv-bi td.lv-l{text-align:left}
 .lv-best{color:var(--accent);font-weight:800}.lv-rk{font-size:10px;color:var(--muted);margin-left:2px;font-weight:400}.lv-part{display:inline-block;font-size:11px;padding:2px 6px;border-radius:6px;background:#3A2A12;color:var(--gold);margin:1px}
 .lv-st{display:grid;grid-template-columns:50px 24px 1fr 46px;align-items:center;gap:8px;padding:3px 0;white-space:nowrap}.lv-st b{text-align:right}.lv-bar{height:8px;border-radius:99px;background:var(--line);position:relative}.lv-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:var(--accent)}
@@ -671,7 +671,7 @@ async function viewRace(id, api) {
 // ---------- 直前情報とオッズ（ボトムシート。決定64） ----------
 // 直前情報は締切の15分前ごろに1回。3連単オッズは全レース30分前、申告・購入のあるレースは10分前と7分前も（2026-11-09 管理者決定）
 const extIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>';
-const liveState = { tab: 'before', view: 'pop', first: 1 };
+const liveState = { tab: 'before', first: 1 };
 // オッズの表記（公式と同じく、100倍未満は小数1桁、100倍以上は整数）
 const fmtOdds = (o) => (o >= 100 ? String(Math.round(o)) : o.toFixed(1));
 function beforeHtml(bi) {
@@ -700,11 +700,9 @@ function oddsHtml(odds) {
   const pop = new Map(rank.map(([c], i) => [c, i + 1]));
   const mv = (c) => { const p = prev && prev.sanrentan ? prev.sanrentan[c] : null, o = m[c]; return p != null && o != null && p !== o ? (o < p ? '<span class="lv-dn">↓</span>' : '<span class="lv-up">↑</span>') : ''; };
   const combo = (c) => `<span class="lv-combo">${c.split('-').map((x) => boat(Number(x), 22)).join('')}</span>`;
-  const head = `<div class="small muted num" style="margin:0 4px 8px">締切${last.minutes_before}分前（${hm(last.fetched_at)}）取得${prev ? `・↓↑ は${prev.minutes_before}分前からの変化` : ''}</div>
-    <div class="lv-tabs lv-sub"><button type="button" data-lv-view="pop" aria-pressed="${liveState.view === 'pop'}">人気上位10</button><button type="button" data-lv-view="mx" aria-pressed="${liveState.view === 'mx'}">1着別の表</button></div>`;
-  if (liveState.view === 'pop') {
-    return head + `<section class="card lv-list">${rank.slice(0, 10).map(([c, o], i) => `<div class="lv-row"><span class="lv-r num">${i + 1}</span>${combo(c)}<b class="num">${fmtOdds(o)}${mv(c)}</b>${prev && prev.sanrentan && prev.sanrentan[c] != null ? `<span class="lv-pv num">${prev.minutes_before}分前 ${fmtOdds(prev.sanrentan[c])}</span>` : '<span class="lv-pv"></span>'}</div>`).join('')}</section>`;
-  }
+  const head = `<div class="small muted num" style="margin:0 4px 8px">締切${last.minutes_before}分前（${hm(last.fetched_at)}）取得${prev ? `・↓↑ は${prev.minutes_before}分前からの変化` : ''}</div>`;
+  // 上段: 人気上位10組。下段: 1着別の表（2026-11-09 管理者決定。1画面にまとめる）
+  const top = `<div class="lv-h">人気上位10</div><section class="card lv-list">${rank.slice(0, 10).map(([c, o], i) => `<div class="lv-row"><span class="lv-r num">${i + 1}</span>${combo(c)}<b class="num">${fmtOdds(o)}${mv(c)}</b>${prev && prev.sanrentan && prev.sanrentan[c] != null ? `<span class="lv-pv num">${prev.minutes_before}分前 ${fmtOdds(prev.sanrentan[c])}</span>` : '<span class="lv-pv"></span>'}</div>`).join('')}</section>`;
   const f = liveState.first, others = [1, 2, 3, 4, 5, 6].filter((x) => x !== f);
   const sel = `<div class="lv-first">${[1, 2, 3, 4, 5, 6].map((x) => `<button type="button" data-lv-first="${x}" aria-pressed="${x === f}">${boat(x, 22)}</button>`).join('')}</div>`;
   const table = `<table class="lv-mx"><tr><th class="small">2着＼3着</th>${others.map((x) => `<th>${boat(x, 20)}</th>`).join('')}</tr>${others.map((s2) => `<tr><th>${boat(s2, 20)}</th>${others.map((t) => {
@@ -712,11 +710,13 @@ function oddsHtml(odds) {
     const c = `${f}-${s2}-${t}`, o = m[c];
     return `<td class="num${pop.get(c) <= 3 ? ' lv-g' : ''}">${o != null ? fmtOdds(o) : '—'}</td>`;
   }).join('')}</tr>`).join('')}</table>`;
-  return head + `<section class="card" style="padding:10px 12px"><div class="small muted" style="margin-bottom:6px">1着の艇を選ぶ</div>${sel}${table}<div class="small muted" style="padding-top:8px">金枠＝3番人気まで</div></section>`;
+  return head + top + `<div class="lv-h">1着別の表</div><section class="card" style="padding:10px 12px"><div class="small muted" style="margin-bottom:6px">1着の艇を選ぶ</div>${sel}${table}<div class="small muted" style="padding-top:8px">金枠＝3番人気まで</div></section>`;
 }
 function openLiveSheet(r) {
   const host = document.getElementById('sheet');
-  const draw = () => {
+  const draw = (keepScroll = false) => {
+    const old = host.querySelector('.lv-body');
+    const y = keepScroll && old ? old.scrollTop : 0;
     const body = liveState.tab === 'before' ? beforeHtml(r.beforeinfo) : oddsHtml(r.odds || []);
     host.innerHTML = `<div class="sheet-bg" id="sheetbg"><section class="sheet lv-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h2 id="sheet-title" class="disp" style="margin:0;font-size:20px">${esc(r.label)}</h2><button type="button" class="copybtn" id="lvClose" aria-label="閉じる">閉じる</button></div>
@@ -727,12 +727,12 @@ function openLiveSheet(r) {
     bg.querySelector('.sheet').style.animation = draw.again ? 'none' : '';
     bg.style.animation = draw.again ? 'none' : '';
     draw.again = true;
+    if (y) bg.querySelector('.lv-body').scrollTop = y;
     const close = () => { bg.classList.add('closing'); setTimeout(() => { if (host.contains(bg)) host.innerHTML = ''; }, 180); };
     document.getElementById('lvClose').addEventListener('click', close);
     bg.addEventListener('click', (e) => { if (e.target === bg) close(); });
     bg.querySelectorAll('[data-lv-tab]').forEach((b) => b.addEventListener('click', () => { liveState.tab = b.dataset.lvTab; draw(); }));
-    bg.querySelectorAll('[data-lv-view]').forEach((b) => b.addEventListener('click', () => { liveState.view = b.dataset.lvView; draw(); }));
-    bg.querySelectorAll('[data-lv-first]').forEach((b) => b.addEventListener('click', () => { liveState.first = Number(b.dataset.lvFirst); draw(); }));
+    bg.querySelectorAll('[data-lv-first]').forEach((b) => b.addEventListener('click', () => { liveState.first = Number(b.dataset.lvFirst); draw(true); }));
   };
   draw.again = false;
   draw();
