@@ -701,9 +701,9 @@ function oddsHtml(odds) {
   const mv = (c) => { const p = prev && prev.sanrentan ? prev.sanrentan[c] : null, o = m[c]; return p != null && o != null && p !== o ? (o < p ? '<span class="lv-dn">↓</span>' : '<span class="lv-up">↑</span>') : ''; };
   const combo = (c) => `<span class="lv-combo">${c.split('-').map((x) => boat(Number(x), 22)).join('')}</span>`;
   const head = `<div class="small muted num" style="margin:0 4px 8px">締切${last.minutes_before}分前（${hm(last.fetched_at)}）取得${prev ? `・↓↑ は${prev.minutes_before}分前からの変化` : ''}</div>
-    <div class="lv-tabs lv-sub"><button type="button" data-lv-view="pop" aria-pressed="${liveState.view === 'pop'}">人気順</button><button type="button" data-lv-view="mx" aria-pressed="${liveState.view === 'mx'}">1着別の表</button></div>`;
+    <div class="lv-tabs lv-sub"><button type="button" data-lv-view="pop" aria-pressed="${liveState.view === 'pop'}">人気上位10</button><button type="button" data-lv-view="mx" aria-pressed="${liveState.view === 'mx'}">1着別の表</button></div>`;
   if (liveState.view === 'pop') {
-    return head + `<section class="card lv-list">${rank.map(([c, o], i) => `<div class="lv-row"><span class="lv-r num">${i + 1}</span>${combo(c)}<b class="num">${fmtOdds(o)}${mv(c)}</b>${prev && prev.sanrentan && prev.sanrentan[c] != null ? `<span class="lv-pv num">${prev.minutes_before}分前 ${fmtOdds(prev.sanrentan[c])}</span>` : '<span class="lv-pv"></span>'}</div>`).join('')}</section>`;
+    return head + `<section class="card lv-list">${rank.slice(0, 10).map(([c, o], i) => `<div class="lv-row"><span class="lv-r num">${i + 1}</span>${combo(c)}<b class="num">${fmtOdds(o)}${mv(c)}</b>${prev && prev.sanrentan && prev.sanrentan[c] != null ? `<span class="lv-pv num">${prev.minutes_before}分前 ${fmtOdds(prev.sanrentan[c])}</span>` : '<span class="lv-pv"></span>'}</div>`).join('')}</section>`;
   }
   const f = liveState.first, others = [1, 2, 3, 4, 5, 6].filter((x) => x !== f);
   const sel = `<div class="lv-first">${[1, 2, 3, 4, 5, 6].map((x) => `<button type="button" data-lv-first="${x}" aria-pressed="${x === f}">${boat(x, 22)}</button>`).join('')}</div>`;
