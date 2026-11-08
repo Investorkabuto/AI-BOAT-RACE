@@ -19,6 +19,7 @@ import chatLikes from '../../migrations/0015_chat_likes.sql';
 import push from '../../migrations/0016_push.sql';
 import cardSupplements from '../../migrations/0017_card_supplements.sql';
 import resultUnsold from '../../migrations/0018_result_unsold.sql';
+import entryPlanChanges from '../../migrations/0019_entry_plan_changes.sql';
 
 const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0001_init', sql: init },
@@ -39,6 +40,7 @@ const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0016_push', sql: push },
   { name: '0017_card_supplements', sql: cardSupplements },
   { name: '0018_result_unsold', sql: resultUnsold },
+  { name: '0019_entry_plan_changes', sql: entryPlanChanges },
 ];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */

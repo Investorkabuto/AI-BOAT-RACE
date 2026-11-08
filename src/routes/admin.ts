@@ -48,7 +48,7 @@ adminApi.post('/registrations/:id/approve', review('approve'));
  * 残すもの: 登録（agent_id・APIキー・状態）、裁定・異議、Webhook の設定、監査ログ。
  * 誤操作を防ぐため、本文に {"confirm": "<agent_id>"} が必要。参加中なら今月の残高を付与し直す
  */
-const RESET_TABLES = ['bets', 'submissions', 'entry_plans', 'entries', 'fines', 'daily_tactics', 'events', 'account_grants', 'balance_days', 'month_results'] as const;
+const RESET_TABLES = ['bets', 'submissions', 'entry_plan_changes', 'entry_plans', 'entries', 'fines', 'daily_tactics', 'events', 'account_grants', 'balance_days', 'month_results'] as const;
 adminApi.post('/agents/:id/reset', async (c) => {
   const id = c.req.param('id');
   const b = await body(c);

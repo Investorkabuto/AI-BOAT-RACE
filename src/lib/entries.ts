@@ -1,6 +1,6 @@
 // 朝のエントリー申告・見送り・罰金（要件定義 v0.6 §8）の決まりごと。DB に依存しない部分だけを置く
 
-import { jstToMs } from './time';
+import { jstIso, jstToMs } from './time';
 import { BET_SPEC, BET_TYPE_JA, BET_TYPES, normalizeCombo, type BetType } from './bets';
 
 /**
@@ -66,6 +66,39 @@ export function entryDeadlineMs(raceDate: string): number {
   return jstToMs(raceDate, hm.hour, hm.minute);
 }
 
+/**
+ * 申告ルールの改定（決定62、2026-11-08 管理者決定）を適用する最初の開催日。この日から:
+ * - 注文（購入・取消）・見送り・申告の変更は、各レースの締切の ORDER_CUTOFF_MIN 分前まで
+ * - 朝の申告の買い目は任意（根拠は必須）。申告した買い目にかかわらず買える
+ * - 申告済みのレースの買い目と根拠は、締切の5分前まで何度でも変えられる（PUT /entries/{race_id}。変更の理由が必須）
+ * - 申告（買い目・根拠）とその変更は、申告・変更した時点で公開する（8:15 の一斉公開はやめる）
+ * 出るレースは従来どおり朝の申告の期限（8:15）で固定し、以後は追加申告と見送りだけ
+ */
+export const FLEX_RULES_START = '2026-11-09';
+/** 締切の何分前で注文・見送り・申告の変更を締め切るか */
+export const ORDER_CUTOFF_MIN = 5;
+
+/** その開催日に、申告ルールの改定（決定62）を適用するか */
+export function flexRulesApply(raceDate: string, start: string = FLEX_RULES_START): boolean {
+  return raceDate >= start;
+}
+
+/** そのレースの注文（購入・取消）・見送り・申告の変更の締切（epoch ms）。改定前の開催日はレースの締切そのもの */
+export function orderCutoffMs(race: { race_date: string; deadline_ms: number }): number {
+  return race.deadline_ms - (flexRulesApply(race.race_date) ? ORDER_CUTOFF_MIN * 60_000 : 0);
+}
+
+/** 注文の締切の表記（"締切の5分前（9:08）" など）。改定前は "締切（9:13）" */
+export function orderCutoffLabel(race: { race_date: string; deadline_ms: number }): string {
+  const hm = jstIso(orderCutoffMs(race)).slice(11, 16);
+  return flexRulesApply(race.race_date) ? `締切の${ORDER_CUTOFF_MIN}分前（${hm}）` : `締切（${hm}）`;
+}
+
+/** 申告の買い目と根拠を公開してよいか。改定後は申告した時点から、改定前は申告の期限から */
+export function plansPublic(raceDate: string, nowMs: number): boolean {
+  return flexRulesApply(raceDate) || nowMs >= entryDeadlineMs(raceDate);
+}
+
 /** 1レースに申告できる買い目の数の上限（1回の提出の上限と同じ） */
 export const MAX_PLAN_TICKETS = 60;
 
@@ -78,9 +111,10 @@ export interface PlanTicket {
  * 申告の買い目を検証して正規化する（券種と組番だけ。金額は含めない）。
  * 誤りは errors に積み、正しいものだけを返す
  */
-export function parsePlanTickets(raw: unknown, errors: string[], prefix: string): PlanTicket[] {
-  if (!Array.isArray(raw) || raw.length < 1 || raw.length > MAX_PLAN_TICKETS) {
-    errors.push(`${prefix}tickets は1〜${MAX_PLAN_TICKETS}件の配列（買い目1点ごとに {bet_type, combo}。金額は含めない）`);
+export function parsePlanTickets(raw: unknown, errors: string[], prefix: string, optional = false): PlanTicket[] {
+  if (optional && (raw === undefined || raw === null)) return [];
+  if (!Array.isArray(raw) || raw.length < (optional ? 0 : 1) || raw.length > MAX_PLAN_TICKETS) {
+    errors.push(`${prefix}tickets は${optional ? 0 : 1}〜${MAX_PLAN_TICKETS}件の配列（買い目1点ごとに {bet_type, combo}。金額は含めない）${optional ? '。省略してもよい' : ''}`);
     return [];
   }
   const out: PlanTicket[] = [];

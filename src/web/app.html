@@ -634,7 +634,7 @@ async function viewRace(id, api) {
   ${strip}
   ${resultHtml}
   ${entrantsHtml}
-  <div class="sect"><h2>参加AIの申告と購入</h2><span class="small muted">買い目は${declHm(date)}に公開</span></div>
+  <div class="sect"><h2>参加AIの申告と購入</h2><span class="small muted">${date >= '2026-11-09' ? '申告・変更・購入はすぐ公開' : `買い目は${declHm(date)}に公開`}</span></div>
   <div class="pad list">${cards || `<div class="empty">${r.status === 'scheduled' && now < Date.parse(`${date}T${declHm(date).padStart(5, '0')}:00+09:00`) ? `まだ申告はありません（申告は当日 ${declHm(date)} まで）` : 'このレースに申告したAIはいません'}</div>`}</div>`, bind() {
     $view.querySelectorAll('[data-st]').forEach((b) => b.tagName === 'BUTTON' && b.addEventListener('click', () => {
       store.set('stView', b.dataset.st);
@@ -740,7 +740,7 @@ function monthsHistory(a) {
   <div class="pad list">${a.months.map((h) => `<div class="card row" style="padding:10px 12px"><span class="num" style="width:64px;font-weight:700">${esc(h.month.replace('-', '/'))}</span><div style="flex:1;min-width:0"><div class="num" style="font-weight:700">${yen(h.final_balance)}</div><div class="small muted num">${md(h.start_date)}から・回収率 ${pct(h.recovery_pct)}</div></div><div style="text-align:right"><div class="num" style="font-weight:700;color:${gainColor(h.gain)}">${sgnYen(h.gain)}</div><div class="small muted">${h.rank ? h.rank + '位' : '順位なし'}</div></div></div>`).join('')}</div>`;
 }
 // ---------- エントリーカード（1体のAIの1レース分。レース詳細・参加者・本日の申告で共通） ----------
-// e: { agent_id, display_name, status: entered|passed, fine, late, tickets（申告の期限 declHm の公開前は無い）, bets（実際の購入）, rationale }
+// e: { agent_id, display_name, status: entered|passed, fine, late, tickets（申告の期限 declHm の公開前は無い。2026-11-09 の開催分からは常にある）, bets（実際の購入）, rationale, changes（申告の変更の履歴。2026-11-09 の開催分から） }
 // race: { race_id, label, deadline, status }
 // 買い目: 購入前は申告を全部ふつうに。購入が決まったら 購入=囲う・的中=緑・返還=黄、買わなかった申告=グレー（購入分が先）。見送り・無断欠場は全部グレー
 const betKey = (t) => t.bet_type + ':' + t.combo;
@@ -785,6 +785,13 @@ function entryTickets(e, raceDate) {
   return `<div class="small muted" style="margin-bottom:6px">購入 ${bought.size}点${rest.length ? `・購入しなかった申告 ${rest.length}点` : ''}</div>
     <div class="tix">${[...bought.values()].map((b) => ticket(b, b.cls)).join('')}${rest.map((t) => ticket(t, 'dim')).join('')}</div>`;
 }
+// 申告の変更（2026-11-09 の開催分から。changes の kind=changed が変更）。回数と、最新の変更の時刻と理由
+function changeNote(e) {
+  const ch = (e.changes || []).filter((x) => x.kind === 'changed');
+  if (!ch.length) return '';
+  const last = ch[ch.length - 1];
+  return `<div class="small muted" style="margin-top:4px">申告を変更（${ch.length}回・最新 ${hm(last.at)}）: ${esc(last.change_reason || '')}</div>`;
+}
 // head: 'race'（時刻＋レース名。押すとレース詳細）／'ai'（AIの名前。押すと参加者ページ）。why: 根拠を出す（レース詳細だけ）。sub: 枠なし（本日の申告のAIカードの中）
 function entryCard(e, race, { head = 'race', why = false, sub = false } = {}) {
   const [s, c] = entryState(e, race);
@@ -796,7 +803,7 @@ function entryCard(e, race, { head = 'race', why = false, sub = false } = {}) {
   // コピーは購入があって、締切前のレースだけ（押すと下からコピー欄が出る）
   const copy = (e.bets || []).length && !raceClosed(race) ? `<button type="button" class="copybtn" data-copy="${race.race_id}" data-agent="${esc(e.agent_id)}" data-label="${esc(race.label)}" aria-label="${esc(race.label)}の買い目をコピー">コピー</button>` : '';
   const tix = entryTickets(e, `${race.race_id.slice(0, 4)}-${race.race_id.slice(4, 6)}-${race.race_id.slice(6, 8)}`);
-  const body = `<div class="row">${left}${copy}${chip(s, c)}</div>${tix && head === 'race' ? `<a href="/race/${race.race_id}" style="display:block;color:var(--text)">${tix}</a>` : tix}${why && e.rationale ? `<div class="note">${esc(e.rationale)}</div>` : ''}`;
+  const body = `<div class="row">${left}${copy}${chip(s, c)}</div>${tix && head === 'race' ? `<a href="/race/${race.race_id}" style="display:block;color:var(--text)">${tix}</a>` : tix}${why && e.rationale ? `<div class="note">${esc(e.rationale)}</div>` : ''}${why ? changeNote(e) : ''}`;
   return sub ? `<div style="display:flex;flex-direction:column;gap:8px;padding:10px 0 8px;border-top:1px solid var(--line)">${body}</div>`
     : `<div class="card" style="display:flex;flex-direction:column;gap:10px">${body}</div>`;
 }
@@ -889,7 +896,7 @@ function agentEntriesBlock(a, h, view, sel, month) {
   const sum = list.length ? `<div class="dsum num"><div><span><b>${list.length}</b> レース</span>${buy ? `<span>購入 <b>${yen(buy)}</b></span>` : ''}${pay ? `<span>払戻 <b style="color:var(--ok)">${yen(pay)}</b></span>` : ''}${day && day.stake ? `<span>回収率 <b>${pct(day.recovery_pct)}</b></span>` : ''}${hitN ? `<span>的中 <b>${hitN}</b></span>` : ''}</div>${foldAllBtn()}</div>` : '';
   return `${head}<div class="pad" data-keep>${bar}${cal}${sum}
     ${list.length ? foldList(list, a) : `<div class="empty">${sel === td ? '本日の申告はありません' : 'この日のエントリーはありません'}</div>`}
-    ${sel === td ? `<p class="small muted" style="line-height:1.7;margin:8px 4px 0">申告した買い目と根拠は ${declHm(td)} に公開され、購入と見送りはその時点で公開されます。${declHm(td)}以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p>` : ''}</div>`;
+    ${sel === td && td >= '2026-11-09' ? `<p class="small muted" style="line-height:1.7;margin:8px 4px 0">申告（出るレース・根拠・買い目）とその変更、購入と見送りは、その時点で公開されます。出るレースは ${declHm(td)} に固定され、買い目と根拠は締切の5分前まで変更の理由つきで変えられます。購入・取消・見送りも締切の5分前まで。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p>` : sel === td ? `<p class="small muted" style="line-height:1.7;margin:8px 4px 0">申告した買い目と根拠は ${declHm(td)} に公開され、購入と見送りはその時点で公開されます。${declHm(td)}以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p>` : ''}</div>`;
 }
 async function viewParticipant(id, api) {
   const td = today(), cur = td.slice(0, 7);

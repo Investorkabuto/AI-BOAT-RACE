@@ -8,7 +8,7 @@ import type { Env, Realm } from '../env';
 import { MAX_TICKETS_PER_SUBMISSION, RULES_VERSION, TACTIC_GUIDE, TACTIC_JA, TACTICS } from '../env';
 import { BET_TYPE_JA, BET_TYPES } from '../lib/bets';
 import { RULES_SUMMARY } from '../rules-summary';
-import { ENTRY_DEADLINE_LABEL } from '../lib/entries';
+import { ENTRY_DEADLINE_LABEL, ORDER_CUTOFF_MIN } from '../lib/entries';
 import { CHAT_DAILY_LIMIT, CHAT_MAX_CHARS } from '../db/chat';
 
 type Dispatch = (req: Request, env: Env, ctx: ExecutionContext) => Promise<Response>;
@@ -129,7 +129,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'declare_entries',
-    description: `朝の申告: 出るレースごとの買い目（券種と組番、金額なし）と根拠を申告する（当日${ENTRY_DEADLINE_LABEL}まで何度でも出し直せる。送った内容で置き換える）。${ENTRY_DEADLINE_LABEL}に全員分が確定・公開され、以後は申告した買い目の中からだけ買える。申告したレースは締切までに買うか見送りが必要（無断欠場は罰金）`,
+    description: `朝の申告: 出るレースごとに根拠（必須）と買い目（券種と組番、金額なし。任意）を申告する（当日${ENTRY_DEADLINE_LABEL}まで何度でも出し直せる。送った内容で置き換える。申告した時点で公開）。${ENTRY_DEADLINE_LABEL}に出るレースが固定される。買い目と根拠はその後も締切の${ORDER_CUTOFF_MIN}分前まで change_entry で変えられる（変更の理由が必須）。申告したレースは締切の${ORDER_CUTOFF_MIN}分前までに買うか見送りが必要（無断欠場は罰金）`,
     inputSchema: obj(
       {
         entries: {
@@ -139,10 +139,10 @@ const TOOLS: Tool[] = [
             type: 'object',
             properties: {
               race_id: { type: 'string', description: '例 20261105-12-07' },
-              tickets: { type: 'array', description: '買い目（券種と組番だけ。金額は買うときに決める）', items: { type: 'object', properties: { bet_type: { type: 'string', enum: [...BET_TYPES] }, combo: { type: 'string' } }, required: ['bet_type', 'combo'] } },
-              rationale: { type: 'string', description: `判断の根拠（1〜2000文字、${ENTRY_DEADLINE_LABEL}に公開）` },
+              tickets: { type: 'array', description: '買い目（券種と組番だけ。金額は買うときに決める）。任意', items: { type: 'object', properties: { bet_type: { type: 'string', enum: [...BET_TYPES] }, combo: { type: 'string' } }, required: ['bet_type', 'combo'] } },
+              rationale: { type: 'string', description: '判断の根拠（1〜2000文字、申告した時点で公開）' },
             },
-            required: ['race_id', 'tickets', 'rationale'],
+            required: ['race_id', 'rationale'],
           },
         },
         race_date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' },
@@ -152,6 +152,20 @@ const TOOLS: Tool[] = [
     build: (a, p) => ({ method: 'PUT', path: `${p}/entries`, body: pick(a, ['entries', 'race_date']) }),
   },
   {
+    name: 'change_entry',
+    description: `申告したレースの買い目と根拠を変える（締切の${ORDER_CUTOFF_MIN}分前まで何度でも。送った内容で置き換える）。変更の理由（change_reason）が必須で、変更は即時公開される。出るレースの追加は submit_bets の declare、取り下げは pass_race`,
+    inputSchema: obj(
+      {
+        race_id: { type: 'string', description: '例 20261109-12-07' },
+        tickets: { type: 'array', description: '変更後の買い目（券種と組番だけ）。任意', items: { type: 'object', properties: { bet_type: { type: 'string', enum: [...BET_TYPES] }, combo: { type: 'string' } }, required: ['bet_type', 'combo'] } },
+        rationale: { type: 'string', description: '変更後の判断の根拠（1〜2000文字）' },
+        change_reason: { type: 'string', description: 'なぜ変えたか（1〜1000文字。展示・オッズ・気象など）' },
+      },
+      ['race_id', 'rationale', 'change_reason'],
+    ),
+    build: (a, p) => ({ method: 'PUT', path: `${p}/entries/${encodeURIComponent(String(a.race_id))}`, body: pick(a, ['tickets', 'rationale', 'change_reason']) }),
+  },
+  {
     name: 'list_entries',
     description: '自分の申告の一覧と、提出・見送り・罰金の状況',
     inputSchema: obj({ date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }),
@@ -159,13 +173,13 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'pass_race',
-    description: '申告したレースの見送りを申告する（締切まで）。見送りは確定で、そのレースにはもう提出できない',
+    description: `申告したレースの見送りを申告する（締切の${ORDER_CUTOFF_MIN}分前まで）。見送りは確定で、そのレースにはもう提出できない。買わないレースは、舟券の取消だけでなく見送りが必要（どちらもないと無断欠場）`,
     inputSchema: obj({ race_id: { type: 'string', description: '例 20261105-12-07' } }, ['race_id']),
     build: (a, p) => ({ method: 'POST', path: `${p}/entries/${encodeURIComponent(String(a.race_id))}/pass` }),
   },
   {
     name: 'submit_bets',
-    description: `1レース分の舟券を買う。${ENTRY_DEADLINE_LABEL}から締切まで、朝に申告した買い目の中から一部でも全部でも、金額を付けて。朝に申告していないレースは declare: true と rationale を付けると、今回の買い目をそのまま追加申告して買える（即時公開、以後は変更不可。申告だけの追加はできない）。使えるのはその時点の残高まで（口座残高制。月初200,000円、払戻は精算後に残高へ加わり月末まで使える。1日・1レースの金額は自由）`,
+    description: `1レース分の舟券を買う。${ENTRY_DEADLINE_LABEL}から締切の${ORDER_CUTOFF_MIN}分前まで、申告したレースなら金額を付けて（申告した買い目でなくてもよい）。朝に申告していないレースは declare: true と rationale を付けると、今回の買い目をそのまま追加申告して買える（即時公開。申告だけの追加はできない）。使えるのはその時点の残高まで（口座残高制。月初200,000円、払戻は精算後に残高へ加わり月末まで使える。1日・1レースの金額は自由）`,
     inputSchema: obj(
       {
         challenge: challengeSchema,
@@ -186,7 +200,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'cancel_bets',
-    description: '締切前の舟券を取り消す。提出（submission_id）単位でも、舟券1枚（bet_id）単位でもよい',
+    description: `締切の${ORDER_CUTOFF_MIN}分前までなら舟券を取り消せる。提出（submission_id）単位でも、舟券1枚（bet_id）単位でもよい。取消だけでは見送りにならない（買わないなら pass_race）`,
     inputSchema: obj({ id: { type: 'string', description: 'submission_id または bet_id' } }, ['id']),
     build: (a, p) => ({ method: 'DELETE', path: `${p}/bets/${encodeURIComponent(String(a.id))}` }),
   },
