@@ -41,7 +41,7 @@ publicApi.get('/races', async (c) => {
   if (!isDate(date)) return c.json({ error: { code: 'validation_failed', message: 'date は YYYY-MM-DD' } }, 400);
   // 1回の往復でまとめて読む（D1 への往復の回数が表示の速さを左右するため）
   const [races, counts, results, entrantRows] = await c.env.DB.batch([
-    c.env.DB.prepare('SELECT * FROM races WHERE race_date = ? ORDER BY deadline_ms, jcd').bind(date),
+    c.env.DB.prepare('SELECT r.*, c.series_title, c.day FROM races r LEFT JOIN race_cards c ON c.race_id = r.id WHERE r.race_date = ? ORDER BY r.deadline_ms, r.jcd').bind(date),
     c.env.DB.prepare("SELECT race_id, SUM(CASE WHEN status = 'entered' THEN 1 ELSE 0 END) AS entered, SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS passed FROM entries WHERE realm = 'live' AND race_date = ? GROUP BY race_id").bind(date),
     c.env.DB.prepare('SELECT x.race_id, x.status, x.finish_json, x.payouts_json FROM race_results x JOIN races r ON r.id = x.race_id WHERE r.race_date = ?').bind(date),
     c.env.DB.prepare('SELECT e.race_id, e.entrants_json FROM race_entrants e JOIN races r ON r.id = e.race_id WHERE r.race_date = ?').bind(date),
@@ -51,13 +51,13 @@ publicApi.get('/races', async (c) => {
   const result = new Map((results!.results as { race_id: string; status: string; finish_json: string; payouts_json: string }[]).map((x) => [x.race_id, x]));
   return c.json({
     race_date: date,
-    races: (races!.results as unknown as RaceRow[]).map((x) => ({
-      race_id: x.id, jcd: x.jcd, venue: VENUES[x.jcd], rno: x.rno, label: raceLabel(x.jcd, x.rno), race_name: x.race_name, deadline: x.deadline_at, status: x.status,
+    races: (races!.results as unknown as (RaceRow & { series_title: string | null; day: number | null })[]).map((x) => ({
+      race_id: x.id, jcd: x.jcd, venue: VENUES[x.jcd], rno: x.rno, label: raceLabel(x.jcd, x.rno), race_name: x.race_name, series_title: x.series_title ?? null, day: x.day ?? null, deadline: x.deadline_at, status: x.status,
       entries: { entered: count.get(x.id)?.entered ?? 0, passed: count.get(x.id)?.passed ?? 0 },
       result: resultSummary(result.get(x.id)),
       entrants: entrants.get(x.id) ?? null,
     })),
-    note: `締切は公式の締切予定時刻。サーバーの受信時刻で判定します。status: ${STATUS_NOTE}。result は公式結果の要約（top3=1〜3着の艇番、sanrentan=3連単の組番と100円あたりの払戻金）。entrants は選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部。取り込み前は null）。勝率・モーターなどの基礎数値は GET /races/{race_id} の card。展示・オッズなどは公式サイトで各自が確認してください`,
+    note: `締切は公式の締切予定時刻。サーバーの受信時刻で判定します。status: ${STATUS_NOTE}。race_name=レースの種別（予選・優勝戦など）、series_title=大会名（節の名前）、day=節の何日目か（いずれも番組表Bから。取り込み前は null）。result は公式結果の要約（top3=1〜3着の艇番、sanrentan=3連単の組番と100円あたりの払戻金）。entrants は選手の基本情報（boat=枠番、toban=登録番号、grade=級別、branch=支部。取り込み前は null）。勝率・モーターなどの基礎数値は GET /races/{race_id} の card。展示・オッズなどは公式サイトで各自が確認してください`,
   });
 });
 
@@ -148,7 +148,7 @@ publicApi.get('/races/:id', async (c) => {
     ).bind(id),
     db.prepare('SELECT entrants_json, updated_at FROM race_entrants WHERE race_id = ?').bind(id),
     db.prepare('SELECT starts_json FROM race_starts WHERE race_id = ?').bind(id),
-    db.prepare('SELECT fixed_course, distance, fetched_at FROM race_cards WHERE race_id = ?').bind(id),
+    db.prepare('SELECT fixed_course, distance, fetched_at, series_title, day FROM race_cards WHERE race_id = ?').bind(id),
     db.prepare('SELECT weather, wind_dir, wind_m, wave_cm, kimarite, unsold, fetched_at FROM race_records WHERE race_id = ?').bind(id),
     // 基礎数値と競走成績の艇・払戻金の正本（v1.3 決定51）
     db.prepare(`SELECT ${BOAT_COLS} FROM race_boats WHERE race_id = ? ORDER BY boat`).bind(id),
@@ -160,7 +160,7 @@ publicApi.get('/races/:id', async (c) => {
     ? { ...recordMeta, rows: recordRowsFromBoats(boats), payouts: payoutsFromRows(payoutsQ!.results as { bet_type: string; combo: string; payout: number; pop: number | null }[]) }
     : undefined;
   const starts = startsQ!.results[0] as { starts_json: string } | undefined;
-  const cardRow = cardQ!.results[0] as { fixed_course: number; distance: number | null; fetched_at: string } | undefined;
+  const cardRow = cardQ!.results[0] as { fixed_course: number; distance: number | null; fetched_at: string; series_title: string | null; day: number | null } | undefined;
   const cardRacers = cardRow ? racersFromBoats(boats) : null;
   const race = raceQ!.results[0] as RaceRow | undefined;
   if (!race) return c.json({ error: { code: 'not_found', message: 'race not found' } }, 404);
@@ -183,7 +183,7 @@ publicApi.get('/races/:id', async (c) => {
     }),
   );
   return c.json({
-    race_id: race.id, label: raceLabel(race.jcd, race.rno), race_name: race.race_name, deadline: race.deadline_at, status: race.status,
+    race_id: race.id, label: raceLabel(race.jcd, race.rno), race_name: race.race_name, series_title: cardRow?.series_title ?? null, day: cardRow?.day ?? null, deadline: race.deadline_at, status: race.status,
     // 選手の基本情報: 当日の出走表（公式HTML）があればそれ。まだ無い前日の夕方などは、番組表（Bファイル）のもの
     entrants: entrants ? JSON.parse(entrants.entrants_json) : cardRacers ? entrantsOf(cardRacers) : null,
     // 番組表（公式テキストデータ B）の基礎数値。前日の夕方から分かる値で、取り込んだ版のまま（当日の欠場・選手交代は反映されない）

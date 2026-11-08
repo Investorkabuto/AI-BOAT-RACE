@@ -32,6 +32,7 @@ interface RaceIn {
 /**
  * 出走表の取り込み（その日の場・レース・締切予定時刻）。何度送ってもよい。
  * 受付中（scheduled）のレースだけ締切を更新する。締切後のレースは変えない（公平のため）
+ * race_name（レースの種別）は番組表（Bファイル）のものを正とし、送られてこなければ今の値を残す（公式HTMLの出走表の取り込みは種別を送らない）
  */
 internalApi.put('/races', async (c) => {
   const b = await readJson(c);
@@ -47,7 +48,7 @@ internalApi.put('/races', async (c) => {
     stmts.push(
       c.env.DB.prepare(
         `INSERT INTO races (id, race_date, jcd, rno, race_name, deadline_at, deadline_ms, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)
-         ON CONFLICT (id) DO UPDATE SET race_name = excluded.race_name, deadline_at = excluded.deadline_at, deadline_ms = excluded.deadline_ms, updated_at = excluded.updated_at
+         ON CONFLICT (id) DO UPDATE SET race_name = IFNULL(excluded.race_name, races.race_name), deadline_at = excluded.deadline_at, deadline_ms = excluded.deadline_ms, updated_at = excluded.updated_at
          WHERE races.status = 'scheduled' AND races.deadline_ms > ?`,
       ).bind(raceId(date, r.jcd, r.rno), date, r.jcd, r.rno, typeof r.race_name === 'string' ? r.race_name.slice(0, 80) : null, jstIso(ms), ms, jstIso(now), now),
     );
@@ -121,8 +122,9 @@ internalApi.put('/cards', async (c) => {
     const { day, title } = seriesOf(r);
     stmts.push(
       db.prepare(
-        "INSERT INTO races (id, race_date, jcd, rno, race_name, deadline_at, deadline_ms, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?) ON CONFLICT (id) DO NOTHING",
-      ).bind(id, date, r.jcd, r.rno, typeof r.race_name === 'string' ? r.race_name.slice(0, 80) : null, jstIso(ms), ms, now),
+        `INSERT INTO races (id, race_date, jcd, rno, race_name, deadline_at, deadline_ms, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)
+         ON CONFLICT (id) DO UPDATE SET race_name = excluded.race_name WHERE excluded.race_name IS NOT NULL AND IFNULL(races.race_name, '') != excluded.race_name`,
+      ).bind(id, date, r.jcd, r.rno, typeof r.race_name === 'string' && r.race_name.trim() ? r.race_name.slice(0, 80) : null, jstIso(ms), ms, now),
       // 版が変わるなら、今の版を履歴に残す（保存できる条件は下の更新と同じ）
       db.prepare(
         `INSERT OR IGNORE INTO race_card_history (race_id, fetched_at, fixed_course, distance, rows)

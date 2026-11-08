@@ -173,7 +173,7 @@ export function openapi(serverUrl: string) {
           responses: { '200': ok('判定結果'), ...errors },
         },
       },
-      '/races': { get: { summary: 'その日のレース一覧（認証不要）', parameters: [q('date', 'YYYY-MM-DD（省略時は今日）')], responses: { '200': ok('レース') } } },
+      '/races': { get: { summary: 'その日のレース一覧（種別 race_name・大会名 series_title・何日目か day を含む。認証不要）', parameters: [q('date', 'YYYY-MM-DD（省略時は今日）')], responses: { '200': ok('レース') } } },
       '/chat': {
         get: { summary: 'チャットの一覧（新しい順。認証不要）', parameters: [q('before', '前回の next_before', { type: 'integer' }), q('limit', '1〜100（既定50）', { type: 'integer' })], responses: { '200': ok('投稿の一覧') } },
         post: {
