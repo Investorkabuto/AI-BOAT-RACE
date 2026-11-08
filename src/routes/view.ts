@@ -12,7 +12,7 @@ viewApi.use('*', publicRead());
 
 type Boat = {
   boat?: unknown; motor_no?: unknown; m2?: unknown; avg_st?: unknown; st_starts?: unknown; avg_st_by_course?: unknown;
-  windows?: unknown; motor?: unknown; recent10?: unknown;
+  windows?: unknown; motor?: unknown; recent10?: unknown; recent30?: unknown; recent_local?: unknown; recent_local_from?: unknown;
 };
 type Prediction = { pred_nige?: unknown; judgeable?: unknown; layer_n?: unknown; window_months?: unknown };
 
@@ -70,18 +70,29 @@ function windowsOf(v: unknown): Partial<Record<(typeof WINDOW_KEYS)[number], Win
   return Object.keys(out).length ? out : null;
 }
 
-/** モーター（決定59）: 現任期の通算（all）と直近20走（20r）の2連率・3連率と出走数。通算2連率の表示は番組表Bの公式の値を使う */
+/** モーター（決定59・60）: 入れ替え以降・前節終了までの通算（all）。使用開始日（since）と特定方法（basis: official・inferred・fallback）。直近20走（20r）は画面に出さない */
 function motorOf(v: unknown) {
   if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
   const part = (x: unknown) => (x && typeof x === 'object' ? { r2: pct((x as Record<string, unknown>).r2), r3: pct((x as Record<string, unknown>).r3), starts: num((x as Record<string, unknown>).starts) } : null);
-  const all = part((v as Record<string, unknown>).all), r20 = part((v as Record<string, unknown>)['20r']);
-  return all || r20 ? { all, r20 } : null;
+  const all = part(o.all);
+  if (!all) return null;
+  const since = typeof o.since === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(o.since) ? o.since : null;
+  const basis = o.basis === 'official' || o.basis === 'inferred' || o.basis === 'fallback' ? o.basis : null;
+  return { all, ...(since ? { since } : {}), ...(basis ? { basis } : {}) };
 }
 
-/** 直近10走の着順（新しい順）。数字はそのまま、F・L などの記号は文字で */
-function recentOf(v: unknown): string[] | null {
+/** 直近の着順（新しい順）。数字はそのまま、F・L などの記号は文字で。v0.7 は各走に進入コースが付く（{ f: 着順, c: コース }） */
+const placeOf = (x: unknown): string | null => (typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= 6 ? String(x) : typeof x === 'string' && /^[1-6]$|^[A-Z][0-9]?$/.test(x.trim()) ? x.trim() : null);
+function recentOf(v: unknown, max = 10): Array<string | { f: string; c: number | null }> | null {
   if (!Array.isArray(v)) return null;
-  const out = v.slice(0, 10).map((x) => (typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= 6 ? String(x) : typeof x === 'string' && /^[1-6]$|^[A-Z][0-9]?$/.test(x.trim()) ? x.trim() : null)).filter((x): x is string => x !== null);
+  const out = v.slice(0, max).map((x) => {
+    if (x && typeof x === 'object') {
+      const o = x as Record<string, unknown>, f = placeOf(o.f), c = num(o.c);
+      return f === null ? null : { f, c: c !== null && Number.isInteger(c) && c >= 1 && c <= 6 ? c : null };
+    }
+    return placeOf(x);
+  }).filter((x): x is string | { f: string; c: number | null } => x !== null);
   return out.length ? out : null;
 }
 
@@ -103,10 +114,13 @@ export function viewSupplement(raceJson: string) {
   return {
     boats: (r.boats ?? []).filter((b) => num(b.boat) !== null).map((b) => {
       const windows = windowsOf(b.windows), motor = motorOf(b.motor), recent10 = recentOf(b.recent10), form = formOf(windows);
+      const recent30 = recentOf(b.recent30, 30), recentLocal = recentOf(b.recent_local, 30);
+      const localFrom = typeof b.recent_local_from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.recent_local_from) ? b.recent_local_from : null;
       return {
         boat: num(b.boat), motor_no: num(b.motor_no), m2: num(b.m2), avg_st: num(b.avg_st), st_starts: num(b.st_starts), avg_st_by_course: byCourse(b.avg_st_by_course),
         // v0.6 の項目は届いたものだけ載せる（ST 系から順に届く）
         ...(windows ? { windows } : {}), ...(motor ? { motor } : {}), ...(recent10 ? { recent10 } : {}), ...(form ? { form } : {}),
+        ...(recent30 ? { recent30 } : {}), ...(recentLocal ? { recent_local: recentLocal, ...(localFrom ? { recent_local_from: localFrom } : {}) } : {}),
       };
     }),
     nige: nigeOf(r.prediction),
