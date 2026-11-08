@@ -142,9 +142,11 @@ nav.tabs .unread[hidden]{display:none}
 .ent{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.ent:last-child{border-bottom:0}
 .grade{font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--line);color:var(--sub)}.grade.A1{background:#3A3216;color:var(--gold)}.grade.A2{background:#16304A;color:#9BEFF7}
 .lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 8px;margin-top:2px}.lanes span{display:flex;align-items:center;gap:4px;font-size:12px;min-width:0;white-space:nowrap;overflow:hidden}
-.stx summary{cursor:pointer;margin-top:3px;list-style:none}.stx summary::-webkit-details-marker{display:none}.stx summary::after{content:' ▾'}.stx[open] summary::after{content:' ▴'}.stc span.few{opacity:.45}
-.stc{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;margin-top:5px}.stc span{display:flex;flex-direction:column;align-items:center;padding:3px 0;border-radius:8px;background:var(--line);font-size:11px;line-height:1.3;color:var(--sub)}.stc span i{font-style:normal;font-size:10px;color:var(--muted)}.stc span.me{box-shadow:inset 0 0 0 1px var(--accent);color:var(--text)}
-#ents[data-st=all] .dt,#ents[data-st=detail] .bs{display:none}
+#ents[data-st=all] .dt,#ents[data-st=detail] .bs{display:none}#ents[data-st=detail] .ent{align-items:flex-start}#ents[data-st=detail] .ent>.boat,#ents[data-st=detail] .ent>span:first-child{margin-top:2px}
+.fmr{display:flex;align-items:center;gap:10px;margin-top:8px}.r10{display:flex;gap:2px;flex:1;min-width:0}.r10 span{flex:1;height:20px;border-radius:4px;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;background:#0F1828;color:var(--dim)}.r10 .f1{background:var(--accent);color:var(--bg)}.r10 .f2{background:#2E8FA3;color:#fff}.r10 .f3{background:var(--track);color:var(--text)}.fm{display:inline-flex;align-items:center;gap:3px;font-size:14px;font-weight:700;white-space:nowrap}
+.dgr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:10px}.dfh{display:flex;justify-content:space-between;align-items:baseline;gap:4px;font-size:12px;color:var(--muted)}.dfh b{font-size:16px;color:var(--text)}.dbar{position:relative;height:10px;background:#0F1828;border-radius:5px;margin-top:3px}.dbar i{position:absolute;top:2px;height:6px;border-radius:3px}.dbar i.z{left:50%;top:-2px;width:2px;height:14px;background:var(--dim);border-radius:0}.dft{display:block;font-size:11px;text-align:center;margin-top:3px;color:var(--muted)}
+.dpn{background:#0F1828;border-radius:14px;padding:10px 12px;margin-top:10px}.dpn .dbar{background:var(--card)}.dpn .dgr{margin-top:8px}.dpn>.dfh{font-size:12px}
+.cst{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin-top:8px;align-items:end}.cst>div{display:flex;flex-direction:column;align-items:center;gap:3px;border-radius:8px;padding:4px 0 2px}.cst .me{background:var(--card2)}.cst .bars{display:flex;align-items:flex-end;gap:2px;height:56px}.cst .bars i{width:7px;border-radius:2px 2px 0 0}.cst .few{opacity:.3}.cst small{font-size:10px;color:var(--muted)}.clg{display:flex;gap:8px;font-size:10px;color:var(--muted)}.clg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px;vertical-align:-1px}
 .starts{display:flex;gap:6px;margin-top:12px}.starts div{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px}
 table.pay{width:100%;border-collapse:collapse;font-size:14px}table.pay td{padding:9px 0;border-bottom:1px solid var(--line)}table.pay td:last-child{text-align:right}
 </style>
@@ -335,21 +337,62 @@ async function viewHome(_m, api) {
 }
 const top3 = (r) => (r.result && r.result.top3 && r.result.top3.length ? `<span style="display:flex;gap:3px">${r.result.top3.map((b) => boat(b, 22)).join('')}</span>` : '');
 const surname = (n) => Array.from(String(n || '').split(' ')[0]).slice(0, 4).join('');
-/** 出走表の1艇分のモーター（番号と2連率）。もちのフィード（motor_no・m2）があればそれ、無ければ番組表B（card） */
-function motorLine(f, c) {
-  const no = f && f.motor_no != null ? f.motor_no : c && c.motor_no;
-  const r2 = f && f.m2 != null ? f.m2 : c && c.motor_2r;
-  if (no == null) return '';
-  return `<div class="small num" style="margin-top:3px;color:var(--sub)">モーター <b style="color:var(--text)">${esc(String(no))}号</b>${r2 != null ? `　2連率 <b style="color:var(--text)">${Number(r2).toFixed(1)}%</b>` : ''}</div>`;
-}
-/** 出走表の1艇分の平均ST（集計値）。全体（.sta）とコース別（.stc）を両方描いて、表示の切り替えは CSS で行う */
+/** 出走表の詳細（決定59）: 調子・直近10走・勝率と平均ST（直近50走と1年）・モーター・コース別ST。f はもちのフィード、c は番組表B */
 const stFmt = (v) => (v == null ? '—' : Number(v).toFixed(3).replace(/^0\./, '.'));
-function stLine(b, frame) {
-  if (!b || b.avg_st == null) return '';
-  const byc = b.avg_st_by_course || {};
-  const own = byc[frame] || {};
-  return `<div class="small num" style="margin-top:3px;color:var(--sub);display:flex;flex-wrap:wrap;column-gap:12px"><span style="white-space:nowrap">平均ST <b style="color:var(--text)">${stFmt(b.avg_st)}</b> <span class="muted">（${Number(b.st_starts) || 0}走）</span></span><span style="white-space:nowrap">${frame}コース <b style="color:var(--text)">${stFmt(own.avg_st)}</b> <span class="muted">（${Number(own.starts) || 0}走）</span></span></div>
-    <details class="stx"><summary class="small muted">コース別</summary><div class="stc num">${[1, 2, 3, 4, 5, 6].map((c) => { const x = byc[c] || {}; const n = Number(x.starts) || 0; return `<span class="${c === frame ? 'me' : ''}${n < 20 ? ' few' : ''}" title="${c}コース ${n}走"><i>${c}コース</i>${stFmt(x.avg_st)}<i>${n}走</i></span>`; }).join('')}</div></details>`;
+const pctF = (v) => (v == null ? '—' : `${Number(v).toFixed(1)}%`);
+const WIN4 = [['2y', '2年', '#2B4560'], ['1y', '1年', '#3B6F92'], ['6m', '半年', '#47A3C2'], ['50r', '50走', 'var(--accent)']];
+const FORM_STYLE = [null, [60, 'var(--warn)'], [30, 'var(--warn)'], [0, 'var(--sub)'], [-30, 'var(--ok)'], [-60, 'var(--ok)']];
+function formMark(fm) {
+  const [rot, col] = FORM_STYLE[fm.level] || FORM_STYLE[3];
+  return `<span class="fm" style="color:${col}"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path transform="rotate(${rot} 12 12)" d="M4 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>${esc(fm.label)}</span>`;
+}
+/** 差のバー。d が正なら右に緑、負なら左に橙（max で振り切る） */
+function diffTile(label, big, ref, d, max) {
+  const has = d != null && Number.isFinite(d);
+  const col = !has || Math.abs(d) < max * 0.08 ? 'var(--muted)' : d > 0 ? 'var(--ok)' : 'var(--warn)';
+  const bar = has ? `<i style="${d >= 0 ? 'left' : 'right'}:50%;width:${Math.min(50, (Math.abs(d) / max) * 50)}%;background:${col}"></i>` : '';
+  return `<div><div class="dfh"><span>${label}</span><b class="num">${big}</b></div>${has ? `<div class="dbar"><i class="z"></i>${bar}</div>` : ''}${ref ? `<span class="dft num" style="color:${has ? col : 'var(--muted)'};text-align:${has ? 'center' : 'right'}">${ref}</span>` : ''}</div>`;
+}
+function courseBars(f, frame) {
+  const w = f.windows || {};
+  const anyWin = WIN4.some(([k]) => w[k] && Object.keys(w[k].by_course || {}).length);
+  const one = f.avg_st_by_course || {};
+  if (!anyWin && !Object.keys(one).length) return '';
+  const h = (v) => Math.max(4, Math.round(((0.24 - v) / 0.14) * 56)); // 高さ = 速さ（ST が小さいほど高い）
+  const cols = [1, 2, 3, 4, 5, 6].map((c) => {
+    const bars = anyWin
+      ? WIN4.map(([k, , color]) => { const x = w[k] && w[k].by_course && w[k].by_course[c]; return x && x.avg_st != null ? `<i class="${x.starts < 5 ? 'few' : ''}" style="height:${h(x.avg_st)}px;background:${color}"></i>` : '<i style="height:0"></i>'; }).join('')
+      : (() => { const x = one[c]; return x && x.avg_st != null ? `<i class="${x.starts < 20 ? 'few' : ''}" style="height:${h(x.avg_st)}px;width:14px;background:var(--accent)"></i>` : ''; })();
+    const last = anyWin ? ['50r', '6m', '1y', '2y'].map((k) => w[k] && w[k].by_course && w[k].by_course[c]).find((x) => x && x.avg_st != null) : one[c];
+    return `<div class="${c === frame ? 'me' : ''}"><span class="bars">${bars}</span><b class="num" style="font-size:11px">${last ? stFmt(last.avg_st) : '—'}</b><small class="num">${c}コース</small></div>`;
+  }).join('');
+  const legend = anyWin ? `<span class="clg num">${WIN4.map(([, l, color]) => `<span><i style="background:${color}"></i>${l}</span>`).join('')}</span>` : '';
+  return `<div class="dpn"><div class="dfh"><span>コース別ST</span>${legend}</div><div class="cst">${cols}</div></div>`;
+}
+function detailBlock(f, c, frame) {
+  f = f || {};
+  const out = [];
+  // 調子と直近10走
+  if (f.form || f.recent10) out.push(`<div class="fmr">${f.recent10 ? `<span class="r10 num">${f.recent10.map((p) => `<span class="${/^[123]$/.test(p) ? `f${p}` : ''}">${esc(p)}</span>`).join('')}</span>` : '<span style="flex:1"></span>'}${f.form ? formMark(f.form) : ''}</div>`);
+  // 勝率と平均ST: 大きい数字は直近50走、比べる相手は直近1年
+  const w = f.windows || {}, a = w['1y'], b = w['50r'];
+  const tiles = [];
+  if (b && b.win != null) tiles.push(diffTile('勝率', b.win.toFixed(2), a && a.win != null ? `1年 ${a.win.toFixed(2)}` : '', a && a.win != null ? b.win - a.win : null, 0.6));
+  if (b && b.avg_st != null) tiles.push(diffTile('平均ST', stFmt(b.avg_st), a && a.avg_st != null ? `1年 ${stFmt(a.avg_st)}` : '', a && a.avg_st != null ? a.avg_st - b.avg_st : null, 0.025));
+  else if (f.avg_st != null) tiles.push(diffTile('平均ST', stFmt(f.avg_st), f.st_starts != null ? `${Number(f.st_starts)}走` : '', null, 1));
+  if (tiles.length) out.push(`<div class="dgr">${tiles.join('')}</div>`);
+  // モーター: 通算2連率は番組表Bの公式の値。3連率と直近20走はもちの集計
+  const no = f.motor_no != null ? f.motor_no : c && c.motor_no;
+  const off2 = c && c.motor_2r != null ? c.motor_2r : f.m2;
+  const m = f.motor || {}, r20 = m.r20, all = m.all;
+  if (no != null) {
+    const t2 = r20 && r20.r2 != null ? diffTile('2連率', pctF(r20.r2), off2 != null ? `通算 ${pctF(off2)}` : '', off2 != null ? r20.r2 - off2 : null, 15) : diffTile('2連率', pctF(off2), '', null, 1);
+    const all3 = all && all.r3 != null ? all.r3 : null;
+    const t3 = r20 && r20.r3 != null ? diffTile('3連率', pctF(r20.r3), all3 != null ? `通算 ${pctF(all3)}` : '', all3 != null ? r20.r3 - all3 : null, 15) : all3 != null ? diffTile('3連率', pctF(all3), '', null, 1) : '';
+    out.push(`<div class="dpn"><div class="dfh"><span>モーター <b class="num" style="font-size:15px">${esc(String(no))}</b>号</span></div><div class="dgr">${t2}${t3}</div></div>`);
+  }
+  out.push(courseBars(f, frame));
+  return out.join('');
 }
 const stText = (st) => (st ? st.replace(/^0\./, '.').replace(/^([FL])0\./, '$1.') : '—');
 const dateQ = (date) => (date === today() ? '' : `?date=${date}`);
@@ -418,18 +461,19 @@ async function viewRace(id, api) {
   const hasSt = [...supp.values()].some((b) => b.avg_st != null);
   const hasMotor = [...supp.values(), ...cardBy.values()].some((b) => b.motor_no != null);
   const nige = sp && sp.nige;
+  const hasNew = [...supp.values()].some((b) => b.windows || b.motor || b.recent10);
   // 全体: 選手の基本情報（今までどおり）。詳細: モーターと平均ST（集計値。全体とコース別）
   const stView = store.get('stView') === 'detail' ? 'detail' : 'all';
-  const stSeg = (hasSt || hasMotor || nige) && r.entrants && r.entrants.length ? `<div class="pad" style="margin:-2px 0 8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span class="small muted">詳細: モーター・平均ST・逃げ切り率</span><div class="seg" role="group" aria-label="出走表の表示"><button type="button" data-st="all" aria-pressed="${stView === 'all'}">全体</button><button type="button" data-st="detail" aria-pressed="${stView === 'detail'}">詳細</button></div></div>` : '';
+  const stSeg = (hasSt || hasMotor || nige || hasNew) && r.entrants && r.entrants.length ? `<div class="pad" style="margin:-2px 0 8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span></span><div class="seg" role="group" aria-label="出走表の表示"><button type="button" data-st="all" aria-pressed="${stView === 'all'}">全体</button><button type="button" data-st="detail" aria-pressed="${stView === 'detail'}">詳細</button></div></div>` : '';
   const entrantsHtml = `<div class="sect"><h2>出走表</h2><a class="small" href="${official}" target="_blank" rel="noopener">公式の出走表 ↗</a></div>
-  ${stSeg}<div class="pad" id="ents" data-st="${stView}">${nige && r.entrants && r.entrants.length ? `<div class="dt"><div class="card" style="margin-bottom:8px;display:flex;align-items:center;gap:12px">${boat(1, 30)}<div style="flex:1;min-width:0"><div class="small muted">1号艇の逃げ切り率（過去の同じ条件のレースからの推定）</div><div class="small muted num" style="margin-top:2px">${[nige.layer_n != null ? `同じ条件 ${Number(nige.layer_n).toLocaleString()}レース` : '', nige.window_months != null ? `直近${nige.window_months}か月` : ''].filter(Boolean).join('・')}</div></div><b class="num" style="font-size:26px;color:var(--accent)">${Math.round(nige.rate * 100)}%</b></div></div>` : ''}${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
+  ${stSeg}<div class="pad" id="ents" data-st="${stView}">${nige && r.entrants && r.entrants.length ? `<div class="dt"><div class="card" style="margin-bottom:8px;display:flex;align-items:center;gap:12px">${boat(1, 30)}<div style="flex:1;min-width:0"><div class="small muted">1号艇の逃げ切り率</div><div class="small muted num" style="margin-top:2px">${[nige.layer_n != null ? `同じ条件 ${Number(nige.layer_n).toLocaleString()}レース` : '', nige.window_months != null ? `直近${nige.window_months}か月` : ''].filter(Boolean).join('・')}</div></div><b class="num" style="font-size:26px;color:var(--accent)">${Math.round(nige.rate * 100)}%</b></div></div>` : ''}${r.entrants && r.entrants.length ? `<section class="card" style="padding:4px 16px">${r.entrants.map((e) => {
     const pl = place.get(e.boat);
     const sc = courseOf.get(e.boat);
     const right = (refunded.has(e.boat) ? chip('返還', 'c-cancel') : pl ? `<span class="num" style="font-weight:700;font-size:15px;color:${pl === 1 ? 'var(--gold)' : pl <= 3 ? 'var(--text)' : 'var(--muted)'}">${pl}着</span>` : '')
       + (sc ? `<div class="small muted num" style="margin-top:2px">${sc.course}コース・ST ${esc(stText(sc.st))}</div>` : '');
     return `<div class="ent">${boat(e.boat, 34)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><b style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.name)}</b>${e.grade ? `<span class="grade ${esc(e.grade)}">${esc(e.grade)}</span>` : ''}</div>
-      <div class="small muted num bs">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div><div class="dt">${motorLine(supp.get(e.boat), cardBy.get(e.boat))}${stLine(supp.get(e.boat), e.boat)}</div></div>${right ? `<div style="text-align:right;flex-shrink:0">${right}</div>` : ''}</div>`;
-  }).join('')}</section><p class="small muted" style="margin:8px 4px 0;line-height:1.7">枠番順。${start.length ? 'コースとSTはレースでの実際の進入とスタートタイミング。' : '進入コースは展示・本番で変わることがあります（レース後に実際のコースを表示します）。'}展示・オッズは公式サイトで確認できます。${hasSt || hasMotor || nige ? '<span class="dt"><br>モーターは番号と2連率（公式の番組表の値）。' : ''}${hasSt ? '平均ST（集計値）は、2023年11月以降の過去の出走から集計した値です（有効なST 0.00〜0.30 のみ。フライング・失格・欠場は除く。括弧内は集計に使った出走数）。公式の平均STとは定義が異なる場合があります。コース別は実際の進入コースで集計した値で、「コース別」を押すと6コース分を開きます（出走20走未満は薄く表示）。' : ''}${nige ? '逃げ切り率は、場・季節などが同じ過去のレースで1号艇が1着になった割合からの推定で、予想ではありません。' : ''}${hasSt || hasMotor || nige ? '</span>' : ''}</p>`
+      <div class="small muted num bs">${[e.branch, e.age ? `${e.age}歳` : '', `登録 ${e.toban}`].filter(Boolean).map(esc).join('・')}</div><div class="dt">${detailBlock(supp.get(e.boat), cardBy.get(e.boat), e.boat)}</div></div>${right ? `<div style="text-align:right;flex-shrink:0">${right}</div>` : ''}</div>`;
+  }).join('')}</section>`
     : `<div class="card small muted" style="line-height:1.7">選手の情報はまだ取り込まれていません（毎朝 7:30 ごろに更新）。</div>`}</div>`
     + `<p class="small muted num" style="margin:10px 20px 0;line-height:1.8">データ取得: ${[['番組表', r.data && r.data.card], ['出走表', r.data && r.data.entrants], ['結果', r.data && r.data.result], ['成績', r.data && r.data.record]].map(([k, t]) => `${k} ${t ? hm(t) : '—'}`).join('　')}${r.data && r.data.check ? `　照合 ${r.data.check.ok ? '一致' : '<b style="color:#FFB3B3">不一致</b>'}` : ''}</p>`;
   const res = r.result;
