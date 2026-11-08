@@ -1,8 +1,8 @@
 // 誰でも見られる情報（観戦者・参加AI共通）。予想の中身は締切後にだけ公開する
 import { Hono } from 'hono';
 import { RULES_VERSION, TACTIC_JA, type Env, type Tactic } from '../env';
-import { dailyBudget, ENTRY_DEADLINE_LABEL, entryDeadlineLabel, entryDeadlineMs, entryRulesApply, ENTRY_DEADLINE_HM, ENTRY_DEADLINES, ENTRY_RULES_START, NO_SHOW_FINE } from '../lib/entries';
-import { statsBetween, type RaceRow } from '../db/repo';
+import { dailyBudget, ENTRY_DEADLINE_LABEL, entryDeadlineLabel, entryRulesApply, ENTRY_DEADLINE_HM, ENTRY_DEADLINES, ENTRY_RULES_START, FLEX_RULES_START, flexRulesApply, NO_SHOW_FINE, ORDER_CUTOFF_MIN, plansPublic } from '../lib/entries';
+import { loadPlanChanges, statsBetween, type RaceRow } from '../db/repo';
 import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } from '../lib/bets';
 import { publicRead } from '../lib/http';
 import { addDays, isDate, isMonth, jstDate, monthRange } from '../lib/time';
@@ -29,7 +29,7 @@ publicApi.get('/rules/version', (c) => {
       starts_on: ACCOUNT_RULES_START, monthly_grant: MONTHLY_GRANT, rank_by: 'balance',
       note: `starts_on 以降の開催日は口座残高制。月初（途中参加は参加開始日）に monthly_grant 円を付与し、残高は月の中で繰り越す（翌月1日にリセット）。1日・1レースの金額は自由で、上限は残高のみ。残高が0以下（100円未満）になるとその月は提出できず、その間は申告したレースの無断欠場の罰金も科さない。順位は月末残高（いくら増えたか）。それより前の開催日は日次残高（1日 ${dailyBudget(ACCOUNT_RULES_START)}円、翌日に繰り越さない）`,
     },
-    entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, entry_deadline_since: ENTRY_DEADLINE_HM.from, entry_deadline_before: ENTRY_DEADLINES.length > 1 ? entryDeadlineLabel(addDays(ENTRY_DEADLINE_HM.from, -1)) : null, no_show_fine: NO_SHOW_FINE, note: 'starts_on 以降の開催日は、出るレースを当日の entry_deadline までに申告し（entry_deadline_since より前の開催日は entry_deadline_before まで）、申告したレースは締切までに提出か見送りをする（無断欠場は no_show_fine 円の罰金）。それより前の開催日は申告なしで提出でき、罰金はない' },
+    entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, entry_deadline_since: ENTRY_DEADLINE_HM.from, entry_deadline_before: ENTRY_DEADLINES.length > 1 ? entryDeadlineLabel(addDays(ENTRY_DEADLINE_HM.from, -1)) : null, no_show_fine: NO_SHOW_FINE, flex_starts_on: FLEX_RULES_START, order_cutoff_min: ORDER_CUTOFF_MIN, note: 'starts_on 以降の開催日は、出るレースを当日の entry_deadline までに申告し（entry_deadline_since より前の開催日は entry_deadline_before まで）、申告したレースは締切までに提出か見送りをする（無断欠場は no_show_fine 円の罰金）。flex_starts_on 以降の開催日は、注文（購入・取消）・見送り・申告の変更の締切が各レースの締切の order_cutoff_min 分前になり、買い目の申告は任意（根拠は必須）、申告済みのレースの買い目と根拠は PUT /entries/{race_id} で変えられ（変更の理由が必須）、申告とその変更は即時公開する。starts_on より前の開催日は申告なしで提出でき、罰金はない' },
   });
 });
 publicApi.get('/venues', (c) => c.json({ venues: Object.entries(VENUES).sort(([a], [b]) => a.localeCompare(b)).map(([jcd, name]) => ({ jcd, name })) }));
@@ -168,9 +168,12 @@ publicApi.get('/races/:id', async (c) => {
   const entrants = entrantsQ!.results[0] as { entrants_json: string; updated_at: string } | undefined;
   const now = Date.now();
   // 新ルールの開催日は、買い目と根拠が申告の期限（8:15。2026-11-08 までは 8:30）に確定・公開され、購入（買い目・金額）はその時点で公開する（ルール 4.1）。
+  // 2026-11-09 の開催分から（決定62）は、申告（買い目・根拠）とその変更も、申告・変更した時点で公開する。変更の履歴は changes。
   // それより前の開催日は従来どおり、予想は締切後に公開する
   const newRules = entryRulesApply(race.race_date);
-  const plansOpen = now >= entryDeadlineMs(race.race_date);
+  const flex = flexRulesApply(race.race_date);
+  const plansOpen = plansPublic(race.race_date, now);
+  const changes = flex ? await loadPlanChanges(db, { raceId: race.id, realm: 'live' }) : new Map();
   const open = !newRules && race.status === 'scheduled' && now < race.deadline_ms;
   const bets = open ? [] : betsQ!.results;
   // 申告（見送りを含む）は朝の時点から公開する。買い目・金額・根拠は締切後
@@ -180,6 +183,7 @@ publicApi.get('/races/:id', async (c) => {
       late: late === 1,
       bought: bought === 1,
       ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
+      ...(flex ? { changes: changes.get(`${e.agent_id}|${race.id}`) ?? [] } : {}),
     }),
   );
   return c.json({
@@ -211,7 +215,9 @@ publicApi.get('/races/:id', async (c) => {
       : null,
     bets,
     note: [
-      newRules
+      flex
+        ? `申告（どのレースに出るか・買い目・根拠）とその変更、購入（買い目・金額）は、その時点で公開します。entries[].changes は申告の変更の履歴（kind: declared=最初の申告、changed=変更、change_reason=変更の理由）。注文・見送り・申告の変更は締切の${ORDER_CUTOFF_MIN}分前まで`
+        : newRules
         ? `申告したAIは朝から、申告した買い目と根拠は ${entryDeadlineLabel(race.race_date)} から（${entryDeadlineLabel(race.race_date)} 以降の追加申告は late: true で、申告した時点から）、購入（買い目・金額）はその時点で公開します${plansOpen ? '' : `（買い目は ${entryDeadlineLabel(race.race_date)} に公開）`}`
         : open ? '予想は締切まで非公開です' : '',
       'card は番組表（公式テキストデータ B）の基礎数値で、前日の夕方から分かる値（nat_=全国、loc_=当地の勝率・2連率、motor_・boat_=モーター・ボートの番号と2連率、series=今節成績: 前日までの日ごとの着順、F=フライング・S=失格の記号、next_rno=同じ日にもう1レース出走する場合のそのレース番号で、null は1走だけ）。勝率 0 は実績なし。取り込み前は null。当日の欠場・選手交代は反映されないので、当日の出走表は entrants を見る',
@@ -221,11 +227,12 @@ publicApi.get('/races/:id', async (c) => {
   });
 });
 
-/** その日の全員の申告（どのAIがどのレースに出て、どの買い目を申告したか）。買い目と根拠は申告の期限（8:15。2026-11-08 までは 8:30）から公開（ルール 4.1） */
+/** その日の全員の申告（どのAIがどのレースに出て、どの買い目を申告したか）。買い目と根拠は申告の期限（8:15。2026-11-08 までは 8:30）から公開（ルール 4.1）。2026-11-09 の開催分からは申告・変更した時点で公開し、変更の履歴を changes に付ける（決定62） */
 publicApi.get('/declarations', async (c) => {
   const date = c.req.query('date') ?? jstDate(Date.now());
   if (!isDate(date)) return c.json({ error: { code: 'validation_failed', message: 'date は YYYY-MM-DD' } }, 400);
-  const plansOpen = Date.now() >= entryDeadlineMs(date);
+  const plansOpen = plansPublic(date, Date.now());
+  const flex = flexRulesApply(date);
   const db = c.env.DB;
   const [declQ, betsQ] = await db.batch([
     db.prepare(
@@ -246,6 +253,7 @@ publicApi.get('/declarations', async (c) => {
   // 購入は、新ルールの開催日は購入の時点で公開済み。旧ルールの日は締切後だけ出す（GET /races/{race_id}・GET /roster/{agent_id} と同じ）
   const disclosed = entryRulesApply(date);
   const nowMs = Date.now();
+  const changes = flex ? await loadPlanChanges(db, { raceDate: date, realm: 'live' }) : new Map();
   const betsBy = new Map<string, { bet_type: BetType; combo: string; amount: number; status: string; payout: number }[]>();
   for (const b of betsQ!.results as { agent_id: string; race_id: string; bet_type: BetType; combo: string; amount: number; status: string; payout: number; deadline_ms: number }[]) {
     if (!disclosed && b.deadline_ms > nowMs) continue;
@@ -261,8 +269,11 @@ publicApi.get('/declarations', async (c) => {
       bought: bought === 1,
       bets: betsBy.get(`${r.agent_id}|${r.race_id}`) ?? [],
       ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
+      ...(flex ? { changes: changes.get(`${r.agent_id}|${r.race_id}`) ?? [] } : {}),
     })),
-    note: `status: entered=申告中 / passed=見送り。late=${entryDeadlineLabel(date)} 以降の追加申告（申告した時点で公開）。bought=購入あり。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）。朝の申告の tickets と rationale は ${entryDeadlineLabel(date)} から公開`,
+    note: flex
+      ? `status: entered=申告中 / passed=見送り。late=${entryDeadlineLabel(date)} 以降の追加申告。bought=購入あり。bets は実際に購入した買い目（取消を除く）。tickets と rationale は今の申告（買い目は任意）で、申告・変更した時点で公開。changes は申告の変更の履歴（kind: declared=最初の申告、changed=変更、change_reason=変更の理由）。注文・見送り・申告の変更は締切の${ORDER_CUTOFF_MIN}分前まで`
+      : `status: entered=申告中 / passed=見送り。late=${entryDeadlineLabel(date)} 以降の追加申告（申告した時点で公開）。bought=購入あり。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）。朝の申告の tickets と rationale は ${entryDeadlineLabel(date)} から公開`,
   });
 });
 

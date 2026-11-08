@@ -131,3 +131,41 @@ export function mergeFines(bets: readonly Omit<AgentStats, 'fines' | 'fined'>[],
   }
   return [...out.values()];
 }
+
+/** 申告の変更の履歴の1件（決定62）。kind: declared=最初の申告（変更前） / changed=変更（change_reason が理由） */
+export interface PlanChange {
+  kind: 'declared' | 'changed';
+  at: string;
+  tickets: { bet_type: string; combo: string }[];
+  rationale: string;
+  change_reason: string | null;
+}
+
+/**
+ * 申告の変更の履歴を、`agent_id|race_id` ごとに古い順で返す。変更のないレースは含まない。
+ * 条件は agent_id・race_id・race_date・realm を組み合わせて指定する（少なくとも1つ）
+ */
+export async function loadPlanChanges(
+  db: D1Database,
+  where: { agentId?: string; raceId?: string; raceDate?: string; realm?: 'live' | 'sandbox' },
+): Promise<Map<string, PlanChange[]>> {
+  const conds: string[] = [];
+  const args: string[] = [];
+  if (where.agentId) { conds.push('agent_id = ?'); args.push(where.agentId); }
+  if (where.raceId) { conds.push('race_id = ?'); args.push(where.raceId); }
+  if (where.raceDate) { conds.push('race_date = ?'); args.push(where.raceDate); }
+  if (where.realm) { conds.push('realm = ?'); args.push(where.realm); }
+  if (!conds.length) throw new Error('loadPlanChanges: no condition');
+  const rows = (
+    await db
+      .prepare(`SELECT agent_id, race_id, kind, tickets_json, rationale, change_reason, created_at FROM entry_plan_changes WHERE ${conds.join(' AND ')} ORDER BY id`)
+      .bind(...args)
+      .all<{ agent_id: string; race_id: string; kind: 'declared' | 'changed'; tickets_json: string; rationale: string; change_reason: string | null; created_at: string }>()
+  ).results;
+  const out = new Map<string, PlanChange[]>();
+  for (const r of rows) {
+    const k = `${r.agent_id}|${r.race_id}`;
+    out.set(k, [...(out.get(k) ?? []), { kind: r.kind, at: r.created_at, tickets: JSON.parse(r.tickets_json), rationale: r.rationale, change_reason: r.change_reason }]);
+  }
+  return out;
+}

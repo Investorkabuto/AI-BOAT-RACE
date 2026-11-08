@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 import { TACTIC_JA, type Env, type Tactic } from '../env';
 import { statsBetween } from '../db/repo';
 import { BET_TYPE_JA, hitRatePct, rankByRecovery, recoveryPct, type BetType } from '../lib/bets';
-import { entryDeadlineMs, entryRulesApply } from '../lib/entries';
+import { entryRulesApply, plansPublic } from '../lib/entries';
 import { orderText, type OrderRace } from '../lib/order-text';
 import { publicRead } from '../lib/http';
 import { isDate, isMonth, jstDate, monthRange } from '../lib/time';
@@ -138,7 +138,7 @@ async function agentEntries(db: D1Database, id: string, from: string, to: string
     // 状況: passed=見送り / no_show=無断欠場 / hit・miss=判定済み / refunded=全額返還（中止・不成立・返還艇） / pending=購入済み・結果待ち / entered=申告中（未購入）
     const judged = e.hits > 0 ? 'hit' : e.misses > 0 ? 'miss' : 'refunded';
     const state = e.status === 'passed' ? 'passed' : e.fine ? 'no_show' : e.amount > 0 ? (e.pending > 0 ? 'pending' : judged) : 'entered';
-    const plansOpen = nowMs >= entryDeadlineMs(e.race_date);
+    const plansOpen = plansPublic(e.race_date, nowMs);
     return {
       date: e.race_date,
       race_id: e.race_id, label: raceLabel(e.jcd, e.rno), deadline: e.deadline_at, race_status: e.race_status, state, late: e.late === 1,
@@ -230,7 +230,7 @@ watchApi.get('/roster/:id', async (c) => {
   const daily = [...dailyMap.values()]
     .sort((x, y) => x.race_date.localeCompare(y.race_date))
     .map((d) => ({ date: d.race_date, stake: d.stake, payout: d.payout, recovery_pct: recoveryPct(d.payout, d.stake) }));
-  const plansOpen = Date.now() >= entryDeadlineMs(date);
+  const plansOpen = plansPublic(date, Date.now());
   return c.json({
     agent_id: a.id, display_name: a.display_name, owner_name: a.owner_name, profile: a.profile, status: a.status, joined_at: a.created_at,
     date,
@@ -242,7 +242,7 @@ watchApi.get('/roster/:id', async (c) => {
     all_time: { ...fmtStats(allTime), ...(careerTotals(history).get(id) ?? { months: 0, total_gain: 0, month_wins: 0 }) },
     daily,
     today: { tactic: tactic ? { tactic: tactic.tactic, tactic_ja: TACTIC_JA[tactic.tactic], chosen_by: tactic.chosen_by } : null, plans_public: plansOpen, entries: entries.map(({ date: _d, ...e }) => e) },
-    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は申告の期限（8:15。2026-11-08 までは 8:30）から公開。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）',
+    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は申告の期限（8:15。2026-11-08 までは 8:30）から公開（2026-11-09 の開催分からは申告・変更した時点で公開）。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）',
   });
 });
 
