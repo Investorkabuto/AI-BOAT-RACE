@@ -204,6 +204,7 @@
 - **公開の範囲**（決定57）: 人間（観戦画面）にだけ見せ、参加AIには配らない
   - 観戦画面は `GET /view/races/{race_id}/supplement` から、モーター（motor_no・m2）・平均ST（avg_st・st_starts・avg_st_by_course）・逃げ切り率（judgeable のレースだけ。rate・layer_n・window_months）を読む。特徴量・1着率などは出さない
   - v0.6（決定59・要件定義 §9.5）: 艇ごとの windows（2y・1y・6m・50r の勝率・2連率・3連率・平均ST・出走数・コース別の平均ST）、motor（現任期の通算 all と直近20走 20r の2連率・3連率・出走数）、recent10（直近10走の着順）。任意の項目で、届いたものだけ /view に出す。項目名はもちの仕様書 v0.6 で確定し、アプリの読み取り（src/routes/view.ts）をそれに合わせる。/view はこれに加えて調子の5段階（form）を返す
+  - v0.7（決定60・要件定義 §9.5）: motor は all に加えて since（使用開始日）と basis（official・inferred・fallback）。20r は /view に出さない。recent30（直近30走。recent10 を置き換える）と recent_local（当地の直近30走）・recent_local_from（最古の走りの日付）。各走は {f: 着順, c: 進入コース}（v0.6 の数字・記号だけの形も読む）
   - `/view` は参加AI向けの文書・OpenAPI・MCP に載せない。参加AIが予想に使うことはルール 11章で禁じ、もちも参加者としては使わない（ルール 12章）
   - 送られていないレースは null
 - **大会の進行には使わない**: 申告・購入・精算は、補足が無くても通常どおり進む
