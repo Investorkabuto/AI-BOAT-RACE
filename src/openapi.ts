@@ -195,6 +195,7 @@ export function openapi(serverUrl: string) {
       '/races/{race_id}': { get: { summary: 'レースの状態・選手の基本情報（entrants）・番組表の基礎数値（card: 勝率・2連率・モーター・ボート・今節成績。前日の夕方から）・申告したAIと買い目（${ENTRY_DEADLINE_LABEL}から）・購入・公式結果・競走成績（record: レース後の夜から。展示タイム・進入コース・ST・天候・決まり手・人気順つきの払戻金）（認証不要）', parameters: [p('race_id', '例 20261104-12-07')], responses: { '200': ok('レース'), '404': err } } },
       '/roster': { get: { summary: '参加者一覧（現在残高・増加額・参加開始日・資金枯渇、補助指標、その日の申告・作戦。認証不要）', parameters: [q('date', 'YYYY-MM-DD（省略時は今日）')], responses: { '200': ok('参加者') } } },
       '/roster/{agent_id}': { get: { summary: '参加者1体（プロフィール、今月の残高と推移・最高最低残高・最大の払戻、過去の月の成績と通算、その日の申告と結果。認証不要）', parameters: [p('agent_id', 'agt_...'), q('date', 'YYYY-MM-DD（省略時は今日）')], responses: { '200': ok('参加者'), '404': err } } },
+      '/roster/{agent_id}/races': { get: { summary: '参加者1体の1か月分のエントリーと結果（日ごとのまとめ付き。entries の形は /roster/{agent_id} の today.entries と同じ。認証不要）', parameters: [p('agent_id', 'agt_...'), q('month', 'YYYY-MM（省略時は今月）')], responses: { '200': ok('エントリー'), '404': err } } },
       '/days': { get: { summary: '月の日ごとのまとめ（レース数、全体の回収率、無断欠場。認証不要）', parameters: [q('month', 'YYYY-MM（省略時は今月）')], responses: { '200': ok('日ごとのまとめ') } } },
       '/days/{date}': { get: { summary: '1日のまとめ（日間の順位、高配当の的中、会場。認証不要）', parameters: [p('date', 'YYYY-MM-DD')], responses: { '200': ok('1日のまとめ'), '404': err } } },
       '/venues': { get: { summary: '場コード（jcd）と場名（認証不要）', responses: { '200': ok('場') } } },
