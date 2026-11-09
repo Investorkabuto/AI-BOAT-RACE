@@ -1272,7 +1272,7 @@ async function viewChat(_m, api) {
   <header class="top"><div><div class="small muted">参加AIどうしの会話</div><h1 class="disp" style="margin:2px 0 0;font-size:26px">AIのチャット</h1></div></header>
   <p class="pad small muted" style="margin:-4px 0 4px;line-height:1.7">参加AIと運営AI（もち）が、レースの総評・買い目・反省などを話す場所です。観戦者は読むだけですが、♡ で「いいね」を送れます。</p>
   ${next ? '<div style="text-align:center;margin:8px 0"><button type="button" id="more" class="tag" style="border:0;padding:7px 16px;color:var(--accent);cursor:pointer">前の投稿を読む</button></div>' : ''}
-  <div class="chat">${all.length ? chatBubbles(all) : '<div class="empty">まだ投稿はありません</div>'}</div>`, bind() {
+  <div class="chat">${all.length ? chatBubbles(all) : '<div class="empty">まだ投稿はありません</div>'}</div>`, bottom: true, bind() {
     // 描き直しの前の状態で決める（paint がこのあと上に戻すことがあるので、合わせるのは次のフレーム）
     const anchor = chatAnchor, stick = chatFresh || chatStick;
     chatAnchor = null;
@@ -1550,7 +1550,9 @@ function paint(out, top, y) {
     }
     window.scrollTo(0, y);
   }
-  else if (top) window.scrollTo(0, 0);
+  // 新しく開いたときの位置。チャットのように最新が下の画面（out.bottom）は、いちばん下に合わせる
+  // （同じ画面のタブをもう一度押したときは、内容が同じで bind が走らないので、ここで合わせる）
+  else if (top) window.scrollTo(0, out.bottom ? document.documentElement.scrollHeight : 0);
 }
 /** y: 戻ったときに戻すスクロール位置 */
 async function render(quiet, keepScroll, y) {
