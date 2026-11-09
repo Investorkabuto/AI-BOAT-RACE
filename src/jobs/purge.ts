@@ -80,6 +80,8 @@ async function setState(db: D1Database, value: string, nowMs: number) {
 /** 残す日数（レースの日付が今日から数えてこの日数より前なら消す） */
 export const RETENTION_DAYS = 90;
 const RETENTION_KEY = 'purge:retention';
+/** D1 の行数の計測を残す日数 */
+export const USAGE_RETENTION_DAYS = 30;
 
 /** 消す表（race_id は YYYYMMDD-JJ-RR なので、文字列の比較で日付より前を選べる） */
 const RETENTION_TABLES = ['card_supplements', 'race_beforeinfo', 'race_odds_v2'];
@@ -93,10 +95,12 @@ export async function purgeRetention(db: D1Database, nowMs: number, days = RETEN
   const res = await db.batch([
     ...RETENTION_TABLES.map((t) => db.prepare(`DELETE FROM ${t} WHERE race_id < ?`).bind(key)),
     db.prepare('DELETE FROM card_supplement_days WHERE race_date < ?').bind(cutoff),
+    // D1 の行数の計測（src/lib/d1meter.ts）は30日分だけ残す
+    db.prepare('DELETE FROM d1_usage WHERE hour < ?').bind(addDays(today, -USAGE_RETENTION_DAYS)),
     db
       .prepare('INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
       .bind(RETENTION_KEY, today, jstIso(nowMs)),
   ]);
-  const n = res.slice(0, RETENTION_TABLES.length + 1).reduce((s, r) => s + (r.meta.changes ?? 0), 0);
+  const n = res.slice(0, RETENTION_TABLES.length + 2).reduce((s, r) => s + (r.meta.changes ?? 0), 0);
   return n ? [`purge: retention before ${cutoff} (${n} rows)`] : [];
 }

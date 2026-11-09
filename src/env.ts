@@ -2,6 +2,8 @@ export type Realm = 'live' | 'sandbox';
 
 export interface Env {
   DB: D1Database;
+  /** D1 の行数の計測（src/lib/d1meter.ts）。入口（src/index.ts）が付ける。テストなどでは無い */
+  METER?: import('./lib/d1meter').Meter;
   /** 正確なアクセス数制限（Durable Object）。これがあれば優先して使う */
   LIMITER_DO?: DurableObjectNamespace<import('./lib/limiter-do').RateLimiter>;
   /** アクセス数制限（APIキーごと）。未設定の環境では制限しない */

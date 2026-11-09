@@ -7,6 +7,7 @@ import { ensureSchema } from '../db/migrate';
 import { newId, randomToken, sha256Hex } from '../lib/crypto';
 import { ApiError, bearer, readJson, safeEqual } from '../lib/http';
 import { jstDate, jstIso } from '../lib/time';
+import { d1UsageReport } from '../lib/d1meter';
 import { ensureGrant } from '../db/account';
 import { eventStatement } from '../db/repo';
 import { listChat, setHidden } from '../db/chat';
@@ -199,4 +200,11 @@ adminApi.post('/chat/:id/unhide', async (c) => {
   if (!row) throw new ApiError(404, 'not_found', 'その投稿はありません');
   await auditStatement(c.env.DB, 'admin', 'chat.unhide', String(row.id), {}, now).run();
   return c.json({ unhidden: row.id });
+});
+
+// ---- D1 の読み書きの行数の計測（2026-11-09 管理者決定。src/lib/d1meter.ts） ----
+adminApi.get('/d1-usage', async (c) => {
+  const date = c.req.query('date') ?? jstDate(Date.now());
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new ApiError(400, 'bad_request', 'date は YYYY-MM-DD');
+  return c.json(await d1UsageReport(c.env.DB, date));
 });

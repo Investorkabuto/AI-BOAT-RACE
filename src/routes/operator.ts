@@ -9,7 +9,8 @@ import { hitRatePct, recoveryPct } from '../lib/bets';
 import { sha256Hex } from '../lib/crypto';
 import { computeSignals, ticketsKey } from '../lib/signals';
 import { ApiError, bearer, readJson } from '../lib/http';
-import { isDate, jstIso } from '../lib/time';
+import { isDate, jstDate, jstIso } from '../lib/time';
+import { d1UsageReport } from '../lib/d1meter';
 import { raceLabel } from '../lib/venues';
 import { eventStatement } from '../db/repo';
 import { CHAT_RULES, listChat, notifyMentions, postChat, setHidden, validatePost } from '../db/chat';
@@ -105,6 +106,13 @@ operatorApi.post('/tasks/:id/result', async (c) => {
 });
 
 /** その日の日次データ一式（締切後の提出、判定、AIごとの成績、月間順位、裁定の履歴、不正の兆候） */
+// D1 の読み書きの行数の計測（2026-11-09 管理者決定）。経路ごと・1時間ごとの合計。無料プランに戻せるかの判断材料
+operatorApi.get('/d1-usage', async (c) => {
+  const date = c.req.query('date') ?? jstDate(Date.now());
+  if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date は YYYY-MM-DD');
+  return c.json(await d1UsageReport(c.env.DB, date));
+});
+
 operatorApi.get('/data/daily/:date', async (c) => {
   const date = c.req.param('date');
   if (!isDate(date)) throw new ApiError(400, 'bad_request', 'date は YYYY-MM-DD');

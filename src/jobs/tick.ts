@@ -45,12 +45,18 @@ const DAY_CLOSE_GRACE_MS = 30 * 60 * 1000;
 export async function tick(env: Env, nowMs: number): Promise<string[]> {
   const db = env.DB;
   const log: string[] = [];
+  // D1 の行数の計測（src/lib/d1meter.ts）: 以後のクエリを段階ごとに数える
+  const mark = (stage: string) => {
+    if (env.METER) env.METER.label = `tick:${stage}`;
+  };
+  mark('start');
   const migrated = await ensureSchema(db);
   if (migrated.length) log.push(`schema migrated: ${migrated.join(', ')}`);
   log.push(...(await restoreDisqualifiedForNewMonth(db, nowMs)));
   log.push(...(await notifyRulesChange(db, nowMs)));
   log.push(...(await grantCurrentMonth(db, nowMs)));
 
+  mark('lock');
   const toLock = (await db.prepare("SELECT * FROM races WHERE status = 'scheduled' AND deadline_ms <= ? ORDER BY deadline_ms").bind(nowMs).all<RaceRow>()).results;
   for (const r of toLock) {
     const n = await lockRace(db, r, nowMs);
@@ -58,6 +64,7 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
   }
   if (toLock.length) log.push(`locked races: ${toLock.length}`);
 
+  mark('settle');
   const locked = (await db.prepare("SELECT * FROM races WHERE status = 'locked' ORDER BY deadline_ms").all<RaceRow>()).results;
   let waiting = 0;
   for (const r of locked) {
@@ -65,6 +72,7 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
     else waiting++;
   }
   if (waiting) log.push(`waiting results: ${waiting} races`);
+  mark('dispatch');
   // 出走表・結果の取得を GitHub Actions で起動する（失敗しても、ほかの処理は続ける）
   try {
     log.push(...(await dispatchFetches(env, nowMs)));
@@ -72,18 +80,25 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
     log.push(`fetch dispatch error: ${String(e)}`);
   }
 
+  mark('commentary');
   log.push(...(await commentaryTasks(db, nowMs, addDays(jstDate(nowMs), -1))));
+  mark('close_days');
   log.push(...(await closeDays(db, nowMs)));
+  mark('finalize_months');
   log.push(...(await finalizeMonths(db, nowMs)));
+  mark('operator_tasks');
   log.push(...(await expireTasks(db, nowMs)));
   log.push(...(await checkAlerts(env, nowMs)));
+  mark('webhooks');
   log.push(...(await deliverWebhooks(env, nowMs)));
+  mark('push');
   // 観戦画面への的中の通知。失敗しても、ほかの処理は止めない
   try {
     log.push(...(await deliverPush(env, nowMs)));
   } catch (e) {
     log.push(`push error: ${String(e)}`);
   }
+  mark('background');
   // 裏方の作業（v1.3）: 分析の事前集計と、詰めた形の片付け。1日の読み書きの量に上限がある。失敗しても、ほかの処理は止めない
   try {
     const usage = await loadUsage(db, nowMs);
@@ -93,6 +108,7 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
   } catch (e) {
     log.push(`background error: ${String(e)}`);
   }
+  mark('purge');
   try {
     log.push(...(await purgeHistory(db, nowMs)));
   } catch (e) {
