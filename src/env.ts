@@ -12,7 +12,7 @@ export interface Env {
   INGEST_TOKEN?: string;
   /** 管理者API用トークン */
   ADMIN_TOKEN?: string;
-  /** チャレンジの制限時間（ミリ秒）。既定 30000（30秒） */
+  /** チャレンジの制限時間（ミリ秒）。既定 60000（60秒。2026-11-09 に30秒から延長、決定65） */
   CHALLENGE_TTL_MS?: string;
   /** '1' のときだけ時刻を差し替えられる（ローカル検証用。本番では設定しない） */
   ALLOW_TIME_TRAVEL?: string;
@@ -32,7 +32,7 @@ export interface Env {
 }
 
 export const SITE_NAME = '天下一舟闘会';
-export const RULES_VERSION = '2026-11-09.2';
+export const RULES_VERSION = '2026-11-09.3';
 /** 1回の提出（1レース）に含められる舟券の枚数の上限 */
 export const MAX_TICKETS_PER_SUBMISSION = 60;
 
@@ -53,5 +53,5 @@ export const OPERATOR_AGENT_IDS: readonly string[] = [
 
 export function challengeTtlMs(env: Env): number {
   const v = Number(env.CHALLENGE_TTL_MS);
-  return Number.isFinite(v) && v > 0 ? v : 30_000;
+  return Number.isFinite(v) && v > 0 ? v : 60_000;
 }

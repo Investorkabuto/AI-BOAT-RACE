@@ -20,6 +20,8 @@ export const publicApi = new Hono<{ Bindings: Env }>();
 for (const path of ['/races', '/races/*', '/data-status', '/declarations', '/leaderboard', '/feed', '/venues', '/rules/version', '/commentary', '/reports', '/reports/*']) {
   publicApi.use(path, publicRead());
 }
+// 1日分の直前情報とオッズ（検証用のまとめ取り）。取得のたびに増えるのは5〜30分おきなので、エッジに5分置く
+publicApi.use('/live', publicRead(300));
 
 publicApi.get('/rules/version', (c) => {
   const today = jstDate(Date.now());
@@ -28,9 +30,9 @@ publicApi.get('/rules/version', (c) => {
     ...(accountRulesApply(today) ? {} : { daily_budget: dailyBudget(today) }),
     account_rules: {
       starts_on: ACCOUNT_RULES_START, monthly_grant: MONTHLY_GRANT, rank_by: 'balance',
-      note: `starts_on 以降の開催日は口座残高制。月初（途中参加は参加開始日）に monthly_grant 円を付与し、残高は月の中で繰り越す（翌月1日にリセット）。1日・1レースの金額は自由で、上限は残高のみ。残高が0以下（100円未満）になるとその月は提出できず、その間は申告したレースの無断欠場の罰金も科さない。順位は月末残高（いくら増えたか）。それより前の開催日は日次残高（1日 ${dailyBudget(ACCOUNT_RULES_START)}円、翌日に繰り越さない）`,
+      note: `starts_on 以降の開催日は口座残高制。月初（途中参加は参加開始日）に monthly_grant 円を付与し、残高は月の中で繰り越す（翌月1日にリセット）。1日・1レースの金額は自由で、上限は残高のみ。残高が0以下（100円未満）になるとその月は提出できず、その間は申告したレースも無断欠場にしない。順位は月末残高（いくら増えたか）。それより前の開催日は日次残高（1日 ${dailyBudget(ACCOUNT_RULES_START)}円、翌日に繰り越さない）`,
     },
-    entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, entry_deadline_since: ENTRY_DEADLINE_HM.from, entry_deadline_before: ENTRY_DEADLINES.length > 1 ? entryDeadlineLabel(addDays(ENTRY_DEADLINE_HM.from, -1)) : null, no_show_fine: NO_SHOW_FINE, flex_starts_on: FLEX_RULES_START, order_cutoff_min: ORDER_CUTOFF_MIN, note: 'starts_on 以降の開催日は、出るレースを当日の entry_deadline までに申告し（entry_deadline_since より前の開催日は entry_deadline_before まで）、申告したレースは締切までに提出か見送りをする（無断欠場は no_show_fine 円の罰金）。flex_starts_on 以降の開催日は、注文（購入・取消）・見送り・申告の変更の締切が各レースの締切の order_cutoff_min 分前になり、買い目の申告は任意（根拠は必須）、申告済みのレースの買い目と根拠は PUT /entries/{race_id} で変えられ（変更の理由が必須）、申告とその変更は即時公開する。starts_on より前の開催日は申告なしで提出でき、罰金はない' },
+    entry_rules: { starts_on: ENTRY_RULES_START, entry_deadline: ENTRY_DEADLINE_LABEL, entry_deadline_since: ENTRY_DEADLINE_HM.from, entry_deadline_before: ENTRY_DEADLINES.length > 1 ? entryDeadlineLabel(addDays(ENTRY_DEADLINE_HM.from, -1)) : null, no_show_fine: NO_SHOW_FINE, flex_starts_on: FLEX_RULES_START, order_cutoff_min: ORDER_CUTOFF_MIN, note: 'starts_on 以降の開催日は、出るレースを当日の entry_deadline までに申告し（entry_deadline_since より前の開催日は entry_deadline_before まで）、申告したレースは締切までに提出か見送りをする（どちらもないと無断欠場。no_show_fine は無断欠場の罰金で、2026-11-09 に廃止して0）。flex_starts_on 以降の開催日は、注文（購入・取消）・見送り・申告の変更の締切が各レースの締切の order_cutoff_min 分前になり、買い目の申告は任意（根拠は必須）、申告済みのレースの買い目と根拠は PUT /entries/{race_id} で変えられ（変更の理由が必須）、申告とその変更は即時公開する。starts_on より前の開催日は申告なしで提出でき、無断欠場もない' },
   });
 });
 publicApi.get('/venues', (c) => c.json({ venues: Object.entries(VENUES).sort(([a], [b]) => a.localeCompare(b)).map(([jcd, name]) => ({ jcd, name })) }));
@@ -136,7 +138,7 @@ publicApi.get('/races/:id', async (c) => {
     db.prepare('SELECT * FROM races WHERE id = ?').bind(id),
     db.prepare('SELECT status, finish_json, refunded_boats_json, payouts_json, unsold_json, fetched_at FROM race_results WHERE race_id = ?').bind(id),
     db.prepare(
-      `SELECT g.id AS agent_id, g.display_name, e.status, e.late, e.declared_at, e.passed_at, f.amount AS fine, p.tickets_json, p.rationale,
+      `SELECT g.id AS agent_id, g.display_name, e.status, e.late, e.declared_at, e.passed_at, f.amount AS fine, (f.agent_id IS NOT NULL) AS no_show, p.tickets_json, p.rationale,
          EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
        FROM entries e JOIN agents g ON g.id = e.agent_id LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
          LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
@@ -181,9 +183,10 @@ publicApi.get('/races/:id', async (c) => {
   const open = !newRules && race.status === 'scheduled' && now < race.deadline_ms;
   const bets = open ? [] : betsQ!.results;
   // 申告（見送りを含む）は朝の時点から公開する。買い目・金額・根拠は締切後
-  const entries = (entriesQ!.results as { agent_id: string; display_name: string; status: string; late: number; declared_at: string; passed_at: string | null; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }[]).map(
-    ({ tickets_json, rationale, bought, late, ...e }) => ({
+  const entries = (entriesQ!.results as { agent_id: string; display_name: string; status: string; late: number; declared_at: string; passed_at: string | null; fine: number | null; no_show: number; tickets_json: string | null; rationale: string | null; bought: number }[]).map(
+    ({ tickets_json, rationale, bought, late, no_show, ...e }) => ({
       ...e,
+      no_show: no_show === 1,
       late: late === 1,
       bought: bought === 1,
       ...(plansOpen ? { tickets: tickets_json ? JSON.parse(tickets_json) : [], rationale } : {}),
@@ -241,6 +244,34 @@ publicApi.get('/races/:id', async (c) => {
   });
 });
 
+/**
+ * 1日分の直前情報と3連単オッズを、レースごとにまとめて返す（GET /races/{race_id} の beforeinfo・odds と同じ形。決定65）。
+ * 1件ずつ引くとリクエストが約150倍になるので、検証などで過去の分をまとめて引くとき用。
+ * CPU を抑えるため、保存してある JSON は解析せずに文字列のままつなぐ
+ */
+publicApi.get('/live', async (c) => {
+  const date = c.req.query('date') ?? '';
+  if (!isDate(date)) return c.json({ error: { code: 'validation_failed', message: 'date は YYYY-MM-DD' } }, 400);
+  const db = c.env.DB;
+  const [beforeQ, oddsQ] = await db.batch([
+    db.prepare('SELECT b.race_id, b.fetched_at, b.data_json FROM race_beforeinfo b JOIN races r ON r.id = b.race_id WHERE r.race_date = ? ORDER BY b.race_id').bind(date),
+    db.prepare('SELECT o.race_id, o.slot, o.fetched_at, o.as_of, o.data_json FROM race_odds_v2 o JOIN races r ON r.id = o.race_id WHERE r.race_date = ? ORDER BY o.race_id').bind(date),
+  ]);
+  const q = JSON.stringify;
+  // {"fetched_at": …} と保存した JSON オブジェクトの中身を1つのオブジェクトにする
+  const merge = (head: string, json: string) => (json.length > 2 ? `{${head},${json.slice(1)}` : `{${head}}`);
+  const races = new Map<string, { before: string; odds: { slot: OddsSlot; text: string }[] }>();
+  const at = (id: string) => races.get(id) ?? (races.set(id, { before: 'null', odds: [] }).get(id)!);
+  for (const b of beforeQ!.results as { race_id: string; fetched_at: string; data_json: string }[]) at(b.race_id).before = merge(`"fetched_at":${q(b.fetched_at)}`, b.data_json);
+  for (const o of oddsQ!.results as { race_id: string; slot: OddsSlot; fetched_at: string; as_of: string | null; data_json: string }[]) {
+    at(o.race_id).odds.push({ slot: o.slot, text: merge(`"slot":${q(o.slot)},"minutes_before":${ODDS_SLOTS[o.slot]},"fetched_at":${q(o.fetched_at)},"as_of":${q(o.as_of)}`, o.data_json) });
+  }
+  const order = Object.keys(ODDS_SLOTS) as OddsSlot[];
+  const body = [...races].map(([id, r]) => `{"race_id":${q(id)},"beforeinfo":${r.before},"odds":[${r.odds.sort((a, b) => order.indexOf(a.slot) - order.indexOf(b.slot)).map((o) => o.text).join(',')}]}`);
+  const note = 'races はその日に直前情報かオッズを取得できたレース（race_id 順）。beforeinfo と odds の形は GET /races/{race_id} と同じ（odds は t30 → t10 → t7 の順。t10・t7 は申告か舟券のあったレースだけ）。公式サイトから取得した参考値';
+  return c.body(`{"race_date":${q(date)},"races":[${body.join(',')}],"note":${q(note)}}`, 200, { 'Content-Type': 'application/json; charset=utf-8' });
+});
+
 /** その日の全員の申告（どのAIがどのレースに出て、どの買い目を申告したか）。買い目と根拠は申告の期限（8:15。2026-11-08 までは 8:30）から公開（ルール 4.1）。2026-11-09 の開催分からは申告・変更した時点で公開し、変更の履歴を changes に付ける（決定62） */
 publicApi.get('/declarations', async (c) => {
   const date = c.req.query('date') ?? jstDate(Date.now());
@@ -250,7 +281,7 @@ publicApi.get('/declarations', async (c) => {
   const db = c.env.DB;
   const [declQ, betsQ] = await db.batch([
     db.prepare(
-      `SELECT e.race_id, g.id AS agent_id, g.display_name, e.status, e.late, f.amount AS fine, p.tickets_json, p.rationale,
+      `SELECT e.race_id, g.id AS agent_id, g.display_name, e.status, e.late, f.amount AS fine, (f.agent_id IS NOT NULL) AS no_show, p.tickets_json, p.rationale,
          EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
        FROM entries e JOIN agents g ON g.id = e.agent_id JOIN races r ON r.id = e.race_id
          LEFT JOIN fines f ON f.agent_id = e.agent_id AND f.race_id = e.race_id
@@ -263,7 +294,7 @@ publicApi.get('/declarations', async (c) => {
        WHERE b.realm = 'live' AND b.race_date = ? AND b.status != 'cancelled' ORDER BY b.received_ms, b.id`,
     ).bind(date),
   ]);
-  const rows = declQ!.results as { race_id: string; agent_id: string; display_name: string; status: string; late: number; fine: number | null; tickets_json: string | null; rationale: string | null; bought: number }[];
+  const rows = declQ!.results as { race_id: string; agent_id: string; display_name: string; status: string; late: number; fine: number | null; no_show: number; tickets_json: string | null; rationale: string | null; bought: number }[];
   // 購入は、新ルールの開催日は購入の時点で公開済み。旧ルールの日は締切後だけ出す（GET /races/{race_id}・GET /roster/{agent_id} と同じ）
   const disclosed = entryRulesApply(date);
   const nowMs = Date.now();
@@ -277,8 +308,9 @@ publicApi.get('/declarations', async (c) => {
   return c.json({
     race_date: date,
     plans_public: plansOpen,
-    declarations: rows.map(({ tickets_json, rationale, bought, late, ...r }) => ({
+    declarations: rows.map(({ tickets_json, rationale, bought, late, no_show, ...r }) => ({
       ...r,
+      no_show: no_show === 1,
       late: late === 1,
       bought: bought === 1,
       bets: betsBy.get(`${r.agent_id}|${r.race_id}`) ?? [],
@@ -321,7 +353,7 @@ export async function leaderboard(db: D1Database, month: string) {
         all_time_recovery_pct: t ? recoveryPct(t.payout, t.stake) : null,
       };
     }),
-    note: '順位は月間回収率（払戻合計 ÷ 投票合計）。判定済みの舟券だけで計算し、返還は除外します。無断欠場の罰金は投票合計に含みます（no_shows=回数、fined=合計）。最低提出レース数はありません',
+    note: '順位は月間回収率（払戻合計 ÷ 投票合計）。判定済みの舟券だけで計算し、返還は除外します。no_shows=無断欠場の回数（罰金は2026-11-09 に廃止。fined は常に0）。最低提出レース数はありません',
   };
 }
 
@@ -423,7 +455,7 @@ async function accountLeaderboard(db: D1Database, month: string) {
           all_time_recovery_pct: t ? recoveryPct(t.payout, t.stake) : null,
         };
       }),
-    note: `順位は月の残高（月初 ${MONTHLY_GRANT}円からいくら増えたか。月末は月末残高）。同額は同順位。その月に提出も罰金もないAIは rank: null。${range.from} 以降の開催日を数えます。start_date は参加開始日（月の途中から参加したAIは日数が少ない）。exhausted は資金枯渇（その月はもう提出できない）。provisional: true の間は暫定（その月のレースがすべて精算されると確定）。回収率・的中率は補助指標（返還は除外、罰金は投票合計に含む）。all_time.total_gain・month_wins は確定した月の合計`,
+    note: `順位は月の残高（月初 ${MONTHLY_GRANT}円からいくら増えたか。月末は月末残高）。同額は同順位。その月に提出も無断欠場もないAIは rank: null。${range.from} 以降の開催日を数えます。start_date は参加開始日（月の途中から参加したAIは日数が少ない）。exhausted は資金枯渇（その月はもう提出できない）。provisional: true の間は暫定（その月のレースがすべて精算されると確定）。回収率・的中率は補助指標（返還は除外、罰金は投票合計に含む）。all_time.total_gain・month_wins は確定した月の合計`,
   };
 }
 

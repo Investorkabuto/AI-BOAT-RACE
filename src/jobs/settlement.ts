@@ -13,7 +13,7 @@ import { hitPushStatement } from './push';
 /**
  * 締切を過ぎたレースを確定する。受付中の舟券を locked にし、舟券がなければその場で精算済みにする
  * （結果の取得が要らないので、取り込みの対象から外れる）。
- * 新ルールの適用日なら、申告したのに提出も見送りもなかったAI（無断欠場）に罰金を科す（要件定義 §8）
+ * 新ルールの適用日なら、申告したのに提出も見送りもなかったAI（無断欠場）を記録する（要件定義 §8。罰金は2026-11-09 に廃止して金額0。決定65）
  */
 export async function lockRace(db: D1Database, race: RaceRow, nowMs: number): Promise<number> {
   const bets = (
@@ -33,7 +33,7 @@ export async function lockRace(db: D1Database, race: RaceRow, nowMs: number): Pr
           .all<{ agent_id: string }>()
       ).results.map((r) => r.agent_id)
     : [];
-  // 口座残高制: 残高が尽きて1枚も買えないAIは、申告していても罰金を科さない（2026-11-05 管理者決定）
+  // 口座残高制: 残高が尽きて1枚も買えないAIは、申告していても無断欠場にしない（2026-11-05 管理者決定）
   const exempt: string[] = [];
   if (accountRulesApply(race.race_date)) {
     for (const id of [...noShows]) {
@@ -54,17 +54,15 @@ export async function lockRace(db: D1Database, race: RaceRow, nowMs: number): Pr
     ...[...byAgent].map(([agentId, ids]) => eventStatement(db, agentId, 'bets.locked', { race_id: race.id, race: raceLabel(race.jcd, race.rno), bet_ids: ids }, nowMs)),
     ...noShows.flatMap((agentId) => [
       db.prepare('INSERT OR IGNORE INTO fines (agent_id, race_id, race_date, amount, created_at) VALUES (?, ?, ?, ?, ?)').bind(agentId, race.id, race.race_date, NO_SHOW_FINE, now),
-      eventStatement(db, agentId, 'fine.imposed', {
+      eventStatement(db, agentId, 'entry.no_show', {
         race_id: race.id, race: raceLabel(race.jcd, race.rno), amount: NO_SHOW_FINE, reason: 'no_show',
-        note: accountRulesApply(race.race_date)
-          ? '申告したレースで、締切までに提出も見送りの申告もありませんでした（無断欠場）。罰金はその月の残高から差し引き、月末残高（順位）に反映します。申告したレースは、提出するか POST /entries/{race_id}/pass で見送ってください'
-          : '申告したレースで、締切までに提出も見送りの申告もありませんでした（無断欠場）。罰金はその日の残高から差し引き、月間回収率の投票合計に加えます。申告したレースは、提出するか POST /entries/{race_id}/pass で見送ってください',
+        note: '申告したレースで、締切までに提出も見送りの申告もありませんでした（無断欠場）。罰金は廃止したので残高は減りませんが、無断欠場の回数は記録して公開します。申告したレースは、提出するか POST /entries/{race_id}/pass で見送ってください',
       }, nowMs),
     ]),
     ...exempt.map((agentId) =>
       eventStatement(db, agentId, 'fine.exempted', {
         race_id: race.id, race: raceLabel(race.jcd, race.rno), reason: 'balance_exhausted',
-        note: 'その月の残高が尽きて買えなかったため、申告したレースで提出も見送りもありませんでしたが、罰金は科しません。残高は翌月1日に新しい月の分が付与されます',
+        note: 'その月の残高が尽きて買えなかったため、申告したレースで提出も見送りもありませんでしたが、無断欠場にはしません。残高は翌月1日に新しい月の分が付与されます',
       }, nowMs),
     ),
   ]);
@@ -79,7 +77,7 @@ export async function waiveFinesForCancelled(db: D1Database, raceIds: readonly s
     if (!fined.length) continue;
     await db.batch([
       db.prepare('DELETE FROM fines WHERE race_id = ?').bind(id),
-      ...fined.map((f) => eventStatement(db, f.agent_id, 'fine.waived', { race_id: id, amount: f.amount, reason: 'race_cancelled', note: 'レースが中止・不成立になったため、罰金を取り消しました' }, nowMs)),
+      ...fined.filter((f) => f.amount > 0).map((f) => eventStatement(db, f.agent_id, 'fine.waived', { race_id: id, amount: f.amount, reason: 'race_cancelled', note: 'レースが中止・不成立になったため、罰金を取り消しました' }, nowMs)),
     ]);
     n += fined.length;
   }

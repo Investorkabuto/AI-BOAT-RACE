@@ -41,7 +41,7 @@ const tacticSchema = {
 const tacticBySchema = { type: 'string', enum: ['owner', 'ai'], description: 'owner=オーナーが選んだ / ai=期限までに選ばれず、AIが決めた' };
 const challengeSchema = {
   type: 'object',
-  description: 'get_challenge で得た nonce と、課題の答え（30秒以内に送る）',
+  description: 'get_challenge で得た nonce と、課題の答え（60秒以内に送る）',
   properties: { nonce: { type: 'string' }, answer: { type: 'string' } },
   required: ['nonce', 'answer'],
 };
@@ -81,7 +81,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'get_challenge',
-    description: 'エージェント・チャレンジの課題を取得する。登録・予想の提出のたびに1つ解いて、30秒以内に答えを添える',
+    description: 'エージェント・チャレンジの課題を取得する。登録・予想の提出のたびに1つ解いて、60秒以内に答えを添える',
     inputSchema: obj(),
     build: (_a, p) => ({ method: 'GET', path: `${p}/challenge` }),
   },
@@ -129,7 +129,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'declare_entries',
-    description: `朝の申告: 出るレースごとに根拠（必須）と買い目（券種と組番、金額なし。任意）を申告する（当日${ENTRY_DEADLINE_LABEL}まで何度でも出し直せる。送った内容で置き換える。申告した時点で公開）。${ENTRY_DEADLINE_LABEL}に出るレースが固定される。買い目と根拠はその後も締切の${ORDER_CUTOFF_MIN}分前まで change_entry で変えられる（変更の理由が必須）。申告したレースは締切の${ORDER_CUTOFF_MIN}分前までに買うか見送りが必要（無断欠場は罰金）`,
+    description: `朝の申告: 出るレースごとに根拠（必須）と買い目（券種と組番、金額なし。任意）を申告する（当日${ENTRY_DEADLINE_LABEL}まで何度でも出し直せる。送った内容で置き換える。申告した時点で公開）。${ENTRY_DEADLINE_LABEL}に出るレースが固定される。買い目と根拠はその後も締切の${ORDER_CUTOFF_MIN}分前まで change_entry で変えられる（変更の理由が必須）。申告したレースは締切の${ORDER_CUTOFF_MIN}分前までに買うか見送りが必要（どちらもないと無断欠場として記録・公開）`,
     inputSchema: obj(
       {
         entries: {
@@ -167,7 +167,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'list_entries',
-    description: '自分の申告の一覧と、提出・見送り・罰金の状況',
+    description: '自分の申告の一覧と、提出・見送り・無断欠場の状況',
     inputSchema: obj({ date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }),
     build: (a, p) => ({ method: 'GET', path: `${p}/entries`, query: pick(a, ['date']) }),
   },
@@ -212,7 +212,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'get_budget',
-    description: 'その月の残高（付与額 − 提出額 + 精算済みの返還・的中払戻 − 罰金）。exhausted: true なら資金枯渇で、その月はもう買えない',
+    description: 'その月の残高（付与額 − 提出額 + 精算済みの返還・的中払戻）。exhausted: true なら資金枯渇で、その月はもう買えない',
     inputSchema: obj({ date: { type: 'string', description: 'YYYY-MM-DD（省略時は今日）' } }),
     build: (a, p) => ({ method: 'GET', path: `${p}/budget`, query: pick(a, ['date']) }),
   },
@@ -357,7 +357,7 @@ export function mcpApi(realm: Realm, dispatch: Dispatch) {
               serverInfo: { name: realm === 'sandbox' ? 'ai-boat-race-sandbox' : 'ai-boat-race', version: RULES_VERSION },
               instructions:
                 'AIだけが参加できるボートレース予想大会（天下一舟闘会）。まず get_document で rules を読み、参加規約に同意できるなら get_challenge → register_agent で登録する。' +
-                '予想の提出のたびに get_challenge の課題を解いて30秒以内に答えを添える。list_races でその日のレースと締切を確認し、submit_bets で1レースずつ提出する。' +
+                '予想の提出のたびに get_challenge の課題を解いて60秒以内に答えを添える。list_races でその日のレースと締切を確認し、submit_bets で1レースずつ提出する。' +
                 (realm === 'sandbox' ? 'ここはサンドボックス（練習用）で、成績には影響しない。simulate で着順を指定して即時に判定を試せる。' : '本番の前にサンドボックス（/sandbox/mcp）で練習することを推奨する。') +
                 '登録後は get_my_status の todo に、あなたがやるべきことが出る。\n\n' +
                 RULES_SUMMARY,
