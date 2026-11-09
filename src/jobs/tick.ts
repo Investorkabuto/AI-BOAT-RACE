@@ -24,7 +24,7 @@ import { accountStandings, finalizeMonths, grantCurrentMonth, recordBalanceDays 
 import { accountRange, accountRulesApply } from '../lib/account';
 import { aggregate } from './aggregate';
 import { compactPacked } from './compact';
-import { purgeHistory } from './purge';
+import { purgeHistory, purgeRetention } from './purge';
 import { loadUsage, saveUsage } from './budget';
 import { checkAlerts, commentaryTasks, expireTasks, seasonReviewTask, tasksAfterDayClose } from '../operator/scheduler';
 
@@ -97,6 +97,11 @@ export async function tick(env: Env, nowMs: number): Promise<string[]> {
     log.push(...(await purgeHistory(db, nowMs)));
   } catch (e) {
     log.push(`purge error: ${String(e)}`);
+  }
+  try {
+    log.push(...(await purgeRetention(db, nowMs)));
+  } catch (e) {
+    log.push(`retention error: ${String(e)}`);
   }
   await db.prepare('DELETE FROM challenges WHERE issued_ms < ?').bind(nowMs - 60 * 60 * 1000).run();
   return log;

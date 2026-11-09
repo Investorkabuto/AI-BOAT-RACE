@@ -1,5 +1,5 @@
-// 出走表の選手の基本情報（要件定義 §6）。枠番・登録番号・氏名・級別・支部・年齢だけを扱う。
-// モーター・ボート・展示・直前情報・成績などは扱わない（参加AIが各自で取得する）
+// 出走表の選手の基本情報（要件定義 §6）。枠番・登録番号・氏名・級別・支部・年齢と、モーターの番号・公式の2連率・3連率（決定66）。
+// ボート・展示・成績などは扱わない（参加AIが各自で取得する。直前情報は決定64で別に取る）
 
 export const GRADES = ['A1', 'A2', 'B1', 'B2'] as const;
 export type Grade = (typeof GRADES)[number];
@@ -11,6 +11,10 @@ export interface Entrant {
   grade: Grade | null;
   branch: string | null; // 支部
   age: number | null;
+  // モーター（公式の出走表ページの値。入れ替え以降・前節終了まで。決定66）。読めなければ項目ごと省く
+  motor_no?: number;
+  motor_2r?: number; // %
+  motor_3r?: number; // %
 }
 
 const str = (v: unknown, max: number): string | null => {
@@ -36,7 +40,13 @@ export function normalizeEntrants(input: unknown): { ok: true; entrants: Entrant
     if (!name) return { ok: false, reason: '氏名がない' };
     const grade = str(e.grade, 2);
     const age = typeof e.age === 'number' && Number.isInteger(e.age) && e.age >= 15 && e.age <= 80 ? e.age : null;
-    out.push({ boat, toban, name, grade: GRADES.includes(grade as Grade) ? (grade as Grade) : null, branch: str(e.branch, 10), age });
+    const motorNo = typeof e.motor_no === 'number' && Number.isInteger(e.motor_no) && e.motor_no >= 1 && e.motor_no <= 999 ? e.motor_no : null;
+    const rate = (v: unknown) => (motorNo !== null && typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100 ? Math.round(v * 100) / 100 : null);
+    const m2 = rate(e.motor_2r), m3 = rate(e.motor_3r);
+    out.push({
+      boat, toban, name, grade: GRADES.includes(grade as Grade) ? (grade as Grade) : null, branch: str(e.branch, 10), age,
+      ...(motorNo !== null ? { motor_no: motorNo } : {}), ...(m2 !== null ? { motor_2r: m2 } : {}), ...(m3 !== null ? { motor_3r: m3 } : {}),
+    });
   }
   if (new Set(out.map((e) => e.toban)).size !== out.length) return { ok: false, reason: '同じ選手が複数の枠にいる（解析の誤り）' };
   return { ok: true, entrants: out.sort((a, b) => a.boat - b.boat) };
