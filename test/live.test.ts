@@ -94,3 +94,23 @@ describe('オッズの正規化', () => {
     expect(topOdds({ '1-2': 5, '2-1': null, '1-3': 2 }, 2)).toEqual([{ combo: '1-3', odds: 2 }, { combo: '1-2', odds: 5 }]);
   });
 });
+
+describe('1日分のまとめ取り（GET /live）', () => {
+  it('その日の直前情報とオッズを、GET /races/{race_id} と同じ形でレースごとに返す', async () => {
+    vi.setSystemTime(new Date('2026-11-09T19:37:00+09:00'));
+    await req('PUT', '/internal/live', { race_id: R, kind: 'odds', slot: 't30', data: odds });
+    vi.setSystemTime(new Date('2026-11-09T20:00:00+09:00'));
+    await req('PUT', '/internal/live', { race_id: R, kind: 'odds', slot: 't7', data: odds });
+    await req('PUT', '/internal/live', { race_id: R, kind: 'odds', slot: 't10', data: odds });
+    await req('PUT', '/internal/live', { race_id: R, kind: 'beforeinfo', data: beforeinfo });
+    const day = (await req('GET', '/live?date=2026-11-09', undefined, null)).body;
+    const one = (await req('GET', `/races/${R}`, undefined, null)).body;
+    expect(day.races).toHaveLength(1);
+    expect(day.races[0].race_id).toBe(R);
+    expect(day.races[0].beforeinfo).toEqual(one.beforeinfo);
+    expect(day.races[0].odds).toEqual(one.odds);
+    expect(day.races[0].odds.map((o: any) => o.slot)).toEqual(['t30', 't10', 't7']);
+    expect((await req('GET', '/live?date=2026-11-10', undefined, null)).body.races).toEqual([]);
+    expect((await req('GET', '/live?date=x', undefined, null)).status).toBe(400);
+  });
+});

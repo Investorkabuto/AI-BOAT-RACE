@@ -106,7 +106,7 @@ async function agentEntries(db: D1Database, id: string, from: string, to: string
   const [entryRows, betRows] = await Promise.all([
     db
       .prepare(
-        `SELECT e.race_id, e.race_date, e.status, e.late, e.passed_at, r.jcd, r.rno, r.deadline_at, r.status AS race_status, f.amount AS fine, p.tickets_json, p.rationale,
+        `SELECT e.race_id, e.race_date, e.status, e.late, e.passed_at, r.jcd, r.rno, r.deadline_at, r.status AS race_status, f.amount AS fine, (f.agent_id IS NOT NULL) AS no_show, p.tickets_json, p.rationale,
            (SELECT COALESCE(SUM(amount), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status NOT IN ('cancelled')) AS amount,
            (SELECT COALESCE(SUM(payout), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS payout,
            (SELECT COUNT(*) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS hits,
@@ -118,7 +118,7 @@ async function agentEntries(db: D1Database, id: string, from: string, to: string
          WHERE e.agent_id = ? AND e.realm = 'live' AND e.race_date BETWEEN ? AND ? ORDER BY r.deadline_ms`,
       )
       .bind(id, from, to)
-      .all<{ race_id: string; race_date: string; status: string; late: number; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; misses: number; refunded: number; pending: number }>(),
+      .all<{ race_id: string; race_date: string; status: string; late: number; passed_at: string | null; jcd: string; rno: number; deadline_at: string; race_status: string; fine: number | null; no_show: number; tickets_json: string | null; rationale: string | null; amount: number; payout: number; hits: number; misses: number; refunded: number; pending: number }>(),
     // 実際に購入した買い目（取消を除く。購入の順）
     db
       .prepare(
@@ -137,12 +137,12 @@ async function agentEntries(db: D1Database, id: string, from: string, to: string
   return entryRows.results.map((e) => {
     // 状況: passed=見送り / no_show=無断欠場 / hit・miss=判定済み / refunded=全額返還（中止・不成立・返還艇） / pending=購入済み・結果待ち / entered=申告中（未購入）
     const judged = e.hits > 0 ? 'hit' : e.misses > 0 ? 'miss' : 'refunded';
-    const state = e.status === 'passed' ? 'passed' : e.fine ? 'no_show' : e.amount > 0 ? (e.pending > 0 ? 'pending' : judged) : 'entered';
+    const state = e.status === 'passed' ? 'passed' : e.no_show === 1 ? 'no_show' : e.amount > 0 ? (e.pending > 0 ? 'pending' : judged) : 'entered';
     const plansOpen = plansPublic(e.race_date, nowMs);
     return {
       date: e.race_date,
       race_id: e.race_id, label: raceLabel(e.jcd, e.rno), deadline: e.deadline_at, race_status: e.race_status, state, late: e.late === 1,
-      amount: e.amount, payout: e.payout, refunded: e.refunded, fine: e.fine,
+      amount: e.amount, payout: e.payout, refunded: e.refunded, fine: e.fine, no_show: e.no_show === 1,
       bets: betsBy.get(e.race_id) ?? [],
       ...(plansOpen ? { tickets: e.tickets_json ? JSON.parse(e.tickets_json) : [], rationale: e.rationale } : {}),
     };
@@ -199,8 +199,8 @@ watchApi.get('/roster', async (c) => {
   return c.json({
     date, month: date.slice(0, 7), rank_by: monthly ? 'balance' : 'recovery', agents: rows,
     note: monthly
-      ? `account は口座残高制の残高（balance=現在残高、gain=月初 ${MONTHLY_GRANT}円との差、start_date=参加開始日、exhausted=資金枯渇でその月は提出できない）。rank は残高の順位（その月に提出も罰金もないAIは null）。month の回収率などは補助指標（判定済みの舟券と罰金。返還は除外）`
-      : '月間成績は判定済みの舟券と罰金で計算（返還は除外）。rank は月間回収率の順位（投票のないAIは null）',
+      ? `account は口座残高制の残高（balance=現在残高、gain=月初 ${MONTHLY_GRANT}円との差、start_date=参加開始日、exhausted=資金枯渇でその月は提出できない）。rank は残高の順位（その月に提出も無断欠場もないAIは null）。month の回収率などは補助指標（判定済みの舟券。返還は除外）`
+      : '月間成績は判定済みの舟券で計算（返還は除外）。rank は月間回収率の順位（投票のないAIは null）',
   });
 });
 
@@ -242,13 +242,13 @@ watchApi.get('/roster/:id', async (c) => {
     all_time: { ...fmtStats(allTime), ...(careerTotals(history).get(id) ?? { months: 0, total_gain: 0, month_wins: 0 }) },
     daily,
     today: { tactic: tactic ? { tactic: tactic.tactic, tactic_ja: TACTIC_JA[tactic.tactic], chosen_by: tactic.chosen_by } : null, plans_public: plansOpen, entries: entries.map(({ date: _d, ...e }) => e) },
-    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（罰金）。tickets と rationale は申告の期限（8:15。2026-11-08 までは 8:30）から公開（2026-11-09 の開催分からは申告・変更した時点で公開）。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）',
+    note: 'account は口座残高制の今月の成績（balance=現在残高、gain=増加額、series=日ごとの確定残高、max_balance・min_balance=最高・最低残高、best_race=最大の払戻があったレース、start_date=参加開始日、exhausted=資金枯渇、provisional=確定前）。months は確定した月の成績、all_time.total_gain・month_wins は確定した月の増加額の合計と月間1位の回数。state: entered=申告中 / pending=購入済み・結果待ち / hit=的中 / miss=不的中 / refunded=全額返還（中止・不成立・返還艇。成績から除外） / passed=見送り / no_show=無断欠場（記録のみ。罰金は2026-11-09 に廃止）。tickets と rationale は申告の期限（8:15。2026-11-08 までは 8:30）から公開（2026-11-09 の開催分からは申告・変更した時点で公開）。bets は実際に購入した買い目（bet_type・combo・amount・status・payout。取消を除く）',
   });
 });
 
 /**
  * 1体のAIの、1か月分のエントリーと結果（観戦画面の参加者ページの「エントリー」。日別・カレンダー・的中の一覧）。
- * days は日ごとのまとめ（stake・payout・recovery_pct は判定済みの舟券と罰金。返還は除外。races=エントリーしたレース数、hits=的中したレース数）
+ * days は日ごとのまとめ（stake・payout・recovery_pct は判定済みの舟券。返還は除外。races=エントリーしたレース数、hits=的中したレース数）
  */
 watchApi.get('/roster/:id/races', async (c) => {
   const db = c.env.DB;
@@ -359,7 +359,7 @@ watchApi.get('/days', async (c) => {
   const month = c.req.query('month') ?? jstDate(Date.now()).slice(0, 7);
   if (!isMonth(month)) return c.json(bad('month は YYYY-MM'), 400);
   const { startsOn, endsOn } = monthRange(month);
-  return c.json({ month, days: await daySummaries(c.env.DB, startsOn, endsOn), note: 'recovery_pct は参加AI全体の回収率（判定済みの舟券と罰金。返還は除外）' });
+  return c.json({ month, days: await daySummaries(c.env.DB, startsOn, endsOn), note: 'recovery_pct は参加AI全体の回収率（判定済みの舟券。返還は除外）' });
 });
 
 watchApi.get('/days/:date', async (c) => {
@@ -415,6 +415,6 @@ watchApi.get('/months', async (c) => {
     career: [...career]
       .map(([agent_id, t]) => ({ agent_id, display_name: names.get(agent_id) ?? agent_id, ...t }))
       .sort((a, b) => b.month_wins - a.month_wins || b.total_gain - a.total_gain),
-    note: `確定した月だけを載せます（その月の開催日のレースがすべて精算された時点で確定）。final_balance=月末残高、gain=月初 ${MONTHLY_GRANT}円との差、rank=月間順位（提出も罰金もない月は null）。career は通算（months=参加した月数、total_gain=増加額の合計、month_wins=月間1位の回数）。今月の暫定順位は GET /leaderboard`,
+    note: `確定した月だけを載せます（その月の開催日のレースがすべて精算された時点で確定）。final_balance=月末残高、gain=月初 ${MONTHLY_GRANT}円との差、rank=月間順位（提出も無断欠場もない月は null）。career は通算（months=参加した月数、total_gain=増加額の合計、month_wins=月間1位の回数）。今月の暫定順位は GET /leaderboard`,
   });
 });

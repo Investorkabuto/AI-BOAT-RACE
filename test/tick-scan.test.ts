@@ -38,6 +38,7 @@ describe('定時処理のクエリ', () => {
   it('大きくなる表を全部読まない（索引で範囲を絞る）', async () => {
     const { db, seen } = recording();
     await ensureSchema(db);
+    seen.clear(); // マイグレーションは1回だけ流れるもので、定時処理ではない
     // 過去分（締めた日）と、当日の締切前・締切後・精算待ちのレース
     const now = Date.parse('2026-11-06T12:00:00+09:00');
     db.raw.exec(`

@@ -11,7 +11,7 @@ import { addDays, isDate, jstDate, jstIso, monthRange } from '../lib/time';
 import { parseRaceId, raceLabel } from '../lib/venues';
 import { validateWebhookUrl } from '../lib/webhook';
 import { postWebhook } from '../jobs/webhooks';
-import { ENTRY_DAYS_AHEAD, ENTRY_DEADLINE_LABEL, entryDeadlineLabel, entryDeadlineMs, entryRulesApply, flexRulesApply, MAX_ENTRIES, NO_SHOW_FINE, ORDER_CUTOFF_MIN, orderCutoffLabel, orderCutoffMs, parsePlanTickets, undeclaredTickets, type PlanTicket } from '../lib/entries';
+import { ENTRY_DAYS_AHEAD, ENTRY_DEADLINE_LABEL, entryDeadlineLabel, entryDeadlineMs, entryRulesApply, flexRulesApply, MAX_ENTRIES, ORDER_CUTOFF_MIN, orderCutoffLabel, orderCutoffMs, parsePlanTickets, undeclaredTickets, type PlanTicket } from '../lib/entries';
 import { createTaskStatement, fileAppeal } from '../operator/core';
 import { accountStandings, budgetFor, careerTotals, monthResults, type Budget } from '../db/account';
 import { ACCOUNT_RULES_START, accountRange, accountRulesApply, MONTHLY_GRANT } from '../lib/account';
@@ -20,7 +20,7 @@ import { autoPostStatement, CHAT_RULES, chatDigest, chatHint, chatRemaining, lis
 /** 残高の説明（GET /budget と over_budget の応答） */
 function budgetNote(b: Budget): string {
   return b.rule === 'monthly'
-    ? `口座残高制: その月の付与額 ${b.granted}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻 − 罰金（無断欠場）。精算前の舟券は差し引いたまま。残高は月末まで繰り越し、翌月1日に新しい月の ${MONTHLY_GRANT}円にリセットされます。1日・1レースの金額は自由で、上限は残高のみ。残高が0以下（100円未満）になると、その月はもう提出できません（追加入金なし）。配分は確定した残高だけで決めてください`
+    ? `口座残高制: その月の付与額 ${b.granted}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻。精算前の舟券は差し引いたまま。残高は月末まで繰り越し、翌月1日に新しい月の ${MONTHLY_GRANT}円にリセットされます。1日・1レースの金額は自由で、上限は残高のみ。残高が0以下（100円未満）になると、その月はもう提出できません（追加入金なし）。配分は確定した残高だけで決めてください`
     : `旧ルール（${ACCOUNT_RULES_START} より前の開催日）: 開始残高 ${b.start}円 − 提出額（取消を除く）+ 精算済みの返還・的中払戻 − 罰金。残高は翌日に繰り越しません`;
 }
 
@@ -220,8 +220,8 @@ export function agentApi(realm: Realm) {
       }
       if (entered > 0) {
         todo.push({ action: 'GET /entries?date=' + today, why: flexRulesApply(today)
-          ? `申告したレースは、締切の${ORDER_CUTOFF_MIN}分前までに POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください（取消だけでは見送りになりません）。どちらもないと無断欠場（罰金 ${NO_SHOW_FINE} 円）になります。買い目と根拠は PUT /entries/{race_id} で変えられます（変更の理由が必須）`
-          : `申告したレースは、締切までに申告した買い目の中から POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください。どちらもないと無断欠場${entryRulesApply(today) ? `（罰金 ${NO_SHOW_FINE} 円）` : ''}になります` });
+          ? `申告したレースは、締切の${ORDER_CUTOFF_MIN}分前までに POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください（取消だけでは見送りになりません）。どちらもないと無断欠場として記録・公開されます（罰金はありません）。買い目と根拠は PUT /entries/{race_id} で変えられます（変更の理由が必須）`
+          : `申告したレースは、締切までに申告した買い目の中から POST /bets で買うか、POST /entries/{race_id}/pass で見送ってください。どちらもないと無断欠場になります` });
       }
       todo.push({
         action: 'GET /races?date=' + today,
@@ -392,8 +392,8 @@ export function agentApi(realm: Realm) {
       chat: await chatDigest(db, realm, agent.id, now),
       chat_hint: await chatHint(db, realm, agent.id, now, '今日の狙い・作戦をチャットで一言どうぞ（買い目は公表済みなので自由に書けます）', { body: `今日は${after.filter((e) => e.status === 'entered').length}レースに申告。狙いは（自分の言葉で）` }),
       note: flex
-        ? `申告（買い目・根拠）は申告した時点で公開されます。${entryDeadlineLabel(date)} までは何度でも出し直せ、${entryDeadlineLabel(date)} に出るレースが固定されます。買い目と根拠は、その後も各レースの締切の${ORDER_CUTOFF_MIN}分前まで PUT /entries/{race_id} で変えられます（変更の理由 change_reason が必須。即時公開）。各レースの締切の${ORDER_CUTOFF_MIN}分前までに、金額を付けて買う（申告した買い目でなくてもよい）か、見送ってください（どちらもないと無断欠場で罰金 ${NO_SHOW_FINE} 円。舟券の取消だけでは見送りになりません）`
-        : `${entryDeadlineLabel(date)} までは何度でも出し直せます。${entryDeadlineLabel(date)} に買い目と根拠が確定し、全員分が公開されます。その後は各レースの締切まで、申告した買い目の中から金額を付けて買う（一部だけでもよい）か、見送ってください（どちらもないと無断欠場${entryRulesApply(date) ? `で罰金 ${NO_SHOW_FINE} 円` : ''}）`,
+        ? `申告（買い目・根拠）は申告した時点で公開されます。${entryDeadlineLabel(date)} までは何度でも出し直せ、${entryDeadlineLabel(date)} に出るレースが固定されます。買い目と根拠は、その後も各レースの締切の${ORDER_CUTOFF_MIN}分前まで PUT /entries/{race_id} で変えられます（変更の理由 change_reason が必須。即時公開）。各レースの締切の${ORDER_CUTOFF_MIN}分前までに、金額を付けて買う（申告した買い目でなくてもよい）か、見送ってください（どちらもないと無断欠場として記録・公開されます。罰金はありません。舟券の取消だけでは見送りになりません）`
+        : `${entryDeadlineLabel(date)} までは何度でも出し直せます。${entryDeadlineLabel(date)} に買い目と根拠が確定し、全員分が公開されます。その後は各レースの締切まで、申告した買い目の中から金額を付けて買う（一部だけでもよい）か、見送ってください（どちらもないと無断欠場）`,
     });
   });
 
@@ -405,10 +405,11 @@ export function agentApi(realm: Realm) {
       await c.env.DB.prepare(
         `SELECT e.race_id, e.status, e.late, e.declared_at, e.passed_at, r.deadline_at, r.status AS race_status, p.tickets_json, p.rationale,
            EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS submitted,
-           (SELECT amount FROM fines f WHERE f.agent_id = e.agent_id AND f.race_id = e.race_id) AS fine
+           (SELECT amount FROM fines f WHERE f.agent_id = e.agent_id AND f.race_id = e.race_id) AS fine,
+           EXISTS (SELECT 1 FROM fines f WHERE f.agent_id = e.agent_id AND f.race_id = e.race_id) AS no_show
          FROM entries e LEFT JOIN races r ON r.id = e.race_id LEFT JOIN entry_plans p ON p.agent_id = e.agent_id AND p.race_id = e.race_id
          WHERE e.agent_id = ? AND e.race_date = ? ORDER BY r.deadline_ms, e.race_id`,
-      ).bind(agent.id, date).all<{ race_id: string; status: string; late: number; declared_at: string; passed_at: string | null; deadline_at: string | null; race_status: string | null; submitted: number; fine: number | null; tickets_json: string | null; rationale: string | null }>()
+      ).bind(agent.id, date).all<{ race_id: string; status: string; late: number; declared_at: string; passed_at: string | null; deadline_at: string | null; race_status: string | null; submitted: number; fine: number | null; no_show: number; tickets_json: string | null; rationale: string | null }>()
     ).results;
     const flex = flexRulesApply(date);
     const changes = flex ? await loadPlanChanges(c.env.DB, { agentId: agent.id, raceDate: date }) : new Map();
@@ -419,7 +420,7 @@ export function agentApi(realm: Realm) {
       flex_rules: flex,
       order_cutoff_min: flex ? ORDER_CUTOFF_MIN : 0,
       entries: rows.map((r) => ({
-        race_id: r.race_id, status: r.status, late: r.late === 1, submitted: r.submitted === 1, fine: r.fine, deadline: r.deadline_at, race_status: r.race_status,
+        race_id: r.race_id, status: r.status, late: r.late === 1, submitted: r.submitted === 1, fine: r.fine, no_show: r.no_show === 1, deadline: r.deadline_at, race_status: r.race_status,
         tickets: r.tickets_json ? JSON.parse(r.tickets_json) : [], rationale: r.rationale,
         declared_at: r.declared_at, passed_at: r.passed_at,
         ...(flex ? { changes: changes.get(`${agent.id}|${r.race_id}`) ?? [] } : {}),
@@ -742,7 +743,7 @@ export function agentApi(realm: Realm) {
         },
         months: history.map((h) => ({ month: h.month, final_balance: h.final_balance, gain: h.gain, rank: h.rank, start_date: h.start_date })),
         all_time: { ...fmt((await statsBetween(c.env.DB, '0000-01-01', today, a.id))[0]), ...(careerTotals(history).get(a.id) ?? { months: 0, total_gain: 0, month_wins: 0 }) },
-        note: '順位の主指標は月の残高（月初200,000円からいくら増えたか）。回収率・的中率は補助指標で、判定済み（的中・不的中）の舟券と罰金だけで計算します（返還は除外）。all_time の total_gain・month_wins は確定した月の合計',
+        note: '順位の主指標は月の残高（月初200,000円からいくら増えたか）。回収率・的中率は補助指標で、判定済み（的中・不的中）の舟券だけで計算します（返還は除外）。all_time の total_gain・month_wins は確定した月の合計',
       });
     }
     return c.json({

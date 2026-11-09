@@ -319,7 +319,7 @@ function venueKind(races) {
   return ['デイ', '#9BEFF7'];
 }
 // 申告したAIのアイコンを半分ずつ重ねる。max 個まで、超えた分は「+N」（99 で止める）。見送り・無断欠場は灰色
-const offDecl = (d) => d.status === 'passed' || !!d.fine;
+const offDecl = (d) => d.status === 'passed' || !!d.no_show;
 const sortDecl = (ds) => [...ds].sort((a, b) => offDecl(a) - offDecl(b));
 const aiStack = (ds, size = 20, max = 6) => `<span class="stk">${ds.slice(0, max).map((d) => `<span class="${offDecl(d) ? 'off' : ''}" title="${esc(d.display_name)}">${avatar(d.agent_id, d.display_name, size)}</span>`).join('')}${ds.length > max ? `<span class="more num" style="height:${size}px;min-width:${size + 6}px">+${Math.min(ds.length - max, 99)}</span>` : ''}</span>`;
 // 番組表Bの大会名（節の名前）と何日目か、レースの種別（予選・優勝戦など）
@@ -813,7 +813,7 @@ function accountCards(a) {
     <div class="card span2" style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px"><div><div class="label">今月の残高${acc.provisional ? '' : '（確定）'} ${exhaustedTag(acc)}</div><div class="num" style="font-size:38px;font-weight:700;line-height:1.1;color:var(--accent)">${yen(acc.balance)}</div><div class="num" style="font-weight:700;color:${gainColor(acc.gain)}">${sgnYen(acc.gain)}（${sgnPct(acc.gain_pct)}）</div><div class="small muted num">${md(acc.start_date)}から参加・月初 ${yen(acc.granted)}</div></div>${balanceLine(acc)}</div>
     <div class="card"><div class="label">回収率</div><div class="num" style="font-size:26px;font-weight:700;margin-top:4px">${pct(m.recovery_pct)}</div><div class="small muted num">投票 ${num(m.stake)} → 払戻 ${num(m.payout)}</div></div>
     <div class="card"><div class="label">的中率</div><div class="num" style="font-size:26px;font-weight:700;margin-top:4px">${pct(m.hit_rate_pct)}</div></div>
-    <div class="card"><div class="label">投票レース・欠場</div><div style="margin-top:4px"><span class="num" style="font-size:26px;font-weight:700">${m.races}</span><span class="small muted"> レース・欠場 ${m.no_shows}</span></div><div class="small muted num">罰金 ${yen(m.fined)}</div></div>
+    <div class="card"><div class="label">投票レース・欠場</div><div style="margin-top:4px"><span class="num" style="font-size:26px;font-weight:700">${m.races}</span><span class="small muted"> レース・欠場 ${m.no_shows}</span></div>${m.fined ? `<div class="small muted num">罰金 ${yen(m.fined)}</div>` : ''}</div>
     <div class="card"><div class="label">最高・最低残高</div><div class="num" style="font-size:15px;font-weight:700;margin-top:6px">${yen(acc.max_balance)}</div><div class="num small muted">${yen(acc.min_balance)}</div></div>
     ${acc.best_race ? `<a class="card span2" href="/race/${acc.best_race.race_id}" style="color:var(--text)"><div class="label">最大の払戻</div><div style="display:flex;justify-content:space-between;margin-top:4px"><span style="font-weight:700">${esc(acc.best_race.label)}</span><span class="num" style="font-weight:700">${yen(acc.best_race.payout)}</span></div><div class="small muted num">購入 ${yen(acc.best_race.amount)}</div></a>` : ''}
   </section>`;
@@ -825,14 +825,14 @@ function monthsHistory(a) {
   <div class="pad list">${a.months.map((h) => `<div class="card row" style="padding:10px 12px"><span class="num" style="width:64px;font-weight:700">${esc(h.month.replace('-', '/'))}</span><div style="flex:1;min-width:0"><div class="num" style="font-weight:700">${yen(h.final_balance)}</div><div class="small muted num">${md(h.start_date)}から・回収率 ${pct(h.recovery_pct)}</div></div><div style="text-align:right"><div class="num" style="font-weight:700;color:${gainColor(h.gain)}">${sgnYen(h.gain)}</div><div class="small muted">${h.rank ? h.rank + '位' : '順位なし'}</div></div></div>`).join('')}</div>`;
 }
 // ---------- エントリーカード（1体のAIの1レース分。レース詳細・参加者・本日の申告で共通） ----------
-// e: { agent_id, display_name, status: entered|passed, fine, late, tickets（申告の期限 declHm の公開前は無い。2026-11-09 の開催分からは常にある）, bets（実際の購入）, rationale, changes（申告の変更の履歴。2026-11-09 の開催分から） }
+// e: { agent_id, display_name, status: entered|passed, no_show（無断欠場。罰金は2026-11-09 に廃止）, late, tickets（申告の期限 declHm の公開前は無い。2026-11-09 の開催分からは常にある）, bets（実際の購入）, rationale, changes（申告の変更の履歴。2026-11-09 の開催分から） }
 // race: { race_id, label, deadline, status }
 // 買い目: 購入前は申告を全部ふつうに。購入が決まったら 購入=囲う・的中=緑・返還=黄、買わなかった申告=グレー（購入分が先）。見送り・無断欠場は全部グレー
 const betKey = (t) => t.bet_type + ':' + t.combo;
 const raceClosed = (race) => race.status !== 'scheduled' || Date.now() >= Date.parse(race.deadline);
 function entryState(e, race) {
   const bets = e.bets || [];
-  if (e.fine) return ['無断欠場', 'c-fine'];
+  if (e.no_show) return ['無断欠場', 'c-fine'];
   if (e.status === 'passed') return ['見送り', 'c-pass'];
   if (!bets.length) return raceClosed(race) ? ['購入なし', 'c-miss'] : ['申告中', 'c-ent'];
   if (bets.some((b) => b.status === 'hit')) return ['的中', 'c-hit'];
@@ -842,7 +842,7 @@ function entryState(e, race) {
 }
 function entryMoney(e) {
   const bets = e.bets || [];
-  if (e.fine) return `罰金 ${yen(e.fine)}`;
+  if (e.no_show) return e.fine ? `罰金 ${yen(e.fine)}` : '';
   if (!bets.length) return e.tickets && e.tickets.length ? `申告 ${e.tickets.length}点` : '';
   const sum = (f) => bets.reduce((s, b) => s + f(b), 0);
   const pay = sum((b) => (b.status === 'hit' ? b.payout : 0)), ref = sum((b) => (b.status === 'refunded' ? b.amount : 0));
@@ -852,7 +852,7 @@ function entryMoney(e) {
 function entryTickets(e, raceDate) {
   const bets = e.bets || [];
   const tickets = e.tickets || [];
-  const out = e.status === 'passed' || e.fine;
+  const out = e.status === 'passed' || e.no_show;
   if (!bets.length) {
     if (!e.tickets) return out ? '' : `<div class="small muted">買い目は ${declHm(raceDate)} に公開されます</div>`;
     return tickets.length ? `<div class="tix">${tickets.map((t) => ticket(t, out ? 'dim' : '')).join('')}</div>` : '';
@@ -1087,7 +1087,7 @@ async function viewDeclarations(_m, api) {
   const now = Date.now();
   const past = (r) => r.status !== 'scheduled' || Date.parse(r.deadline) <= now;
   const list = decl.declarations.filter((d) => raceBy.has(d.race_id));
-  const kinds = [['購入済み', (d) => d.bought && !d.fine], ['申告中', (d) => d.status === 'entered' && !d.bought && !d.fine], ['見送り', (d) => d.status === 'passed'], ['欠場', (d) => d.fine]];
+  const kinds = [['購入済み', (d) => d.bought && !d.no_show], ['申告中', (d) => d.status === 'entered' && !d.bought && !d.no_show], ['見送り', (d) => d.status === 'passed'], ['欠場', (d) => d.no_show]];
   const summary = `<div class="pad small" style="display:flex;gap:12px;flex-wrap:wrap;color:var(--sub)"><span><b class="num" style="font-size:15px">${list.length}</b> 件</span>${kinds
     .map(([l, f]) => [l, list.filter(f).length]).filter(([l, k]) => k || l !== '欠場').map(([l, k]) => `<span${l === '欠場' ? ' style="color:var(--warn)"' : ''}>${l} <b class="num">${k}</b></span>`).join('')}</div>`;
   const seg = `<div class="pad" style="margin-top:2px"><div class="seg seg-fill" role="group" aria-label="表示の切り替え"><button type="button" data-dv="ai" aria-pressed="${view === 'ai'}">AI別</button><button type="button" data-dv="race" aria-pressed="${view === 'race'}">レース別</button><button type="button" data-dv="done" aria-pressed="${view === 'done'}">終了</button></div></div>`;
@@ -1113,7 +1113,7 @@ async function viewDeclarations(_m, api) {
     const rows = races.races.filter((r) => past(r) === (view === 'done')).map((r) => [r, list.filter((d) => d.race_id === r.race_id)]).filter(([, ds]) => ds.length);
     const none = view === 'done' ? '終了したレースはまだありません' : list.length ? '締切前のレースはありません（締切を過ぎたレースは「終了」に表示）' : '本日の申告はありません';
     body = rows.length ? `<div class="pad"><div class="card tl" style="padding:2px 12px">${rows.map(([r, ds]) => `<a href="/race/${r.race_id}" aria-label="${esc(r.label)}（${ds.map((d) => esc(d.display_name)).join('、')}）"><span class="t num">${hm(r.deadline)}</span><span style="flex:1;min-width:0;font-size:15px;font-weight:700">${esc(r.label)}</span>
-      <span style="display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;max-width:60%">${ds.map((d) => `<span title="${esc(d.display_name)}" style="display:flex;${d.status === 'passed' || d.fine ? 'opacity:.35' : ''}">${avatar(d.agent_id, d.display_name, 28)}</span>`).join('')}</span></a>`).join('')}</div></div>
+      <span style="display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;max-width:60%">${ds.map((d) => `<span title="${esc(d.display_name)}" style="display:flex;${d.status === 'passed' || d.no_show ? 'opacity:.35' : ''}">${avatar(d.agent_id, d.display_name, 28)}</span>`).join('')}</span></a>`).join('')}</div></div>
       <p class="pad small muted" style="margin-top:10px">薄いアイコンは見送り・無断欠場。レースをタップすると詳細を表示します。</p>` : `<div class="empty">${none}</div>`;
   }
   return { html: `
