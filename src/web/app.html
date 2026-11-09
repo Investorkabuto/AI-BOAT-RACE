@@ -159,6 +159,9 @@ nav.tabs .unread[hidden]{display:none}
 .stk .off .av{filter:grayscale(1) brightness(.45)}
 .stk .hit{position:relative;z-index:1}.stk .hit .av,.card .stk .hit .av{box-shadow:0 0 0 2px var(--ok)}
 .stk .more{align-items:center;justify-content:center;padding:0 5px;border-radius:99px;background:var(--track);color:var(--sub);font-size:11px;font-weight:700;box-shadow:0 0 0 2px var(--bg)}
+.rres{display:flex;flex-direction:column;gap:6px;padding:10px 0;border-bottom:1px solid var(--line);color:var(--text)}.rres:last-child{border-bottom:0}
+.rres .rh{display:flex;align-items:center;gap:8px}.rres .rh .t{width:44px;font-weight:700;color:var(--sub)}.rres .rh b{flex:1;min-width:0;font-size:15px}
+.rres .rb{display:flex;align-items:center;gap:8px;padding-left:52px}.rres .rt{flex:1;min-width:0;color:var(--sub)}
 .tnow{display:flex;align-items:center;gap:8px;margin:6px 0;color:var(--warn);font-size:11px;font-weight:700}.tnow::before,.tnow::after{content:'';height:1px;background:rgba(255,138,61,.5)}.tnow::before{width:66px}.tnow::after{flex:1}
 /* 折りたたみのエントリー（参加者ページ）。1枚のカードに区切り線で並べ、⌄ で買い目を開く */
 .card.fold{padding:0 12px}
@@ -359,6 +362,35 @@ function raceTimeline(races, declBy, { now, showPast = true, size = 20, max = 6 
   const html = `<div class="tline">${showPast ? ended.map(item).join('') : ''}${showPast && ended.length && upcoming.length ? '<div class="tnow"><span>いま</span></div>' : ''}${upcoming.map(item).join('')}</div>`;
   return { ended, upcoming, html };
 }
+// 直近の結果（本日ページ）。AIが出たレースの結果を締切の新しい順に最大3件。的中したAIは緑の枠、的中なしのレースも出す
+// 締切から90分を過ぎたレースは出さない（1件も残らなければ最新の1件）。結果の確定したレースがなければ欄ごと出さない
+const MANSHU = 10000;
+function recentResults(list, declBy, now) {
+  const done = list.filter((r) => r.result && r.result.status === 'official' && declBy.has(r.race_id)).sort((a, b) => byDeadline(b, a));
+  if (!done.length) return '';
+  const fresh = done.filter((r) => now - Date.parse(r.deadline) <= 90 * 60e3).slice(0, 3);
+  const hitPay = (d) => d.bets.reduce((t, b) => t + (b.status === 'hit' ? b.payout : 0), 0);
+  const rows = (fresh.length ? fresh : done.slice(0, 1)).map((r) => {
+    const ds = declBy.get(r.race_id);
+    const hits = ds.filter(hitDecl);
+    const sr = r.result.sanrentan;
+    const man = !!sr && sr.payout >= MANSHU;
+    let text, right = '';
+    if (hits.length) {
+      // 的中したAI（2体まで名前、ほかは体数）と、先頭のAIの的中した買い目。右は払戻（2体以上は合計）
+      const names = hits.slice(0, 2).map((d) => esc(d.display_name)).join('・') + (hits.length > 2 ? `ほか${hits.length - 2}体` : '');
+      const b = hits[0].bets.find((x) => x.status === 'hit');
+      text = `<b style="color:var(--ok)">${names}が的中</b>${man ? ' <span class="kind">万舟</span>' : ''}　${esc(BET_JA[b.bet_type] || b.bet_type)} <span class="num">${esc(b.combo)}</span>`;
+      right = `<b class="num" style="font-size:16px;color:var(--ok);white-space:nowrap">${hits.length > 1 ? '<span class="small" style="font-weight:400">計 </span>' : ''}${yen(hits.reduce((t, d) => t + hitPay(d), 0))}</b>`;
+    } else {
+      // 的中なし: 買ったAIの数と、3連単の組番・払戻（万舟は金色）
+      const n = ds.filter((d) => !offDecl(d)).length;
+      text = `<span class="muted">${n ? `的中なし（${n}体）` : '全員見送り'}${sr ? `　3連単 <span class="num">${esc(sr.combo)}</span> <span class="num"${man ? ' style="color:var(--gold)"' : ''}>${yen(sr.payout)}</span>` : ''}</span>`;
+    }
+    return `<a class="rres" href="/race/${r.race_id}"><span class="rh"><span class="num t">${hm(r.deadline)}</span><b>${esc(r.label)}</b>${top3(r)}</span><span class="rb">${aiStack(ds, 22, 5)}<span class="rt small">${text}</span>${right}</span></a>`;
+  }).join('');
+  return `<section class="pad" style="margin-top:8px" aria-labelledby="rres-h"><div class="card" style="padding:10px 12px 2px"><div style="display:flex;align-items:baseline;gap:8px"><h2 id="rres-h" style="margin:0;font-size:13px;color:var(--sub)">直近の結果</h2><span class="small muted">AIが出たレース・新しい順</span><span style="flex:1"></span><a class="small" href="/today/declarations?v=time">すべて ›</a></div>${rows}</div></section>`;
+}
 async function viewHome(_m, api) {
   const date = today();
   const view = store.get('homeView') === 'time' ? 'time' : 'venue';
@@ -421,6 +453,7 @@ async function viewHome(_m, api) {
   </section>
   ${installBanner()}
   <div id="pushbox"></div>
+  ${recentResults(list, declBy, now)}
   <div class="sect"><h1 class="disp">本日のレース</h1>
     <div class="seg" role="group" aria-label="表示の切り替え"><button type="button" data-view="venue" aria-pressed="${view === 'venue'}">会場別</button><button type="button" data-view="time" aria-pressed="${view === 'time'}">時系列</button></div>
   </div>
@@ -1100,7 +1133,9 @@ function openOrderSheet(agentId, raceId, label) {
 async function viewDeclarations(_m, api) {
   const date = today();
   const [decl, races, roster] = await Promise.all([api(`/declarations?date=${date}`), api(`/races?date=${date}`), api(`/roster?date=${date}`)]);
-  // 以前の「レース別」「終了」はタイムラインにまとめた
+  // ?v=time・?v=ai で開いたときはその表示にする（本日ページの「直近の結果」の「すべて ›」から）。以前の「レース別」「終了」はタイムラインにまとめた
+  const qv = new URLSearchParams(location.search).get('v');
+  if (qv === 'time' || qv === 'ai') store.set('declView', qv);
   const view = ['race', 'done', 'time'].includes(store.get('declView')) ? 'time' : 'ai';
   const raceBy = new Map(races.races.map((r) => [r.race_id, r]));
   const now = Date.now();
@@ -1138,7 +1173,7 @@ async function viewDeclarations(_m, api) {
   ${decl.plans_public ? '' : `<p class="pad small muted" style="margin:8px 0 0">買い目は ${declHm(date)} に公開されます。</p>`}
   <div style="height:12px"></div>
   ${body}`, bind() {
-    $view.querySelectorAll('[data-dv]').forEach((b) => b.addEventListener('click', () => { store.set('declView', b.dataset.dv); render(false, true); }));
+    $view.querySelectorAll('[data-dv]').forEach((b) => b.addEventListener('click', () => { store.set('declView', b.dataset.dv); history.replaceState(history.state, '', location.pathname); render(false, true); }));
     bindCopy();
     bindFold();
   } };
