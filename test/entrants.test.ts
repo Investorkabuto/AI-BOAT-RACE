@@ -18,6 +18,20 @@ describe('normalizeEntrants', () => {
     expect(r.ok && r.entrants[0]).toEqual({ boat: 1, toban: '4001', name: 'a', grade: null, branch: null, age: null });
   });
 
+  it('モーターの番号・公式の2連率・3連率を残し、読めない値は項目ごと省く（決定66）', () => {
+    const r = normalizeEntrants([
+      { boat: 1, toban: '4001', name: 'a', motor_no: 16, motor_2r: 28.15, motor_3r: 45.19 },
+      { boat: 2, toban: '4002', name: 'b', motor_no: 0, motor_2r: 30, motor_3r: 50 },
+      { boat: 3, toban: '4003', name: 'c', motor_no: 22, motor_2r: 120, motor_3r: '51' },
+    ]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.entrants[0]).toMatchObject({ motor_no: 16, motor_2r: 28.15, motor_3r: 45.19 });
+    expect(r.entrants[1]).not.toHaveProperty('motor_no');
+    expect(r.entrants[1]).not.toHaveProperty('motor_2r');
+    expect(r.entrants[2]).toEqual({ boat: 3, toban: '4003', name: 'c', grade: null, branch: null, age: null, motor_no: 22 });
+  });
+
   it('枠番の重複・登録番号の誤り・氏名なし・人数の誤りは受け付けない', () => {
     const dup = six();
     dup[1]!.boat = 1;

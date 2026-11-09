@@ -2,7 +2,7 @@
 // 過去データと統計はもち側が持つ（2023-11 以降を保有）ので、アプリは過去分の取り込みをやめ、取り込み済みの分を消す。
 // 定時処理（5分ごと）が古い日から1回に PURGE_DAYS_PER_TICK 日ずつ消す。消し終えたら事前集計の古い月も消し、以後は何もしない。
 // 舟券・申告のある日は消さない（大会の記録を守る。大会開始前なので無いはずだが念のため）
-import { jstIso } from '../lib/time';
+import { addDays, jstDate, jstIso } from '../lib/time';
 import { dayIdRange } from '../db/boats';
 import { markAggDirty } from './aggregate';
 
@@ -70,4 +70,33 @@ async function setState(db: D1Database, value: string, nowMs: number) {
     .prepare('INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
     .bind(STATE_KEY, value, jstIso(nowMs))
     .run();
+}
+
+// ---------- 保持期間（決定66、2026-11-09 管理者決定） ----------
+// もちのフィード（card_supplements。観戦画面の表示用）と、締切前の直前情報・オッズ（決定64）は、90日より古い日の分を消す。
+// D1 の1データベースの上限（500MB）に届かないようにするため。成績・残高・精算の正本は別の表にあるので、大会の記録は消えない。
+// 1日1回（日本時間の日付が変わった後の最初の定時処理）だけ動く
+
+/** 残す日数（レースの日付が今日から数えてこの日数より前なら消す） */
+export const RETENTION_DAYS = 90;
+const RETENTION_KEY = 'purge:retention';
+
+/** 消す表（race_id は YYYYMMDD-JJ-RR なので、文字列の比較で日付より前を選べる） */
+const RETENTION_TABLES = ['card_supplements', 'race_beforeinfo', 'race_odds_v2'];
+
+export async function purgeRetention(db: D1Database, nowMs: number, days = RETENTION_DAYS): Promise<string[]> {
+  const today = jstDate(nowMs);
+  const state = await db.prepare('SELECT value FROM app_state WHERE key = ?').bind(RETENTION_KEY).first<{ value: string }>();
+  if (state?.value === today) return [];
+  const cutoff = addDays(today, -days); // この日より前を消す
+  const key = cutoff.replaceAll('-', '');
+  const res = await db.batch([
+    ...RETENTION_TABLES.map((t) => db.prepare(`DELETE FROM ${t} WHERE race_id < ?`).bind(key)),
+    db.prepare('DELETE FROM card_supplement_days WHERE race_date < ?').bind(cutoff),
+    db
+      .prepare('INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+      .bind(RETENTION_KEY, today, jstIso(nowMs)),
+  ]);
+  const n = res.slice(0, RETENTION_TABLES.length + 1).reduce((s, r) => s + (r.meta.changes ?? 0), 0);
+  return n ? [`purge: retention before ${cutoff} (${n} rows)`] : [];
 }

@@ -129,12 +129,14 @@ GRADES = {"A1", "A2", "B1", "B2"}
 def parse_entrants(html: str) -> list[dict]:
     """出走表ページから、選手の基本情報（枠番・登録番号・氏名・級別・支部・年齢）を取り出す。
 
-    要件定義 §6（2026-11-04 管理者決定 A）により、モーター・ボート・展示・成績などは取らない。
+    モーターは番号と公式の2連率・3連率も取る（決定66。同じページなのでリクエストは増えない）。
+    ボート・展示・成績などは取らない（要件定義 §6、2026-11-04 管理者決定 A）。
     1艇分は、枠番のセル（class に is-boatColor1〜6）を含む tbody（または tr）。その中の
     選手プロフィールへのリンク（toban=登録番号）、「4444 / A1」の形の登録番号と級別、
     「東京/東京 34歳/52.0kg」の形の支部と年齢を拾う。解析できなければ空のリストを返す。
     """
     soup = BeautifulSoup(html, "html.parser")
+    motor_col = motor_column(soup)
     out: dict[int, dict] = {}
     # 1艇分は1つの tbody。その最初のセルが枠番（class に is-boatColor1〜6）。
     # tbody の中には今節の成績などにも is-boatColor のセルがあるので、最初のセルだけを枠番として見る
@@ -178,11 +180,48 @@ def parse_entrants(html: str) -> list[dict]:
             "grade": g.group(1) if g else None,
             "branch": b.group(1) if b else None,
             "age": int(age.group(1)) if age else None,
+            **parse_motor(block, motor_col),
         }
     result = [out[k] for k in sorted(out)]
     if len({e["toban"] for e in result}) != len(result):
         return []  # 同じ選手が2つの枠にいるのは解析の誤り。送らない
     return result
+
+
+def motor_column(soup) -> int | None:
+    """出走表の見出しの行から「モーター」の列の位置（td の何番目か。colspan を数える）を求める。見つからなければ None"""
+    for tr in soup.find_all("tr"):
+        ths = tr.find_all("th", recursive=False)
+        names = [nfkc(th.get_text(" ")).strip() for th in ths]
+        if "モーター" not in names or "枠" not in names:
+            continue
+        col = 0
+        for th, name in zip(ths, names):
+            if name == "モーター":
+                return col
+            col += int(th.get("colspan") or 1)
+    return None
+
+
+def parse_motor(block, col: int | None) -> dict:
+    """1艇分の tbody から、モーターの番号・2連率・3連率（公式。入れ替え以降・前節終了まで）を取る。読めなければ空"""
+    if col is None:
+        return {}
+    tr = block.find("tr")
+    tds = tr.find_all("td", recursive=False) if tr else []
+    if len(tds) <= col:
+        return {}
+    parts = [nfkc(x).strip() for x in tds[col].stripped_strings]
+    if len(parts) != 3 or not re.fullmatch(r"\d{1,3}", parts[0]):
+        return {}
+    no = int(parts[0])
+    out: dict = {"motor_no": no} if 1 <= no <= 999 else {}
+    if not out:
+        return {}
+    for key, v in (("motor_2r", parts[1]), ("motor_3r", parts[2])):
+        if re.fullmatch(r"\d{1,3}(?:\.\d{1,2})?", v) and float(v) <= 100:
+            out[key] = float(v)
+    return out
 
 
 def racelist(hd: str, jcd: str, rno: int) -> str:
