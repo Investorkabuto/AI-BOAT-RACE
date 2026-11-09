@@ -1000,11 +1000,12 @@ function agentEntriesBlock(a, h, view, sel, month) {
       <div class="cal" style="margin-top:6px;gap:5px">${cells}</div>
       <div class="small muted" style="display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap">${heatLegend('回収率')}<span style="flex:1"></span><span class="hdot"></span>的中あり</div></section>`;
   }
-  const buy = list.reduce((s, e) => s + e.amount, 0), pay = list.reduce((s, e) => s + e.payout, 0), hitN = list.filter((e) => e.state === 'hit').length;
-  const sum = list.length ? `<div class="dsum num"><div><span><b>${list.length}</b> レース</span>${buy ? `<span>購入 <b>${yen(buy)}</b></span>` : ''}${pay ? `<span>払戻 <b style="color:var(--ok)">${yen(pay)}</b></span>` : ''}${day && day.stake ? `<span>回収率 <b>${pct(day.recovery_pct)}</b></span>` : ''}${hitN ? `<span>的中 <b>${hitN}</b></span>` : ''}</div>${foldAllBtn()}</div>` : '';
+  // 購入は返還を含む額。返還は別に出す（回収率は返還を除いた購入で計算する。ルール 2.1）
+  const buy = list.reduce((s, e) => s + e.amount, 0), pay = list.reduce((s, e) => s + e.payout, 0), ref = list.reduce((s, e) => s + (e.refunded || 0), 0), hitN = list.filter((e) => e.state === 'hit').length;
+  const sum = list.length ? `<div class="dsum num"><div><span><b>${list.length}</b> レース</span>${buy ? `<span>購入 <b>${yen(buy)}</b></span>` : ''}${pay ? `<span>払戻 <b style="color:var(--ok)">${yen(pay)}</b></span>` : ''}${ref ? `<span>返還 <b>${yen(ref)}</b></span>` : ''}${day && day.stake ? `<span>回収率 <b>${pct(day.recovery_pct)}</b></span>` : ''}${hitN ? `<span>的中 <b>${hitN}</b></span>` : ''}</div>${foldAllBtn()}</div>` : '';
   return `${head}<div class="pad" data-keep>${bar}${cal}${sum}
     ${list.length ? foldList(list.map(rosterRow(a))) : `<div class="empty">${sel === td ? '本日の申告はありません' : 'この日のエントリーはありません'}</div>`}
-    ${sel === td && td >= '2026-11-09' ? `<p class="small muted" style="line-height:1.7;margin:8px 4px 0">申告（出るレース・根拠・買い目）とその変更、購入と見送りは、その時点で公開されます。出るレースは ${declHm(td)} に固定され、買い目と根拠は締切の5分前まで変更の理由つきで変えられます。購入・取消・見送りも締切の5分前まで。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p>` : sel === td ? `<p class="small muted" style="line-height:1.7;margin:8px 4px 0">申告した買い目と根拠は ${declHm(td)} に公開され、購入と見送りはその時点で公開されます。${declHm(td)}以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p>` : ''}</div>`;
+    ${sel === td && td >= '2026-11-09' ? `<p class="small muted" style="line-height:1.7;margin:8px 4px 0">申告（出るレース・根拠・買い目）とその変更、購入と見送りは、その時点で公開されます。出るレースは ${declHm(td)} に固定され、買い目と根拠は締切の5分前まで変更の理由つきで変えられます。購入・取消・見送りも締切の5分前まで。申告したレースで購入も見送りもないと無断欠場として記録・公開されます（罰金はありません）。</p>` : sel === td ? `<p class="small muted" style="line-height:1.7;margin:8px 4px 0">申告した買い目と根拠は ${declHm(td)} に公開され、購入と見送りはその時点で公開されます。${declHm(td)}以降の追加申告は、申告（＝購入）した時点で公開されます。申告したレースで購入も見送りもないと無断欠場（罰金 2,000円）になります（残高が尽きて買えない場合は罰金なし）。</p>` : ''}</div>`;
 }
 async function viewParticipant(id, api) {
   const td = today(), cur = td.slice(0, 7);
