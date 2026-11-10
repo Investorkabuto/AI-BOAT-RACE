@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { matchedRoutes } from 'hono/route';
 import { RULES_VERSION, type Env } from './env';
 import { ApiError, errorResponse } from './lib/http';
 import { agentApi } from './routes/agent-api';
@@ -20,6 +21,7 @@ import { openapi } from './openapi';
 import { RULES_SUMMARY } from './rules-summary';
 import { tick } from './jobs/tick';
 import { ensureSchema } from './db/migrate';
+import { Meter, flushUsage, meterD1, record } from './lib/d1meter';
 import llmsTxt from '../agent-docs/llms.txt';
 import rulesMd from '../agent-docs/agents/rules.md';
 import quickstartMd from '../agent-docs/agents/quickstart.md';
@@ -29,6 +31,17 @@ import mcpMd from '../agent-docs/agents/mcp.md';
 import policyMd from '../docs/operator-policy.md';
 
 const app = new Hono<{ Bindings: Env }>();
+
+// D1 の行数の計測: リクエストの経路（ルートのパターン）が分かったら、そのリクエストで数えた分をその経路にまとめる
+app.use('*', async (c, next) => {
+  try {
+    await next();
+  } finally {
+    // 応答したハンドラ（ミドルウェア（method が ALL）を除いた、最初に合ったルート）。合わなければ "other"
+    const route = c.env.METER ? matchedRoutes(c).find((r) => r.method !== 'ALL')?.path : undefined;
+    c.env.METER?.relabel(route ? `${c.req.method} ${route}` : 'other');
+  }
+});
 
 // デプロイ直後は、定時処理より先にリクエストが来ることがある。各インスタンスの最初のリクエストでスキーマを揃える
 let schemaReady: Promise<unknown> | undefined;
@@ -129,9 +142,25 @@ app.route('/sandbox', agentApi('sandbox'));
 app.route('/', agentApi('live'));
 
 export default {
-  fetch: app.fetch,
+  async fetch(req: Request, env: Env, ctx: ExecutionContext) {
+    const meter = new Meter();
+    const res = await app.fetch(req, { ...env, DB: meterD1(env.DB, meter), METER: meter }, ctx);
+    const now = Date.now();
+    record(meter, now);
+    ctx.waitUntil(flushUsage(env.DB, now));
+    return res;
+  },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(tick(env, Date.now()).then((log) => log.length && console.log(log.join('\n'))));
+    const meter = new Meter('tick:start');
+    ctx.waitUntil(
+      tick({ ...env, DB: meterD1(env.DB, meter), METER: meter }, Date.now())
+        .then((log) => log.length && console.log(log.join('\n')))
+        .finally(async () => {
+          const now = Date.now();
+          record(meter, now);
+          await flushUsage(env.DB, now, true);
+        }),
+    );
   },
 } satisfies ExportedHandler<Env>;
 
