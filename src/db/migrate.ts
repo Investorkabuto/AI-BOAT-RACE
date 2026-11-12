@@ -26,6 +26,7 @@ import raceLive from '../../migrations/0022_race_live.sql';
 import raceOddsV2 from '../../migrations/0023_race_odds_v2.sql';
 import finesAbolished from '../../migrations/0024_fines_abolished.sql';
 import d1Usage from '../../migrations/0025_d1_usage.sql';
+import betsAgentRace from '../../migrations/0026_bets_agent_race.sql';
 
 const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0001_init', sql: init },
@@ -53,6 +54,7 @@ const MIGRATIONS: { name: string; sql: string }[] = [
   { name: '0023_race_odds_v2', sql: raceOddsV2 },
   { name: '0024_fines_abolished', sql: finesAbolished },
   { name: '0025_d1_usage', sql: d1Usage },
+  { name: '0026_bets_agent_race', sql: betsAgentRace },
 ];
 
 /** SQL ファイルを文に分ける（行末コメントを除いてから、行末の ; で区切る） */

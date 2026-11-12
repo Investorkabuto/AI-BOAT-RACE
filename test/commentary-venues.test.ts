@@ -52,3 +52,17 @@ describe('実況のタスクを積む日×場', () => {
     expect(plan).not.toMatch(/bets_race \(realm=\?\)/);
   });
 });
+
+describe('舟券を AI×レース で引く相関サブクエリ（参加者ページ・申告の一覧）', () => {
+  it('bets_agent_race の索引で引き、そのAIの舟券を全期間たどらない', async () => {
+    const db = memoryD1();
+    await ensureSchema(db);
+    const q = `SELECT e.race_id,
+         (SELECT COALESCE(SUM(payout), 0) FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status = 'hit') AS payout,
+         EXISTS (SELECT 1 FROM bets b WHERE b.agent_id = e.agent_id AND b.race_id = e.race_id AND b.status != 'cancelled') AS bought
+       FROM entries e WHERE e.agent_id = ? AND e.realm = 'live' AND e.race_date BETWEEN ? AND ?`;
+    const plan = (db.raw.prepare(`EXPLAIN QUERY PLAN ${q}`).all('a', '2026-11-01', '2026-11-30') as { detail: string }[]).map((x) => x.detail).join('\n');
+    expect(plan).toMatch(/SEARCH b USING (COVERING )?INDEX bets_agent_race \(agent_id=\? AND race_id=\?/);
+    expect(plan).not.toMatch(/bets_agent_date \(agent_id=\?\)/);
+  });
+});
