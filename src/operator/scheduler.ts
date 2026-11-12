@@ -112,20 +112,26 @@ interface CommentaryPayload {
 }
 
 /**
+ * 実況のタスクを積む「日×場」: その場の全レースが精算・中止になり、本番の判定済みの舟券があり、まだタスクの無いもの。
+ * 本番の判定済みの舟券がある「日×場」を、舟券の日付の索引（bets_date）で先に1回だけ絞る（race_id は YYYYMMDD-JJ-RR なので場は10文字目から2文字）。
+ * 以前は「日×場」ごとに大会の本番の舟券を全部たどっていて、定時処理（5分ごと）の読み取りが舟券の数に比例して増えていた（2026-11-12）
+ */
+export const COMMENTARY_VENUES_SQL = `SELECT r.race_date, r.jcd FROM races r
+  WHERE r.race_date >= ?
+    AND (r.race_date, r.jcd) IN (
+      SELECT DISTINCT b.race_date, substr(b.race_id, 10, 2) FROM bets b
+      WHERE b.realm = 'live' AND b.race_date >= ? AND b.status IN ('hit', 'miss', 'refunded'))
+  GROUP BY r.race_date, r.jcd
+  HAVING SUM(CASE WHEN r.status IN ('settled', 'cancelled') THEN 0 ELSE 1 END) = 0
+    AND NOT EXISTS (SELECT 1 FROM operator_tasks t WHERE t.type = 'commentary' AND t.subject_id = r.race_date || ':' || r.jcd)`;
+
+/**
  * その場の全レースが精算・中止になり、本番の舟券があった場について、運営AIに実況のタスクを積む（1日1場1回）。
  * subject は 'YYYY-MM-DD:場コード'
  */
 export async function commentaryTasks(db: D1Database, nowMs: number, sinceDate: string): Promise<string[]> {
   const venues = (
-    await db
-      .prepare(
-        `SELECT r.race_date, r.jcd FROM races r WHERE r.race_date >= ?
-         GROUP BY r.race_date, r.jcd
-         HAVING SUM(CASE WHEN r.status IN ('settled', 'cancelled') THEN 0 ELSE 1 END) = 0
-           AND EXISTS (SELECT 1 FROM bets b JOIN races x ON x.id = b.race_id WHERE b.realm = 'live' AND x.race_date = r.race_date AND x.jcd = r.jcd AND b.status IN ('hit', 'miss', 'refunded'))
-           AND NOT EXISTS (SELECT 1 FROM operator_tasks t WHERE t.type = 'commentary' AND t.subject_id = r.race_date || ':' || r.jcd)`,
-      )
-      .bind(sinceDate)
+    await db.prepare(COMMENTARY_VENUES_SQL).bind(sinceDate, sinceDate)
       .all<{ race_date: string; jcd: string }>()
   ).results;
   const log: string[] = [];
